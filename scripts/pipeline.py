@@ -438,25 +438,6 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-# def upload_output() -> None:
-#     token = os.environ.get("HF_TOKEN")
-#     if not token:
-#         raise RuntimeError("HF_TOKEN is required unless --dry-run is used")
-
-#     api = HfApi(token=token)
-#     try:
-#         api.create_repo(repo_id=DATASET_REPO, repo_type="dataset", private=False, exist_ok=True)
-#     except Exception as error:
-#         print(f"create_repo warning: {error}", file=sys.stderr)
-
-#     api.upload_folder(
-#         repo_id=DATASET_REPO,
-#         repo_type="dataset",
-#         folder_path=str(OUTPUT_DIR),
-#         path_in_repo=".",
-#         commit_message=f"Pipeline sync {datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}",
-#     )
-
 def upload_output() -> None:
     token = os.environ.get("HF_TOKEN")
     if not token:
@@ -679,11 +660,13 @@ def main() -> int:
             if previous_score is None or row["score"] != previous_score:
                 position = idx
                 previous_score = row["score"]
-            ranks[row["model_id"]] = {"position": position, "total": len(model_results)}
+            rank_entry = {"position": position, "total": len(model_results)}
+            ranks[row["model_id"]] = rank_entry
+            # ---- FIX 1: also index by raw_model_id so the frontend can
+            # look up ranks regardless of which ID variant it holds ----
             raw_id = row.get("raw_model_id", "")
             if raw_id and raw_id != row["model_id"]:
-                ranks[raw_id] = {"position": position, "total": len(model_results)}
-
+                ranks[raw_id] = rank_entry
         peer_ranks[summary["eval_summary_id"]] = ranks
 
     eval_summaries.sort(key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id"))))
@@ -704,11 +687,20 @@ def main() -> int:
         score_values: list[float] = []
         last_updated = None
 
+        # ---- FIX 2: collect per-benchmark scores for model card ----
+        benchmark_names_set: set[str] = set()
+        # key = eval_summary_id, value = best score entry for that metric
+        best_per_metric: dict[str, dict] = {}
+
         for evaluation in family_evals:
             category = infer_category_from_benchmark(as_string(evaluation.get("benchmark")))
             by_category[category].append(evaluation)
             iso = iso_from_epoch_string(evaluation.get("retrieved_timestamp"))
             last_updated = max_iso(last_updated, iso)
+
+            bm_name = as_string(evaluation.get("benchmark"))
+            if bm_name:
+                benchmark_names_set.add(bm_name)
 
             model_variant_key = as_string((evaluation.get("model_info") or {}).get("variant_key") or "default")
             variant = variants_map.setdefault(
@@ -731,6 +723,42 @@ def main() -> int:
                 score = extract_score(result)
                 if score is not None:
                     score_values.append(score)
+
+                    # Track best score per eval_summary_id for the model card
+                    esid = get_eval_summary_id(evaluation, result)
+                    metric_config = result.get("metric_config") or {}
+                    lower_is_better = bool(metric_config.get("lower_is_better"))
+                    eval_name = as_string(result.get("evaluation_name"))
+
+                    prev = best_per_metric.get(esid)
+                    is_better = (
+                        prev is None
+                        or (lower_is_better and score < prev["score"])
+                        or (not lower_is_better and score > prev["score"])
+                    )
+                    if is_better:
+                        best_per_metric[esid] = {
+                            "benchmark": bm_name,
+                            "benchmarkKey": esid,
+                            "evaluation_name": eval_name,
+                            "score": score,
+                            "metric": as_string(
+                                metric_config.get("evaluation_description") or eval_name
+                            ),
+                            "unit": as_string(metric_config.get("unit")) or None,
+                            "lower_is_better": lower_is_better,
+                        }
+
+        # Build top_benchmark_scores: deduplicate per benchmark (keep best metric),
+        # sort by absolute score descending, cap at 15 entries
+        top_benchmark_scores = sorted(
+            best_per_metric.values(),
+            key=lambda s: -abs(s["score"]),
+        )[:15]
+        # Strip None units to keep JSON compact
+        for entry in top_benchmark_scores:
+            if entry.get("unit") is None:
+                del entry["unit"]
 
         summary = {
             "model_info": model_info,
@@ -777,6 +805,10 @@ def main() -> int:
                 "last_updated": last_updated,
                 "variants": summary["variants"],
                 "score_summary": score_summary,
+                # ---- FIX 2 continued: include benchmark names and per-benchmark
+                # scores so the frontend compare dialog and domain pills work ----
+                "benchmark_names": sorted(benchmark_names_set),
+                "top_benchmark_scores": top_benchmark_scores,
             }
         )
 
