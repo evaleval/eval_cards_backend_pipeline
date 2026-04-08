@@ -453,7 +453,6 @@ def upload_output() -> None:
         repo_id=DATASET_REPO,
         repo_type="dataset",
         folder_path=str(OUTPUT_DIR),
-        commit_message=f"Pipeline sync {datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}",
     )
 
 
