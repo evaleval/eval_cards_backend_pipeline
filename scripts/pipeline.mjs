@@ -1,4 +1,3 @@
-import { DuckDBConnection } from '@duckdb/node-api';
 import { createRepo, uploadFiles } from '@huggingface/hub';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -41,7 +40,6 @@ const EEE_DATASET_TREE_API_BASE = `https://huggingface.co/api/datasets/${EEE_DAT
 const REQUEST_TIMEOUT_MS = 15000;
 const REQUEST_MAX_RETRIES = 3;
 const REQUEST_RETRY_BASE_DELAY_MS = 750;
-const JSON_LOAD_CHUNK_SIZE = 250;
 const MAX_HTTP_REDIRECTS = 5;
 
 async function main() {
@@ -154,15 +152,8 @@ async function loadBenchmarkMetadata() {
 }
 
 async function loadAllEvaluations({ batchSize, configs }) {
-  const connection = await DuckDBConnection.create();
   const skippedConfigs = [];
   const evaluations = [];
-
-  try {
-    await connection.run(`INSTALL httpfs; LOAD httpfs;`);
-  } catch (error) {
-    console.warn(`DuckDB httpfs extension init warning: ${error.message}`);
-  }
 
   for (let index = 0; index < configs.length; index += batchSize) {
     const batch = configs.slice(index, index + batchSize);
@@ -176,15 +167,15 @@ async function loadAllEvaluations({ batchSize, configs }) {
     const results = await Promise.all(batch.map(async (config) => {
       try {
         const startedAt = Date.now();
-        const { rows, discoveredFiles, discoveryPages } = await loadConfigRows(connection, config);
+        const { records, discoveredFiles, discoveryPages } = await loadConfigRecords(config);
         logInfo('config.load.ok', {
           config,
           discovered_data_json_files: discoveredFiles.length,
           discovery_pages: discoveryPages,
-          row_count: rows.length,
+          row_count: records.length,
           duration_ms: Date.now() - startedAt,
         });
-        return { config, rows };
+        return { config, records };
       } catch (error) {
         logInfo('config.load.error', {
           config,
@@ -201,7 +192,7 @@ async function loadAllEvaluations({ batchSize, configs }) {
         continue;
       }
 
-      evaluations.push(...result.rows.map(mapDuckDbRowToEvaluation));
+      evaluations.push(...result.records.map(mapJsonToEvaluation));
     }
 
     logInfo('config.batch.done', {
@@ -211,7 +202,6 @@ async function loadAllEvaluations({ batchSize, configs }) {
     });
   }
 
-  connection.closeSync();
   return { evaluations, skippedConfigs };
 }
 
@@ -237,7 +227,7 @@ function parseExplicitConfigs(value) {
     .filter(Boolean);
 }
 
-async function loadConfigRows(connection, config) {
+async function loadConfigRecords(config) {
   let discoveredFiles = [];
   let discoveryPages = 0;
   let discoveryError = null;
@@ -261,34 +251,23 @@ async function loadConfigRows(connection, config) {
     throw new Error(`No JSON files discovered under data/${config}`);
   }
 
-  const urls = discoveredFiles.map((entry) => `${EEE_DATASET_RAW_BASE}/${entry}`);
-  const rows = [];
+  const fetchFile = async (filePath) => {
+    const url = `${EEE_DATASET_RAW_BASE}/${filePath}`;
+    const { text } = await fetchText(url);
+    const parsed = JSON.parse(text);
+    parsed.__source_record_url = url;
+    return parsed;
+  };
 
-  for (let offset = 0; offset < urls.length; offset += JSON_LOAD_CHUNK_SIZE) {
-    const chunk = urls.slice(offset, offset + JSON_LOAD_CHUNK_SIZE);
-    const sql = `
-      SELECT
-        schema_version,
-        evaluation_id,
-        retrieved_timestamp,
-        to_json(source_metadata) AS source_metadata_json,
-        to_json(eval_library) AS eval_library_json,
-        to_json(model_info) AS model_info_json,
-        to_json(evaluation_results) AS evaluation_results_json,
-        detailed_evaluation_results,
-        filename AS source_record_url,
-        to_json(source_row) AS raw_record_json
-      FROM read_json_auto(${toSqlStringArray(chunk)}, filename = true) AS source_row
-    `;
-    const reader = await connection.runAndReadAll(sql);
-    rows.push(...rowsFromReader(reader));
+  const records = [];
+  const FILE_FETCH_CONCURRENCY = 20;
+  for (let i = 0; i < discoveredFiles.length; i += FILE_FETCH_CONCURRENCY) {
+    const batch = discoveredFiles.slice(i, i + FILE_FETCH_CONCURRENCY);
+    const batchRecords = await Promise.all(batch.map(fetchFile));
+    records.push(...batchRecords);
   }
 
-  return {
-    rows,
-    discoveredFiles,
-    discoveryPages,
-  };
+  return { records, discoveredFiles, discoveryPages };
 }
 
 async function listDataJsonFilesForConfig(config) {
@@ -314,10 +293,6 @@ async function listDataJsonFilesForConfig(config) {
 
   files.sort((left, right) => left.localeCompare(right));
   return { files, pages };
-}
-
-function toSqlStringArray(values) {
-  return `[${values.map((value) => `'${asString(value).replace(/'/g, "''")}'`).join(', ')}]`;
 }
 
 async function fetchJsonWithRetry(url) {
@@ -423,35 +398,26 @@ function logInfo(event, details = {}) {
   console.log(`[pipeline] ${JSON.stringify(payload)}`);
 }
 
-function rowsFromReader(reader) {
-  const columnNames = reader.columnNames();
-  const rows = reader.getRows();
-  return rows.map((row) => Object.fromEntries(columnNames.map((name, index) => [name, row[index]])));
-}
-
-function mapDuckDbRowToEvaluation(row) {
-  const evaluationResults = safeJsonParse(row.evaluation_results_json, []);
-  const sourceMetadata = safeJsonParse(row.source_metadata_json, null);
-  const evalLibrary = safeJsonParse(row.eval_library_json, null);
-  const modelInfo = safeJsonParse(row.model_info_json, null);
-  const rawRecord = safeJsonParse(row.raw_record_json, null);
-  const passthroughTopLevelFields = extractPassthroughTopLevelFields(rawRecord);
-  const benchmark = String(row.evaluation_id || '').split('/')[0] || null;
+function mapJsonToEvaluation(record) {
+  const evaluationResults = Array.isArray(record.evaluation_results) ? record.evaluation_results : [];
+  const sourceRecordUrl = asString(record.__source_record_url) || null;
+  const passthroughTopLevelFields = extractPassthroughTopLevelFields(record);
+  const benchmark = String(record.evaluation_id || '').split('/')[0] || null;
   const firstResult = evaluationResults[0] ?? null;
 
   return {
-    schema_version: asString(row.schema_version),
-    evaluation_id: asString(row.evaluation_id),
-    retrieved_timestamp: asString(row.retrieved_timestamp),
+    schema_version: asString(record.schema_version),
+    evaluation_id: asString(record.evaluation_id),
+    retrieved_timestamp: asString(record.retrieved_timestamp),
     benchmark,
     source_data: firstResult?.source_data ?? null,
-    source_metadata: sourceMetadata,
-    eval_library: evalLibrary,
-    model_info: modelInfo,
+    source_metadata: record.source_metadata ?? null,
+    eval_library: record.eval_library ?? null,
+    model_info: record.model_info ?? null,
     generation_config: firstResult?.generation_config ?? null,
-    source_record_url: asString(row.source_record_url) || null,
-    detailed_evaluation_results_meta: normalizeDetailedEvaluationResultsObject(row?.detailed_evaluation_results),
-    detailed_evaluation_results: resolveDetailedEvaluationResultsUrl(row),
+    source_record_url: sourceRecordUrl,
+    detailed_evaluation_results_meta: normalizeDetailedEvaluationResultsObject(record.detailed_evaluation_results),
+    detailed_evaluation_results: resolveDetailedEvaluationResultsUrl({ ...record, source_record_url: sourceRecordUrl }),
     passthrough_top_level_fields: passthroughTopLevelFields,
     evaluation_results: normalizeEvaluationResults(evaluationResults),
   };
@@ -471,7 +437,7 @@ function extractPassthroughTopLevelFields(rawRecord) {
     'model_info',
     'evaluation_results',
     'detailed_evaluation_results',
-    'filename',
+    '__source_record_url',
   ]);
 
   const entries = Object.entries(rawRecord).filter(([key]) => !knownKeys.has(key));
