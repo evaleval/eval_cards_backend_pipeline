@@ -17,9 +17,12 @@ const VERSION_SUFFIX_REGEX = /^(.*?)-((?:19|20)\d{6})(?:-(.+))?$/;
 const EEE_DATASET_REPO = 'evaleval/EEE_datastore';
 const EEE_DATASET_RAW_BASE = `https://huggingface.co/datasets/${EEE_DATASET_REPO}/raw/main`;
 const EEE_DATASET_TREE_API_BASE = `https://huggingface.co/api/datasets/${EEE_DATASET_REPO}/tree/main`;
+const EEE_LOCAL_DATASET_DIR = asString(process.env.EEE_LOCAL_DATASET_DIR).trim();
 const REQUEST_TIMEOUT_MS = 15000;
-const REQUEST_MAX_RETRIES = 3;
+const REQUEST_MAX_RETRIES = 6;
 const REQUEST_RETRY_BASE_DELAY_MS = 750;
+const REQUEST_RATE_LIMIT_DELAY_MS = 30000;
+const FILE_FETCH_CONCURRENCY = 5;
 const MAX_HTTP_REDIRECTS = 5;
 
 async function main() {
@@ -197,6 +200,10 @@ async function getActiveConfigs() {
 }
 
 async function discoverAllConfigs() {
+  if (EEE_LOCAL_DATASET_DIR) {
+    return discoverAllConfigsLocal();
+  }
+
   let nextUrl = `${EEE_DATASET_TREE_API_BASE}/data`;
   const configs = [];
 
@@ -219,6 +226,18 @@ async function discoverAllConfigs() {
 
   configs.sort((a, b) => a.localeCompare(b));
   logInfo('configs.discovered', { config_count: configs.length, configs });
+  return configs;
+}
+
+async function discoverAllConfigsLocal() {
+  const dataRoot = path.join(EEE_LOCAL_DATASET_DIR, 'data');
+  const entries = await fs.readdir(dataRoot, { withFileTypes: true });
+  const configs = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b));
+
+  logInfo('configs.discovered', { config_count: configs.length, configs, source: 'local' });
   return configs;
 }
 
@@ -259,14 +278,13 @@ async function loadConfigRecords(config) {
   }
 
   const fetchFile = async (filePath) => {
-    const url = `${EEE_DATASET_RAW_BASE}/${filePath}`;
-    const { body } = await fetchJsonWithRetry(url);
+    const url = datasetPathToRawUrl(filePath);
+    const body = await readDatasetJson(filePath);
     body.__source_record_url = url;
     return body;
   };
 
   const records = [];
-  const FILE_FETCH_CONCURRENCY = 20;
   for (let i = 0; i < discoveredFiles.length; i += FILE_FETCH_CONCURRENCY) {
     const batch = discoveredFiles.slice(i, i + FILE_FETCH_CONCURRENCY);
     const batchRecords = await Promise.all(batch.map(fetchFile));
@@ -277,6 +295,10 @@ async function loadConfigRecords(config) {
 }
 
 async function listDataJsonFilesForConfig(config) {
+  if (EEE_LOCAL_DATASET_DIR) {
+    return listDataJsonFilesForConfigLocal(config);
+  }
+
   const apiPath = `data/${config}`;
   let nextUrl = `${EEE_DATASET_TREE_API_BASE}/${apiPath}?recursive=true&expand=true`;
   const files = [];
@@ -301,6 +323,59 @@ async function listDataJsonFilesForConfig(config) {
   return { files, pages };
 }
 
+async function listDataJsonFilesForConfigLocal(config) {
+  const configRoot = path.join(EEE_LOCAL_DATASET_DIR, 'data', config);
+  const files = [];
+
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.endsWith('.jsonl')) {
+        continue;
+      }
+
+      const relPath = path.relative(EEE_LOCAL_DATASET_DIR, fullPath).split(path.sep).join('/');
+      files.push(relPath);
+    }
+  }
+
+  await walk(configRoot);
+  files.sort((left, right) => left.localeCompare(right));
+  return { files, pages: 1 };
+}
+
+function datasetPathToRawUrl(datasetPath) {
+  const cleaned = asString(datasetPath).replace(/^\/+/, '');
+  return `${EEE_DATASET_RAW_BASE}/${cleaned}`;
+}
+
+function rawUrlToDatasetPath(url) {
+  const value = asString(url);
+  if (!value.startsWith(`${EEE_DATASET_RAW_BASE}/`)) {
+    return '';
+  }
+
+  return value.slice(EEE_DATASET_RAW_BASE.length + 1);
+}
+
+async function readDatasetJson(datasetPath) {
+  if (EEE_LOCAL_DATASET_DIR) {
+    const localPath = path.join(EEE_LOCAL_DATASET_DIR, asString(datasetPath));
+    const text = await fs.readFile(localPath, 'utf8');
+    return JSON.parse(text);
+  }
+
+  const url = datasetPathToRawUrl(datasetPath);
+  const { body } = await fetchJsonWithRetry(url);
+  return body;
+}
+
 async function fetchJsonWithRetry(url) {
   let lastError = null;
 
@@ -314,7 +389,9 @@ async function fetchJsonWithRetry(url) {
     } catch (error) {
       lastError = error;
       if (attempt < REQUEST_MAX_RETRIES) {
-        await delay(REQUEST_RETRY_BASE_DELAY_MS * attempt);
+        const is429 = String(error?.message || '').startsWith('HTTP 429');
+        const waitMs = is429 ? REQUEST_RATE_LIMIT_DELAY_MS : REQUEST_RETRY_BASE_DELAY_MS * attempt;
+        await delay(waitMs);
       }
     }
   }
@@ -674,7 +751,25 @@ function candidateInstanceUrls(evaluation) {
 }
 
 async function fetchJsonlFile(url) {
-  const { text } = await fetchText(url);
+  let text = '';
+
+  if (EEE_LOCAL_DATASET_DIR) {
+    const datasetPath = rawUrlToDatasetPath(url);
+    if (datasetPath) {
+      try {
+        const localPath = path.join(EEE_LOCAL_DATASET_DIR, datasetPath);
+        text = await fs.readFile(localPath, 'utf8');
+      } catch {
+        text = '';
+      }
+    }
+  }
+
+  if (!text) {
+    const response = await fetchText(url);
+    text = response.text;
+  }
+
   const lines = text.trim().split('\n').filter(Boolean);
   return lines.map((line) => safeJsonParse(line, null)).filter(Boolean);
 }
