@@ -1,6 +1,6 @@
 # eval-cards-backend-pipeline
 
-Python pipeline for materializing static evaluation artifacts from `evaleval/EEE_datastore` and publishing them to the Hugging Face dataset `evijit/ev_card_be`.
+Python pipeline for materializing static evaluation artifacts from `evaleval/EEE_datastore` and publishing them to the Hugging Face dataset `evaleval/card_backend`.
 
 ## What it does
 
