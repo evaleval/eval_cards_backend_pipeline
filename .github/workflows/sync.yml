@@ -34,22 +34,12 @@ jobs:
           EEE_LOCAL_DATASET_DIR: .cache/eee_datastore
         run: python scripts/fetch_eee_dataset.py
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "20"
-
-      - name: Install dependencies
-        run: npm ci --no-audit --fund=false
-
-      - name: Free npm cache
-        run: npm cache clean --force
-
       - name: Run pipeline
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           CONFIG_BATCH_SIZE: "3"
           EEE_LOCAL_DATASET_DIR: .cache/eee_datastore
-        run: node scripts/pipeline.mjs
+        run: python scripts/pipeline.py
 
       - name: Upload manifest as artifact
         uses: actions/upload-artifact@v4

@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "pipeline": "node scripts/pipeline.mjs",
-    "pipeline:dry-run": "node scripts/pipeline.mjs --dry-run"
+    "pipeline": "python scripts/pipeline.py",
+    "pipeline:dry-run": "python scripts/pipeline.py --dry-run"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.5.1-r.1",
