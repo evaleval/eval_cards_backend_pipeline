@@ -1,0 +1,13 @@
+{
+  "name": "eval-cards-backend-pipeline",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "pipeline": "node scripts/pipeline.mjs",
+    "pipeline:dry-run": "node scripts/pipeline.mjs --dry-run"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "^1.5.1-r.1",
+    "@huggingface/hub": "^2.11.0"
+  }
+}

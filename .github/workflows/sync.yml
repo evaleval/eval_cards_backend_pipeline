@@ -1,0 +1,42 @@
+name: Sync Pipeline
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "metadata/**"
+      - "scripts/**"
+      - "package.json"
+      - ".github/workflows/sync.yml"
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci --omit=optional --no-audit --fund=false
+
+      - name: Free npm cache
+        run: npm cache clean --force
+
+      - name: Run pipeline
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          CONFIG_BATCH_SIZE: "3"
+        run: node scripts/pipeline.mjs
+
+      - name: Upload manifest as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-manifest
+          path: output/manifest.json

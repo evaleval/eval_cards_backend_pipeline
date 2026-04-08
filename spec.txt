@@ -1,0 +1,395 @@
+Backend Pipeline Spec: evaleval/eval_cards_backend_pipeline
+Overview
+A standalone GitHub repository containing a Node.js pipeline script and GitHub Actions workflow. It pulls raw evaluation data from the EEE_datastore HuggingFace dataset via DuckDB, merges it with curated metadata files checked into this repo, runs all the processing that the frontend app currently does at request time, and pushes pre-computed JSON files to the output HuggingFace dataset at evijit/ev_card_be. The frontend app then replaces all its API routes with direct fetches to these static files.
+
+Repository Structure
+
+eval_cards_backend_pipeline/
+├── metadata/                          # Checked-in curated data (copied from frontend repo)
+│   ├── benchmark_card_BoolQ.json
+│   ├── benchmark_card_CNN_DailyMail.json
+│   ├── benchmark_card_CivilComments.json
+│   ├── benchmark_card_GPQA.json
+│   ├── benchmark_card_GSM8K.json
+│   ├── benchmark_card_HellaSwag.json
+│   ├── benchmark_card_IFEval.json
+│   ├── benchmark_card_LegalBench.json
+│   ├── benchmark_card_MATH_Level_5.json
+│   ├── benchmark_card_MMLU-Pro.json
+│   ├── benchmark_card_MMLU.json
+│   ├── benchmark_card_MUSR.json
+│   ├── benchmark_card_MedQA.json
+│   ├── benchmark_card_Omni-MATH.json
+│   ├── benchmark_card_QuAC.json
+│   └── benchmark_card_WildBench.json
+├── scripts/
+│   └── pipeline.mjs                   # Main pipeline (Node.js ESM)
+├── output/                            # Local output staging (gitignored)
+│   ├── model-cards.json
+│   ├── eval-list.json
+│   ├── peer-ranks.json
+│   ├── benchmark-metadata.json
+│   ├── developers.json
+│   └── models/
+│       ├── anthropic__claude-3-5-haiku-20241022.json
+│       ├── openai__gpt-4o.json
+│       └── ...
+├── .github/
+│   └── workflows/
+│       └── sync.yml
+├── .gitignore                         # /output/
+├── package.json
+└── README.md
+Input Sources
+1. EEE_datastore (live, via DuckDB + httpfs)
+URL pattern: https://huggingface.co/api/datasets/evaleval/EEE_datastore/parquet/{config}/train/0.parquet
+
+Active configs (17 — helm_classic does not exist upstream and must be skipped):
+
+
+ace, apex-agents, apex-v1, appworld_test_normal, browsecompplus,
+global-mmlu-lite, helm_capabilities, helm_instruct, helm_lite, helm_mmlu,
+hfopenllm_v2, livecodebenchpro, reward-bench, swe-bench,
+tau-bench-2_airline, tau-bench-2_retail, tau-bench-2_telecom
+Top-level Parquet columns (all configs share these 7):
+
+Column	Type
+schema_version	string
+evaluation_id	string — format "{config}/{model_id}/{unix_timestamp}"
+retrieved_timestamp	string — Unix epoch float as string
+source_metadata	struct
+eval_library	struct
+model_info	struct
+evaluation_results	list of structs
+model_info struct fields: id, name, developer, inference_platform (optional), inference_engine (optional), additional_details (struct, varies by config)
+
+source_metadata struct fields: source_name, source_type, source_organization_name, evaluator_relationship, source_organization_url (optional)
+
+evaluation_results[] struct fields:
+
+evaluation_name — string
+metric_config — struct: {evaluation_description, lower_is_better, score_type, min_score, max_score}
+score_details — struct: {score, uncertainty (optional), details (optional struct of strings)}
+source_data — struct: {dataset_name, source_type, url[] (optional), hf_repo (optional)}
+generation_config — struct (optional): {additional_details (struct, keys vary by config)}
+Important: score_details.details is a Parquet struct where every value is typed as string, and non-null values are JSON-encoded objects like {"tab": "Accuracy", "score": "0.572", "description": ""}. Use to_json(score_details.details) to serialize the whole struct to a JSON string, then parse it in JS.
+
+score_details.uncertainty varies by config:
+
+Agentic configs (appworld, browsecomp, swe-bench, tau-bench): {num_samples: int}
+Other configs (ace, apex, global-mmlu-lite): {confidence_interval: {lower, upper, method}}
+HELM configs, hfopenllm_v2, reward-bench, livecodebenchpro: absent (null)
+2. metadata/ folder (checked in)
+JSON files of the form benchmark_card_{Name}.json. Each file has a single top-level key benchmark_card containing a BenchmarkCard object with these sections:
+
+benchmark_details — name, overview, data_type, domains, languages, similar_benchmarks, resources
+purpose_and_intended_users — goal, audience, tasks, limitations, out_of_scope_uses
+data — source, size, format, annotation
+methodology — methods, metrics, calculation, interpretation, baseline_results, validation
+ethical_and_legal_considerations
+possible_risks[]
+flagged_fields, missing_fields, card_info
+Processing Logic
+The pipeline must replicate the following logic from the frontend app's lib/eval-processing.ts and lib/model-family.ts exactly. Copy these files into scripts/lib/ and import them directly (they are plain JS-compatible TypeScript once compiled, or rewrite as .mjs). Do not re-implement this logic from scratch — the goal is identical output.
+
+Step 0 — Load data
+
+// For each EEE config:
+const rows = await conn.runAndReadAll(`
+  SELECT *, to_json(evaluation_results) as evaluation_results_json
+  FROM read_parquet('${url}')
+`)
+Map each Parquet row to a BenchmarkEvaluation object (TypeScript interface below). The evaluation_results field must be parsed from evaluation_results_json (a JSON string) since the LIST-of-structs type doesn't always deserialize cleanly.
+
+BenchmarkEvaluation interface (what each row becomes after mapping):
+
+
+{
+  schema_version: string
+  evaluation_id: string
+  retrieved_timestamp: string
+  benchmark: string            // derived: evaluation_id.split("/")[0]
+  source_data: SourceData      // taken from evaluation_results[0].source_data
+  source_metadata: SourceMetadata
+  eval_library?: EvalLibrary
+  model_info: ModelInfo
+  generation_config?: GenerationConfig
+  evaluation_results: EvaluationResult[]
+}
+Load all metadata benchmark cards from metadata/benchmark_card_*.json into a lookup map keyed by normalized benchmark name (lowercase, spaces→underscores, strip punctuation).
+
+Step 1 — Model identity normalization
+Apply the normalizeModelInfo() and getCanonicalModelIdentity() logic from lib/model-family.ts to every evaluation's model_info. This:
+
+Parses developer/model-name-YYYYMMDD-qualifier into family slug + variant parts
+Computes familyId (e.g. anthropic/claude-3-5-haiku), familySlug, variantKey, variantLabel
+Computes model_route_id = familyId.replace(/\//g, "__") (e.g. anthropic__claude-3-5-haiku)
+The regex for version parsing: /^(.*?)-((?:19|20)\d{6})(?:-(.+))?$/
+
+Step 2 — Group evaluations
+
+groupByModelFamily(evaluations)
+  → Map<familyId, BenchmarkEvaluation[]>
+
+groupByBenchmark(evaluations)
+  → Map<evalSummaryId, { lower_is_better, results: [{modelId, score}] }>
+evalSummaryId formula (must match frontend exactly):
+
+
+function slugify(v) { return v.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") }
+
+function getEvalSummaryId(evaluation, result) {
+  const benchmarkKey = evaluation.benchmark || result.source_data?.dataset_name || result.evaluation_name
+  return slugify(`${benchmarkKey}__${result.evaluation_name}`)
+}
+Step 3 — Compute peer ranks
+For each evalSummaryId, sort models by score (desc, or asc if lower_is_better), assign 1-based rank with ties sharing the same rank (dense rank). Output shape:
+
+
+Record<evalSummaryId, Record<modelId, { position: number; total: number }>>
+This is identical to the existing scripts/precompute-ranks.mjs logic in the frontend repo — copy it directly.
+
+Step 4 — Build per-model summaries
+For each model family, call createModelFamilySummary(evaluations) (copied from lib/eval-processing.ts). This produces a ModelEvaluationSummary:
+
+
+{
+  model_info: ModelInfo
+  model_family_id: string        // e.g. "anthropic/claude-3-5-haiku"
+  model_route_id: string         // e.g. "anthropic__claude-3-5-haiku"
+  model_family_name: string      // e.g. "Claude 3.5 Haiku"
+  raw_model_ids: string[]
+  evaluations_by_category: Record<CategoryType, BenchmarkEvaluation[]>
+  total_evaluations: number
+  last_updated: string
+  categories_covered: CategoryType[]
+  variants: ModelVariantSummary[]
+}
+Category assignment uses inferCategoryFromBenchmark(benchmarkName) from lib/benchmark-schema.ts (copy exactly).
+
+Attach benchmark cards: for each evaluation in evaluations_by_category, look up the card from the metadata map and attach it to the relevant evaluation.
+
+Step 5 — Build model cards (dashboard listing)
+For each model family summary, call createEvaluationCard(summary) (copied from lib/eval-processing.ts). This produces EvaluationCardData — the compact card shown on the homepage grid.
+
+Step 6 — Build eval list (benchmark listing)
+Call groupEvaluationsByBenchmark(evaluations) then toBenchmarkEvalListItem(summary) for each, attaching the metadata benchmark card where available. Output is BenchmarkEvalListItem[] sorted by models_count descending.
+
+Step 7 — Build benchmark metadata map
+Output: Record<normalizedBenchmarkName, BenchmarkCard> — the full content of all metadata/benchmark_card_*.json files merged into a single lookup object. Keys are normalized names (multiple keys per card: the filename key, the benchmark_details.name key, and lowercased/slugified variants of both).
+
+Step 8 — Build developer listing and summaries
+Group model cards by developer field. Output:
+
+developers.json: Array<{ developer: string; model_count: number }> sorted by model_count desc
+developers/{developer-slug}.json: per-developer detail, shape { developer: string; models: EvaluationCardData[] }
+Developer slug: developer.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")
+
+Output Files
+All files written to output/ locally, then pushed to the HuggingFace dataset evijit/ev_card_be via the @huggingface/hub npm package.
+
+Output path on HF	Description	Consumed by frontend API route
+model-cards.json	EvaluationCardData[] — all model cards	/api/model-cards, /api/data
+eval-list.json	{ evals: BenchmarkEvalListItem[], totalModels: number }	/api/eval-list, /api/data
+peer-ranks.json	Record<evalSummaryId, Record<modelId, {position,total}>>	Fetched by frontend as /peer-ranks.json (currently from public/)
+benchmark-metadata.json	Record<normalizedKey, BenchmarkCard>	/api/benchmark-metadata
+developers.json	Array<{developer, model_count}>	/api/developers
+models/{route-id}.json	ModelEvaluationSummary — one file per model family	/api/model-summary?id={route-id}
+evals/{eval-summary-id}.json	BenchmarkEvalSummary — one file per benchmark	/api/eval-summary?id={eval-id}
+developers/{developer-slug}.json	Per-developer detail	/api/developer-summary?id={slug}
+manifest.json	{ generated_at: ISO string, model_count, eval_count, config_version: 1 }	Health check / cache busting
+Base URL for all files: https://huggingface.co/datasets/evijit/ev_card_be/resolve/main/{path}
+
+package.json
+
+{
+  "name": "eval-cards-backend-pipeline",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "pipeline": "node scripts/pipeline.mjs",
+    "pipeline:dry-run": "node scripts/pipeline.mjs --dry-run"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "^1.5.1",
+    "@huggingface/hub": "^0.18.0"
+  }
+}
+scripts/pipeline.mjs — Structure
+
+main()
+  ├── loadAllEvaluations()           // DuckDB reads all 17 EEE configs in parallel
+  ├── loadBenchmarkMetadata()        // Read metadata/*.json files
+  ├── computePeerRanks()             // Step 3
+  ├── buildModelSummaries()          // Step 4 — one per family
+  ├── buildModelCards()              // Step 5 — EvaluationCardData[]
+  ├── buildEvalList()                // Step 6
+  ├── buildBenchmarkMetadataMap()    // Step 7
+  ├── buildDeveloperData()           // Step 8
+  ├── writeOutputFiles()             // Write to output/ directory
+  └── pushToHuggingFace()            // Upload output/ to HF dataset (skipped if --dry-run)
+Performance: load all Parquet files in parallel (Promise.all). The full EEE_datastore has ~5400 rows total across all configs — this should complete in under 60 seconds on a GitHub Actions runner.
+
+Error handling: if a single config fails to load, log a warning and skip it (don't abort the whole pipeline). Include a count of skipped configs in manifest.json.
+
+GitHub Actions Workflow (.github/workflows/sync.yml)
+
+name: Sync Pipeline
+
+on:
+  schedule:
+    - cron: "0 5 * * *"    # 05:00 UTC daily
+  workflow_dispatch:         # Manual trigger from GitHub UI
+  push:
+    branches: [main]
+    paths:
+      - "metadata/**"        # Re-run when benchmark cards change
+      - "scripts/**"
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run pipeline
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: node scripts/pipeline.mjs
+
+      - name: Upload manifest as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-manifest
+          path: output/manifest.json
+Required GitHub secret: HF_TOKEN — a HuggingFace token with write access to evijit/ev_card_be.
+
+HuggingFace Upload
+Use @huggingface/hub's uploadFiles to push everything in output/ to the dataset. The dataset should be set to type dataset, visibility public.
+
+
+import { uploadFiles, createRepo } from "@huggingface/hub"
+
+await uploadFiles({
+  repo: { type: "dataset", name: "evijit/ev_card_be" },
+  credentials: { accessToken: process.env.HF_TOKEN },
+  files: [
+    // Array of { path: "model-cards.json", content: new Blob([json]) }
+    // One entry per output file
+  ],
+  commitTitle: `Pipeline sync ${new Date().toISOString()}`,
+})
+Files are served at: https://huggingface.co/datasets/evijit/ev_card_be/resolve/main/{path}
+
+Frontend Changes Required (separate from this repo)
+After the pipeline is running, the frontend (eval_cards_backend_pipeline is this repo; the frontend is the Next.js app) needs these changes:
+
+lib/dashboard-data-client.ts: change base URL for all fetchJson calls from /api/... to https://huggingface.co/datasets/evijit/ev_card_be/resolve/main/... with direct path mapping:
+
+/api/model-cards → model-cards.json
+/api/eval-list → eval-list.json
+/api/model-summary?id={id} → models/{id}.json
+/api/eval-summary?id={id} → evals/{id}.json
+/api/developers → developers.json
+/api/developer-summary?id={id} → developers/{id}.json
+/api/benchmark-metadata → benchmark-metadata.json
+/peer-ranks.json → https://huggingface.co/datasets/evijit/ev_card_be/resolve/main/peer-ranks.json
+Delete all app/api/ route files (or keep them as thin proxy wrappers, but they're no longer needed).
+
+Delete lib/model-data.ts, lib/duckdb-loader.ts (the heavy server-side loading code is replaced by static fetches).
+
+The app becomes a fully static frontend — no server-side data processing, no DuckDB, no file I/O at request time.
+
+Key Invariants the Pipeline Must Preserve
+model_route_id must match the URL slug — the frontend routes to /models/{model_route_id} and fetches models/{model_route_id}.json. The formula is familyId.replace(/\//g, "__").
+
+evalSummaryId must match peer-ranks keys — the formula must be identical between peer-ranks.json and the IDs used in ModelEvaluationSummary. Use the exact slugify + benchmarkKey__evaluationName formula.
+
+Category inference must use the exact same rules as inferCategoryFromBenchmark() in lib/benchmark-schema.ts — copy the function verbatim.
+
+Benchmark card lookup uses normalized keys: lowercase, non-alphanumeric → underscore, leading/trailing underscores stripped. Try multiple candidate keys per card (filename stem, benchmark_details.name, both slugified).
+
+Variant grouping: models with the same familySlug (after stripping the date suffix YYYYMMDD and any qualifier) are grouped as variants of one family. The regex is /^(.*?)-((?:19|20)\d{6})(?:-(.+))?$/.
+
+
+
+Corrections and Additions to the Spec
+The following updates the spec I wrote above. Give both to the new session.
+
+1. metadata/ folder — full contents, not just benchmark cards
+The metadata/ folder committed to the pipeline repo is the complete top-level metadata/ directory from the frontend, which contains only these 16 files:
+
+
+metadata/benchmark_card_BoolQ.json
+metadata/benchmark_card_CNN_DailyMail.json
+metadata/benchmark_card_CivilComments.json
+metadata/benchmark_card_GPQA.json
+metadata/benchmark_card_GSM8K.json
+metadata/benchmark_card_HellaSwag.json
+metadata/benchmark_card_IFEval.json
+metadata/benchmark_card_LegalBench.json
+metadata/benchmark_card_MATH_Level_5.json
+metadata/benchmark_card_MMLU-Pro.json
+metadata/benchmark_card_MMLU.json
+metadata/benchmark_card_MUSR.json
+metadata/benchmark_card_MedQA.json
+metadata/benchmark_card_Omni-MATH.json
+metadata/benchmark_card_QuAC.json
+metadata/benchmark_card_WildBench.json
+Each file has the shape { "benchmark_card": { ... BenchmarkCard fields ... } } — one card per file.
+
+2. What the data/ folder currently contains (context only)
+The data/ folder in the frontend has these parts, all of which are being removed:
+
+data/models/*.json — ~5,164 raw model eval JSON files. Replaced by EEE_datastore.
+data/models.json — flat model index (id, name, developer, benchmark_scores). Replaced by model-cards.json pipeline output.
+data/benchmarks.json — flat benchmark index (benchmark, model_count). Replaced by eval-list.json.
+data/developers.json — flat developer index (developer, model_count). Replaced by developers.json.
+data/benchmarks/*.json — per-benchmark detail files. Each has a models array (model scores) and optionally a benchmark_cards key with embedded BenchmarkCard objects. The embedded cards are the source that lib/benchmark-metadata.ts currently reads from at runtime. The pipeline replaces this with benchmark-metadata.json.
+data/developers/*.json — per-developer detail files. Replaced by developers/{slug}.json.
+data/survey/eval-schema-fields.json — used by the survey page as a static JSON import, not via any API. See note below.
+3. Survey data (data/survey/eval-schema-fields.json)
+This file is imported directly as a JSON module in app/survey/page.tsx:
+
+
+import fieldLibraryJson from "@/data/survey/eval-schema-fields.json"
+It is not served via an API route and is not processed by the pipeline. When data/ is removed from the frontend, this import will break. The fix in the frontend is to either:
+
+Move eval-schema-fields.json to public/ and fetch it at runtime, or
+Move it to lib/ or app/ as a static asset
+The pipeline repo does not need to do anything with this file. Just note it as a separate concern for the frontend migration.
+
+4. How benchmark-metadata.json should be built
+The pipeline's benchmark-metadata.json output should merge cards from two sources:
+
+metadata/benchmark_card_*.json files (in the pipeline repo) — 16 curated cards
+data/benchmarks/*.json embedded benchmark_cards — these are the runtime source the frontend currently uses, but since those files are being removed, only the metadata/ folder cards will be available going forward
+The pipeline reads all 16 metadata/benchmark_card_*.json files. For each, extract the .benchmark_card value. Build a lookup map with multiple candidate keys per card (the filename stem, the benchmark_details.name, and both slugified) using the same candidateBenchmarkKeys normalization from lib/benchmark-metadata-utils.ts. Output as a single flat Record<normalizedKey, BenchmarkCard> object.
+
+5. Frontend changes when data/ and metadata/ are removed
+In addition to the API route changes already listed, two more things break:
+
+lib/benchmark-metadata.ts reads from data/benchmarks/ at runtime (filesystem). It must be replaced with a fetch to benchmark-metadata.json on HuggingFace.
+
+app/api/benchmark-metadata/route.ts currently calls getAllBenchmarkCards() which reads from the filesystem. It becomes a fetch to https://huggingface.co/datasets/evijit/ev_card_be/resolve/main/benchmark-metadata.json.
+
+lib/model-data.ts reads from data/models/, data/models.json, data/benchmarks/, data/developers/ — all replaced by HF fetches. This file can be deleted entirely once the frontend switches to pre-computed outputs.
+
+scripts/precompute-ranks.mjs reads from data/models/*.json — it can be deleted from the frontend since the pipeline takes over this job. public/peer-ranks.json is also deleted (served from HF instead).
+
+6. evals/ output files (addition to original spec)
+The original spec listed evals/{eval-summary-id}.json but didn't fully specify what it contains. It is a BenchmarkEvalSummary object (the full form, including model_results). The eval-summary-id is the same slugified key used in peer-ranks.json: slugify("{benchmarkKey}__{evaluationName}"). Write one file per unique evalSummaryId.
+
+7. No data/ folder in the pipeline repo
+The pipeline repo does not have a data/ folder. It has only:
+
+metadata/ — the 16 benchmark card files (checked in, edited by hand)
+scripts/ — the pipeline script
+output/ — gitignored, written at runtime
