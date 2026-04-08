@@ -10,26 +10,6 @@ const repoRoot = path.resolve(__dirname, '..');
 const metadataDir = path.join(repoRoot, 'metadata');
 const outputDir = path.join(repoRoot, 'output');
 
-const EEE_CONFIGS = [
-  'ace',
-  'apex-agents',
-  'apex-v1',
-  'appworld_test_normal',
-  'browsecompplus',
-  'global-mmlu-lite',
-  'helm_capabilities',
-  'helm_instruct',
-  'helm_lite',
-  'helm_mmlu',
-  'hfopenllm_v2',
-  'livecodebenchpro',
-  'reward-bench',
-  'swe-bench',
-  'tau-bench-2_airline',
-  'tau-bench-2_retail',
-  'tau-bench-2_telecom',
-];
-
 const DEFAULT_CONFIG_BATCH_SIZE = 4;
 const DATASET_REPO = { type: 'dataset', name: 'evijit/ev_card_be' };
 const CONFIG_VERSION = 1;
@@ -47,7 +27,7 @@ async function main() {
   const dryRun = process.argv.includes('--dry-run');
   const loadInstanceInDryRun = process.env.LOAD_INSTANCE_IN_DRY_RUN === '1';
   const configBatchSize = parsePositiveInt(process.env.CONFIG_BATCH_SIZE, DEFAULT_CONFIG_BATCH_SIZE);
-  const activeConfigs = getActiveConfigs();
+  const activeConfigs = await getActiveConfigs();
 
   await ensureCleanOutputDir();
 
@@ -205,14 +185,41 @@ async function loadAllEvaluations({ batchSize, configs }) {
   return { evaluations, skippedConfigs };
 }
 
-function getActiveConfigs() {
+async function getActiveConfigs() {
   const explicitConfigs = parseExplicitConfigs(process.env.CONFIG_NAMES || process.env.CONFIGS);
   if (explicitConfigs.length) {
     return explicitConfigs;
   }
 
-  const limit = parsePositiveInt(process.env.CONFIG_LIMIT, EEE_CONFIGS.length);
-  return EEE_CONFIGS.slice(0, Math.max(1, Math.min(limit, EEE_CONFIGS.length)));
+  const allConfigs = await discoverAllConfigs();
+  const limit = parsePositiveInt(process.env.CONFIG_LIMIT, allConfigs.length);
+  return allConfigs.slice(0, Math.max(1, Math.min(limit, allConfigs.length)));
+}
+
+async function discoverAllConfigs() {
+  let nextUrl = `${EEE_DATASET_TREE_API_BASE}/data`;
+  const configs = [];
+
+  while (nextUrl) {
+    const { body, headers } = await fetchJsonWithRetry(nextUrl);
+    const entries = Array.isArray(body) ? body : [];
+
+    for (const entry of entries) {
+      if (entry?.type === 'directory') {
+        // path is like "data/ace" — take the last segment as config name
+        const name = asString(entry.path).split('/').pop();
+        if (name) {
+          configs.push(name);
+        }
+      }
+    }
+
+    nextUrl = parseNextLink(headers.link || headers.Link || '');
+  }
+
+  configs.sort((a, b) => a.localeCompare(b));
+  logInfo('configs.discovered', { config_count: configs.length, configs });
+  return configs;
 }
 
 function parseExplicitConfigs(value) {
@@ -253,10 +260,9 @@ async function loadConfigRecords(config) {
 
   const fetchFile = async (filePath) => {
     const url = `${EEE_DATASET_RAW_BASE}/${filePath}`;
-    const { text } = await fetchText(url);
-    const parsed = JSON.parse(text);
-    parsed.__source_record_url = url;
-    return parsed;
+    const { body } = await fetchJsonWithRetry(url);
+    body.__source_record_url = url;
+    return body;
   };
 
   const records = [];
