@@ -3,7 +3,6 @@ import os
 import random
 import re
 import shutil
-import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -162,44 +161,13 @@ def ensure_local_dataset_snapshot(local_dataset_dir: str, hf_token: str | None, 
         shutil.rmtree(target_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
 
-    repo_url = f"https://huggingface.co/datasets/{EEE_DATASET_REPO}"
-    git_dir = target_dir / ".git"
-
-    try:
-        if git_dir.exists():
-            subprocess.run(["git", "-C", str(target_dir), "fetch", "origin", "main"], check=True)
-            subprocess.run(["git", "-C", str(target_dir), "checkout", "main"], check=True)
-            subprocess.run(["git", "-C", str(target_dir), "pull", "--ff-only", "origin", "main"], check=True)
-            subprocess.run(["git", "-C", str(target_dir), "sparse-checkout", "set", "data"], check=True)
-        else:
-            if any(target_dir.iterdir()):
-                shutil.rmtree(target_dir)
-                target_dir.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--filter=blob:none",
-                    "--sparse",
-                    repo_url,
-                    str(target_dir),
-                ],
-                check=True,
-            )
-            subprocess.run(["git", "-C", str(target_dir), "sparse-checkout", "set", "data"], check=True)
-    except Exception:
-        # Fallback to hub snapshot API if git clone/pull is unavailable.
-        snapshot_download(
-            repo_id=EEE_DATASET_REPO,
-            repo_type="dataset",
-            local_dir=str(target_dir),
-            local_dir_use_symlinks=False,
-            allow_patterns=["data/**"],
-            token=hf_token,
-            resume_download=True,
-        )
+    snapshot_download(
+        repo_id=EEE_DATASET_REPO,
+        repo_type="dataset",
+        local_dir=str(target_dir),
+        allow_patterns=["data/**"],
+        token=hf_token,
+    )
 
     return str(target_dir)
 
