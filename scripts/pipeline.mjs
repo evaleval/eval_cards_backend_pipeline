@@ -36,16 +36,18 @@ const DATASET_REPO = { type: 'dataset', name: 'evijit/ev_card_be' };
 const CONFIG_VERSION = 1;
 const VERSION_SUFFIX_REGEX = /^(.*?)-((?:19|20)\d{6})(?:-(.+))?$/;
 const EEE_DATASET_REPO = 'evaleval/EEE_datastore';
-const EEE_DATASET_RESOLVE_BASE = `https://huggingface.co/datasets/${EEE_DATASET_REPO}/resolve/main`;
+const EEE_DATASET_RAW_BASE = `https://huggingface.co/datasets/${EEE_DATASET_REPO}/raw/main`;
 const EEE_DATASET_TREE_API_BASE = `https://huggingface.co/api/datasets/${EEE_DATASET_REPO}/tree/main`;
 const REQUEST_TIMEOUT_MS = 15000;
 const REQUEST_MAX_RETRIES = 3;
 const REQUEST_RETRY_BASE_DELAY_MS = 750;
 const JSON_LOAD_CHUNK_SIZE = 250;
+const MAX_HTTP_REDIRECTS = 5;
 
 async function main() {
   const startedAt = new Date().toISOString();
   const dryRun = process.argv.includes('--dry-run');
+  const loadInstanceInDryRun = process.env.LOAD_INSTANCE_IN_DRY_RUN === '1';
   const configBatchSize = parsePositiveInt(process.env.CONFIG_BATCH_SIZE, DEFAULT_CONFIG_BATCH_SIZE);
   const activeConfigs = getActiveConfigs();
 
@@ -55,8 +57,8 @@ async function main() {
   logInfo('metadata.loaded', { benchmark_card_count: metadata.cards.length, metadata_key_count: metadata.lookup.size });
   const { evaluations, skippedConfigs } = await loadAllEvaluations({ batchSize: configBatchSize, configs: activeConfigs });
 
-  // Load instance-level data only in production (skip in dry-run for speed)
-  if (!dryRun) {
+  // Load instance-level data in production and optionally for dry-run smoke tests.
+  if (!dryRun || loadInstanceInDryRun) {
     await loadInstanceLevelData(evaluations);
   }
 
@@ -214,8 +216,25 @@ async function loadAllEvaluations({ batchSize, configs }) {
 }
 
 function getActiveConfigs() {
+  const explicitConfigs = parseExplicitConfigs(process.env.CONFIG_NAMES || process.env.CONFIGS);
+  if (explicitConfigs.length) {
+    return explicitConfigs;
+  }
+
   const limit = parsePositiveInt(process.env.CONFIG_LIMIT, EEE_CONFIGS.length);
   return EEE_CONFIGS.slice(0, Math.max(1, Math.min(limit, EEE_CONFIGS.length)));
+}
+
+function parseExplicitConfigs(value) {
+  const raw = asString(value).trim();
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 async function loadConfigRows(connection, config) {
@@ -242,7 +261,7 @@ async function loadConfigRows(connection, config) {
     throw new Error(`No JSON files discovered under data/${config}`);
   }
 
-  const urls = discoveredFiles.map((entry) => `${EEE_DATASET_RESOLVE_BASE}/${entry}`);
+  const urls = discoveredFiles.map((entry) => `${EEE_DATASET_RAW_BASE}/${entry}`);
   const rows = [];
 
   for (let offset = 0; offset < urls.length; offset += JSON_LOAD_CHUNK_SIZE) {
@@ -256,8 +275,10 @@ async function loadConfigRows(connection, config) {
         to_json(eval_library) AS eval_library_json,
         to_json(model_info) AS model_info_json,
         to_json(evaluation_results) AS evaluation_results_json,
-        filename AS source_record_url
-      FROM read_json_auto(${toSqlStringArray(chunk)}, filename = true)
+        detailed_evaluation_results,
+        filename AS source_record_url,
+        to_json(source_row) AS raw_record_json
+      FROM read_json_auto(${toSqlStringArray(chunk)}, filename = true) AS source_row
     `;
     const reader = await connection.runAndReadAll(sql);
     rows.push(...rowsFromReader(reader));
@@ -320,18 +341,31 @@ async function fetchJsonWithRetry(url) {
   throw lastError;
 }
 
-async function fetchText(url) {
+async function fetchText(url, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     const request = https.get(url, {
       timeout: REQUEST_TIMEOUT_MS,
       headers: {
         'user-agent': 'eval-cards-backend-pipeline/1.0',
-        accept: 'application/json',
+        accept: '*/*',
       },
     }, (response) => {
       const statusCode = response.statusCode ?? 0;
-      let body = '';
+      const location = asString(response.headers?.location);
 
+      if (statusCode >= 300 && statusCode < 400 && location) {
+        if (redirectCount >= MAX_HTTP_REDIRECTS) {
+          reject(new Error(`Too many redirects for ${url}`));
+          return;
+        }
+
+        const nextUrl = new URL(location, url).toString();
+        response.resume();
+        fetchText(nextUrl, redirectCount + 1).then(resolve).catch(reject);
+        return;
+      }
+
+      let body = '';
       response.on('data', (chunk) => {
         body += chunk;
       });
@@ -400,6 +434,8 @@ function mapDuckDbRowToEvaluation(row) {
   const sourceMetadata = safeJsonParse(row.source_metadata_json, null);
   const evalLibrary = safeJsonParse(row.eval_library_json, null);
   const modelInfo = safeJsonParse(row.model_info_json, null);
+  const rawRecord = safeJsonParse(row.raw_record_json, null);
+  const passthroughTopLevelFields = extractPassthroughTopLevelFields(rawRecord);
   const benchmark = String(row.evaluation_id || '').split('/')[0] || null;
   const firstResult = evaluationResults[0] ?? null;
 
@@ -414,17 +450,159 @@ function mapDuckDbRowToEvaluation(row) {
     model_info: modelInfo,
     generation_config: firstResult?.generation_config ?? null,
     source_record_url: asString(row.source_record_url) || null,
-    detailed_evaluation_results: deriveJsonlUrl(asString(row.source_record_url)),
+    detailed_evaluation_results_meta: normalizeDetailedEvaluationResultsObject(row?.detailed_evaluation_results),
+    detailed_evaluation_results: resolveDetailedEvaluationResultsUrl(row),
+    passthrough_top_level_fields: passthroughTopLevelFields,
     evaluation_results: normalizeEvaluationResults(evaluationResults),
   };
 }
 
-function deriveJsonlUrl(sourceRecordUrl) {
-  const url = asString(sourceRecordUrl);
-  if (!url || !url.endsWith('.json')) {
+function extractPassthroughTopLevelFields(rawRecord) {
+  if (!rawRecord || typeof rawRecord !== 'object' || Array.isArray(rawRecord)) {
     return null;
   }
-  return `${url.slice(0, -5)}.jsonl`;
+
+  const knownKeys = new Set([
+    'schema_version',
+    'evaluation_id',
+    'retrieved_timestamp',
+    'source_metadata',
+    'eval_library',
+    'model_info',
+    'evaluation_results',
+    'detailed_evaluation_results',
+    'filename',
+  ]);
+
+  const entries = Object.entries(rawRecord).filter(([key]) => !knownKeys.has(key));
+  return entries.length ? Object.fromEntries(entries) : null;
+}
+
+function resolveDetailedEvaluationResultsUrl(row) {
+  const sourceRecordUrl = asString(row?.source_record_url);
+  const explicit = normalizeDetailedEvaluationResultsValue(row?.detailed_evaluation_results, sourceRecordUrl);
+  if (explicit) {
+    if (/^https?:\/\//i.test(explicit)) {
+      return explicit;
+    }
+    const cleaned = explicit.replace(/^\/+/, '');
+    return `${EEE_DATASET_RAW_BASE}/${cleaned}`;
+  }
+
+  if (!sourceRecordUrl || !sourceRecordUrl.endsWith('.json')) {
+    return null;
+  }
+
+  // EEE commonly stores companion files as *_samples.jsonl.
+  return `${sourceRecordUrl.slice(0, -5)}_samples.jsonl`;
+}
+
+function normalizeDetailedEvaluationResultsValue(value, sourceRecordUrl) {
+  if (!value) {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('{') && trimmed.includes('file_path')) {
+      const filePathMatch = trimmed.match(/file_path'?:\s*'([^']+)'/i) || trimmed.match(/"file_path"\s*:\s*"([^"]+)"/i);
+      if (filePathMatch?.[1]) {
+        const filePath = filePathMatch[1];
+        if (/^https?:\/\//i.test(filePath)) {
+          return filePath;
+        }
+        if (filePath.startsWith('data/')) {
+          return filePath;
+        }
+
+        const sourceUrl = asString(sourceRecordUrl);
+        if (sourceUrl && /^https?:\/\//i.test(sourceUrl)) {
+          const baseDir = sourceUrl.slice(0, sourceUrl.lastIndexOf('/') + 1);
+          return `${baseDir}${filePath.replace(/^\/+/, '')}`;
+        }
+
+        return filePath;
+      }
+    }
+    return value;
+  }
+
+  if (typeof value === 'object') {
+    const filePath = asString(value.file_path || value.path || value.url || '');
+    if (!filePath) {
+      return '';
+    }
+    if (/^https?:\/\//i.test(filePath)) {
+      return filePath;
+    }
+    if (filePath.startsWith('data/')) {
+      return filePath;
+    }
+
+    const sourceUrl = asString(sourceRecordUrl);
+    if (sourceUrl && /^https?:\/\//i.test(sourceUrl)) {
+      const baseDir = sourceUrl.slice(0, sourceUrl.lastIndexOf('/') + 1);
+      return `${baseDir}${filePath.replace(/^\/+/, '')}`;
+    }
+
+    return filePath;
+  }
+
+  return '';
+}
+
+function normalizeDetailedEvaluationResultsObject(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    const normalized = toJsonSafeValue(value);
+    if (normalized && typeof normalized === 'object' && normalized.entries && typeof normalized.entries === 'object') {
+      return normalized.entries;
+    }
+    return normalized;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = safeJsonParse(value, null);
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
+
+    const filePathMatch = value.match(/file_path'?:\s*'([^']+)'/i) || value.match(/"file_path"\s*:\s*"([^"]+)"/i);
+    const formatMatch = value.match(/format'?:\s*'([^']+)'/i) || value.match(/"format"\s*:\s*"([^"]+)"/i);
+    const rowsMatch = value.match(/total_rows'?:\s*([0-9]+)/i) || value.match(/"total_rows"\s*:\s*([0-9]+)/i);
+
+    if (filePathMatch?.[1] || formatMatch?.[1] || rowsMatch?.[1]) {
+      return {
+        file_path: filePathMatch?.[1] ?? null,
+        format: formatMatch?.[1] ?? null,
+        total_rows: rowsMatch?.[1] ? Number(rowsMatch[1]) : null,
+      };
+    }
+  }
+
+  return null;
+}
+
+function toJsonSafeValue(value) {
+  if (typeof value === 'bigint') {
+    const asNumber = Number(value);
+    return Number.isSafeInteger(asNumber) ? asNumber : String(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => toJsonSafeValue(entry));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, toJsonSafeValue(entry)])
+    );
+  }
+
+  return value;
 }
 
 function normalizeEvaluationResults(results) {
@@ -481,30 +659,50 @@ async function loadInstanceLevelData(evaluations) {
 }
 
 async function fetchInstanceData(evaluation) {
-  const jsonlUrl = evaluation?.detailed_evaluation_results;
-  if (!jsonlUrl) {
+  const jsonlCandidates = candidateInstanceUrls(evaluation);
+  if (!jsonlCandidates.length) {
     return null;
   }
 
-  try {
-    const data = await fetchJsonlFile(jsonlUrl);
-    if (data && Array.isArray(data) && data.length > 0) {
-      return {
-        interaction_type: inferInteractionType(data),
-        instance_count: data.length,
-        source_url: jsonlUrl,
-        instances: data,
-      };
+  for (const jsonlUrl of jsonlCandidates) {
+    try {
+      const data = await fetchJsonlFile(jsonlUrl);
+      if (data && Array.isArray(data) && data.length > 0) {
+        return {
+          interaction_type: inferInteractionType(data),
+          instance_count: data.length,
+          source_url: jsonlUrl,
+          instance_examples: pickRandomExamples(data, 5),
+        };
+      }
+    } catch {
+      continue;
     }
-  } catch {
-    return null;
   }
   
   return null;
 }
 
+function candidateInstanceUrls(evaluation) {
+  const candidates = new Set();
+  const explicit = asString(evaluation?.detailed_evaluation_results);
+  const sourceRecordUrl = asString(evaluation?.source_record_url);
+
+  if (explicit) {
+    candidates.add(explicit);
+  }
+
+  if (sourceRecordUrl && sourceRecordUrl.endsWith('.json')) {
+    const base = sourceRecordUrl.slice(0, -5);
+    candidates.add(`${base}_samples.jsonl`);
+    candidates.add(`${base}.jsonl`);
+  }
+
+  return [...candidates];
+}
+
 async function fetchJsonlFile(url) {
-  const text = await fetchText(url);
+  const { text } = await fetchText(url);
   const lines = text.trim().split('\n').filter(Boolean);
   return lines.map((line) => safeJsonParse(line, null)).filter(Boolean);
 }
@@ -523,6 +721,25 @@ function inferInteractionType(instances) {
     return 'agentic';
   }
   return 'unknown';
+}
+
+function pickRandomExamples(items, count) {
+  if (!Array.isArray(items) || !items.length || count <= 0) {
+    return [];
+  }
+
+  if (items.length <= count) {
+    return items;
+  }
+
+  const copy = [...items];
+  // Fisher-Yates shuffle then slice for unbiased random examples.
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+
+  return copy.slice(0, count);
 }
 
 function normalizeEvaluations(evaluations) {
@@ -628,6 +845,10 @@ function groupByBenchmark(evaluations) {
         score,
         evaluation_id: evaluation.evaluation_id,
         retrieved_timestamp: evaluation.retrieved_timestamp,
+        source_record_url: evaluation.source_record_url ?? null,
+        detailed_evaluation_results: evaluation.detailed_evaluation_results ?? null,
+        detailed_evaluation_results_meta: evaluation.detailed_evaluation_results_meta ?? null,
+        passthrough_top_level_fields: evaluation.passthrough_top_level_fields ?? null,
         instance_level_data: evaluation.instance_level_data ?? null,
       });
     }
