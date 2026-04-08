@@ -662,6 +662,10 @@ def main() -> int:
                 position = idx
                 previous_score = row["score"]
             ranks[row["model_id"]] = {"position": position, "total": len(model_results)}
+            raw_id = row.get("raw_model_id", "")
+            if raw_id and raw_id != row["model_id"]:
+                ranks[raw_id] = {"position": position, "total": len(model_results)}
+
         peer_ranks[summary["eval_summary_id"]] = ranks
 
     eval_summaries.sort(key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id"))))
