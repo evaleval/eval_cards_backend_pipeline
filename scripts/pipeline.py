@@ -438,6 +438,25 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# def upload_output() -> None:
+#     token = os.environ.get("HF_TOKEN")
+#     if not token:
+#         raise RuntimeError("HF_TOKEN is required unless --dry-run is used")
+
+#     api = HfApi(token=token)
+#     try:
+#         api.create_repo(repo_id=DATASET_REPO, repo_type="dataset", private=False, exist_ok=True)
+#     except Exception as error:
+#         print(f"create_repo warning: {error}", file=sys.stderr)
+
+#     api.upload_folder(
+#         repo_id=DATASET_REPO,
+#         repo_type="dataset",
+#         folder_path=str(OUTPUT_DIR),
+#         path_in_repo=".",
+#         commit_message=f"Pipeline sync {datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}",
+#     )
+
 def upload_output() -> None:
     token = os.environ.get("HF_TOKEN")
     if not token:
@@ -449,11 +468,10 @@ def upload_output() -> None:
     except Exception as error:
         print(f"create_repo warning: {error}", file=sys.stderr)
 
-    api.upload_folder(
+    api.upload_large_folder(
         repo_id=DATASET_REPO,
         repo_type="dataset",
         folder_path=str(OUTPUT_DIR),
-        path_in_repo=".",
         commit_message=f"Pipeline sync {datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}",
     )
 
