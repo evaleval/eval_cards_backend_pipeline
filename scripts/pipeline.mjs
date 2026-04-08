@@ -3,6 +3,7 @@ import { createRepo, uploadFiles } from '@huggingface/hub';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import https from 'node:https';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +45,11 @@ async function main() {
 
   const metadata = await loadBenchmarkMetadata();
   const { evaluations, skippedConfigs } = await loadAllEvaluations({ batchSize: configBatchSize });
+
+  // Load instance-level data only in production (skip in dry-run for speed)
+  if (!dryRun) {
+    await loadInstanceLevelData(evaluations);
+  }
 
   normalizeEvaluations(evaluations);
 
@@ -223,6 +229,113 @@ function normalizeEvaluationResults(results) {
   });
 }
 
+async function loadInstanceLevelData(evaluations) {
+  // Load instance-level data from EEE_datastore
+  // Instance data is stored in JSONL files, one per evaluation
+  // Process in parallel batches to avoid overwhelming the network
+  
+  const batchSize = 10;
+  
+  for (let i = 0; i < evaluations.length; i += batchSize) {
+    const batch = evaluations.slice(i, i + batchSize);
+    
+    const promises = batch.map(async (evaluation) => {
+      try {
+        const instanceData = await fetchInstanceData(evaluation);
+        if (instanceData) {
+          evaluation.instance_level_data = instanceData;
+        }
+      } catch (error) {
+        // Silently skip evaluations without instance data
+        // This is normal - not all evaluations have per-sample data
+      }
+    });
+    
+    await Promise.all(promises);
+  }
+}
+
+async function fetchInstanceData(evaluation) {
+  // Try to fetch instance-level data from HF dataset
+  // Instance data is typically referenced via evaluation_id components
+  const config = evaluation.evaluation_id?.split('/')[0];
+  const modelId = evaluation.evaluation_id?.split('/')[1];
+  const timestamp = evaluation.evaluation_id?.split('/')[2];
+  
+  if (!config || !modelId || !timestamp) {
+    return null;
+  }
+  
+  // Try multiple patterns for finding instance data in HF dataset
+  const patterns = [
+    `eee_datastore/${config}/instances/${timestamp}.jsonl`,
+    `${config}/instances/${timestamp}.jsonl`,
+    `instances/${config}/${timestamp}.jsonl`,
+    `${config}/${timestamp}/instances.jsonl`,
+  ];
+  
+  for (const pattern of patterns) {
+    try {
+      const url = `https://huggingface.co/datasets/evaleval/EEE_datastore/resolve/main/${pattern}`;
+      const data = await fetchJsonlFile(url);
+      if (data && Array.isArray(data) && data.length > 0) {
+        return {
+          interaction_type: inferInteractionType(data),
+          instance_count: data.length,
+          instances: data,
+        };
+      }
+    } catch (error) {
+      // Try next pattern
+      continue;
+    }
+  }
+  
+  return null;
+}
+
+async function fetchJsonlFile(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { timeout: 5000 }, (res) => {
+      if (res.statusCode !== 200) {
+        resolve(null);
+        return;
+      }
+      
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      res.on('end', () => {
+        try {
+          const lines = data.trim().split('\n').filter(Boolean);
+          const instances = lines.map(line => JSON.parse(line)).filter(Boolean);
+          resolve(instances);
+        } catch (error) {
+          reject(error);
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
+function inferInteractionType(instances) {
+  if (!Array.isArray(instances) || instances.length === 0) {
+    return 'unknown';
+  }
+  
+  const first = instances[0];
+  if (first.interactions || first.messages) {
+    return 'multi_turn';
+  } else if (first.input && first.output && first.evaluation) {
+    return 'single_turn';
+  } else if (first.tool_calls || first.tool_use) {
+    return 'agentic';
+  }
+  return 'unknown';
+}
+
 function normalizeEvaluations(evaluations) {
   for (const evaluation of evaluations) {
     const identity = getCanonicalModelIdentity(evaluation.model_info);
@@ -326,6 +439,7 @@ function groupByBenchmark(evaluations) {
         score,
         evaluation_id: evaluation.evaluation_id,
         retrieved_timestamp: evaluation.retrieved_timestamp,
+        instance_level_data: evaluation.instance_level_data ?? null,
       });
     }
   }
