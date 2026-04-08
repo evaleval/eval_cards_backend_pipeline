@@ -1,0 +1,104 @@
+{
+  "benchmark_card": {
+    "benchmark_details": {
+      "name": "CNN/DailyMail",
+      "overview": "CNN/DailyMail is a benchmark for evaluating abstractive and extractive summarization models using news articles. It contains over 300,000 unique articles written by journalists from CNN and the Daily Mail. The dataset was originally created for machine reading and question answering, but later versions were restructured specifically for summarization tasks.",
+      "data_type": "text",
+      "domains": [
+        "summarization",
+        "journalism",
+        "news media"
+      ],
+      "languages": [
+        "English"
+      ],
+      "similar_benchmarks": "No facts provided about similar benchmarks.",
+      "resources": [
+        "https://huggingface.co/datasets/abisee/cnn_dailymail",
+        "https://storage.googleapis.com/crfm-helm-public/benchmark_output/releases/v0.4.0/groups/core_scenarios.json"
+      ]
+    },
+    "purpose_and_intended_users": {
+      "goal": "To help develop models that can summarize long paragraphs of text into one or two sentences, aiding in the efficient presentation of information from large quantities of text.",
+      "audience": [
+        "NLP researchers",
+        "Summarization model developers"
+      ],
+      "tasks": [
+        "Summarization"
+      ],
+      "limitations": "News articles often place important information in the first third, which may affect summarization. A manual study found 25% of samples in an earlier version were difficult for humans due to ambiguity and coreference errors. Also, machine-generated summaries may differ in truth values from the original articles.",
+      "out_of_scope_uses": "No facts provided about out-of-scope uses."
+    },
+    "data": {
+      "source": "The dataset consists of news articles and highlight sentences written by journalists at CNN and the Daily Mail. The CNN articles were collected from April 2007 to April 2015, and the Daily Mail articles from June 2010 to April 2015, sourced from archives on the Wayback Machine.",
+      "size": "Over 300,000 unique articles, with 287,113 training examples, 13,368 validation examples, and 11,490 test examples.",
+      "format": "parquet",
+      "annotation": "The dataset does not contain additional annotations. The highlights are the original summaries written by the article authors and are used as the target for summarization."
+    },
+    "methodology": {
+      "methods": [
+        "Models generate a summary for a given news article, which is then compared to the author-written highlights."
+      ],
+      "metrics": [
+        "ROUGE-2"
+      ],
+      "calculation": "The ROUGE-2 score measures the overlap of bigrams between the generated summary and the reference highlights.",
+      "interpretation": "Higher scores indicate better performance, as they reflect greater overlap with the reference summaries.",
+      "baseline_results": "Paper baseline (Zhong et al., 2020): ROUGE-1 score of 44.41 for an extractive summarization model. Evaluation suite result (Anthropic-LM v4-s3 52B): ROUGE-2 score of 0.154.",
+      "validation": "No facts provided about validation procedures."
+    },
+    "ethical_and_legal_considerations": {
+      "privacy_and_anonymity": "The dataset (version 3.0.0) is not anonymized, meaning individuals' names are present in the text.",
+      "data_licensing": "Apache License 2.0",
+      "consent_procedures": "Not specified",
+      "compliance_with_regulations": "Not specified"
+    },
+    "possible_risks": [
+      {
+        "category": "Over- or under-reliance",
+        "description": [
+          "In AI-assisted decision-making tasks, reliance measures how much a person trusts (and potentially acts on) a model's output. Over-reliance occurs when a person puts too much trust in a model, accepting a model's output when the model's output is likely incorrect. Under-reliance is the opposite, where the person doesn't trust the model but should."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/over-or-under-reliance.html"
+      },
+      {
+        "category": "Unrepresentative data",
+        "description": [
+          "Unrepresentative data occurs when the training or fine-tuning data is not sufficiently representative of the underlying population or does not measure the phenomenon of interest. Synthetic data might not fully capture the complexity and nuances of real-world data. Causes include possible limitations in the seed data quality, biases in generation methods, or inadequate domain knowledge. Thus, AI models might struggle to generalize effectively to real-world scenarios."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/unrepresentative-data.html"
+      },
+      {
+        "category": "Data bias",
+        "description": [
+          "Historical and societal biases might be present in data that are used to train and fine-tune models. Biases can also be inherited from seed data or exacerbated by synthetic data generation methods."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/data-bias.html"
+      },
+      {
+        "category": "Data contamination",
+        "description": [
+          "Data contamination occurs when incorrect data is used for training. For example, data that is not aligned with model's purpose or data that is already set aside for other development tasks such as testing and evaluation."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/data-contamination.html"
+      },
+      {
+        "category": "Lack of data transparency",
+        "description": [
+          "Lack of data transparency might be due to insufficient documentation of training or tuning dataset details, including synthetic data generation.\u00a0"
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/lack-of-data-transparency.html"
+      }
+    ],
+    "flagged_fields": {},
+    "missing_fields": [
+      "ethical_and_legal_considerations.consent_procedures",
+      "ethical_and_legal_considerations.compliance_with_regulations"
+    ],
+    "card_info": {
+      "created_at": "2026-03-17T15:15:47.316103",
+      "llm": "deepseek-ai/DeepSeek-V3.2"
+    }
+  }
+}

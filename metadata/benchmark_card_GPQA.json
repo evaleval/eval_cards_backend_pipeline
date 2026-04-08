@@ -1,0 +1,118 @@
+{
+  "benchmark_card": {
+    "benchmark_details": {
+      "name": "GPQA",
+      "overview": "GPQA (Graduate-Level Google-Proof Q&A Benchmark) is a text-based benchmark that measures the ability to answer extremely difficult, expert-level multiple-choice questions. It contains 448 questions designed to be 'Google-proof,' meaning they are hard to solve even with unrestricted web access. Its distinctiveness lies in its high difficulty for both highly skilled non-experts and state-of-the-art AI, making it suitable for scalable oversight experiments.",
+      "data_type": "tabular, text",
+      "domains": [
+        "biology",
+        "physics",
+        "chemistry",
+        "open domain qa",
+        "open book qa",
+        "multiple choice qa"
+      ],
+      "languages": [
+        "English"
+      ],
+      "similar_benchmarks": [
+        "DROP",
+        "Massive Multitask Language Understanding (MMLU)"
+      ],
+      "resources": [
+        "https://arxiv.org/abs/2311.12022",
+        "https://huggingface.co/datasets/Idavidrein/gpqa",
+        "https://storage.googleapis.com/crfm-helm-public/capabilities/benchmark_output/releases/v1.15.0/groups/core_scenarios.json"
+      ]
+    },
+    "purpose_and_intended_users": {
+      "goal": "To create a testbed for scalable oversight, enabling the study of methods for humans to reliably supervise and extract truthful information from AI systems on questions that are very difficult for non-experts to answer or verify. It can also be used for general large language model capabilities benchmarking.",
+      "audience": [
+        "Researchers studying scalable oversight and AI alignment",
+        "Researchers interested in supervising AI systems that may surpass human capabilities in specialized domains"
+      ],
+      "tasks": [
+        "Multiple-choice question answering",
+        "Question answering",
+        "Text generation"
+      ],
+      "limitations": "The dataset is small, with 448 examples in the main set. There is a need for scalable oversight methods to overcome existing cognitive or ethical biases supervisors might have.",
+      "out_of_scope_uses": [
+        "Tasks where non-experts can easily find the answer using web search, as the questions are intended to be 'Google-proof'"
+      ]
+    },
+    "data": {
+      "source": "The questions were written and validated by domain experts with or pursuing PhDs in biology, physics, and chemistry, using an annotation pipeline where experts wrote questions and explanations and received detailed feedback from other experts.",
+      "size": "The main set contains 448 multiple-choice questions, with an extended set of 546 questions also mentioned. The dataset falls within the 1K<n<10K size category. The paper does not specify train, development, or test splits.",
+      "format": "The data is provided in CSV format and consists of multiple-choice questions, each with four answer choices, explanations, and references.",
+      "annotation": "Domain experts wrote the questions and explanations. Other expert validators provided feedback and 4-point difficulty ratings. Quality was assessed by comparing a sample to author-created 'gold-standard' labels, achieving 90% accuracy. Validation also involved experts from outside a question's domain attempting them with web access, which confirmed the questions' difficulty through low accuracy scores."
+    },
+    "methodology": {
+      "methods": [
+        "Models are evaluated in both closed-book (no runtime access to external information) and open-book (with access to an internet search tool) settings.",
+        "Prompting methods include zero-shot, few-shot, zero-shot chain-of-thought, and few-shot chain-of-thought."
+      ],
+      "metrics": [
+        "Accuracy (percentage of correct answers)"
+      ],
+      "calculation": "The overall score is the accuracy across the question set. Results are reported separately for the main set, extended set, and a 'Diamond Set'.",
+      "interpretation": "Higher accuracy indicates better performance. Expert human performance is benchmarked at 65% overall accuracy (or 74% when discounting clear mistakes). Non-expert human performance is 34%.",
+      "baseline_results": "PAPER baselines: On the main set, GPT-4 with few-shot chain-of-thought achieved 39.7% accuracy; GPT-4 with search achieved 41.0%; GPT-3.5-turbo-16k (zero-shot) achieved 29.8%; Llama-2-70B-chat (few-shot chain-of-thought) achieved 29.1%. Human expert accuracy was 65%, and non-expert accuracy was 34%. EEE results: YiSM-blossom5.1-34B-SLERP achieved 0.3557; OLMo 2 32B Instruct March 2025 achieved 0.2870.",
+      "validation": "Quality assurance involved expert validation and feedback. Gold-standard labels were created for a sample of 110 questions, achieving 90% annotator agreement. Expert validators also rated question difficulty."
+    },
+    "ethical_and_legal_considerations": {
+      "privacy_and_anonymity": "The dataset includes a canary string to aid in filtering it from training data, and distribution requires users to agree not to reveal examples in plain text or images online to prevent data leakage. No specific anonymization of the question content is described.",
+      "data_licensing": "Creative Commons Attribution 4.0",
+      "consent_procedures": "Non-expert validators were compensated with large bonuses for effort. The use of contractors is mentioned, but the specific platform and detailed compensation procedures for experts are not specified.",
+      "compliance_with_regulations": "No information is provided regarding IRB approval, GDPR compliance, or other ethical review."
+    },
+    "possible_risks": [
+      {
+        "category": "Over- or under-reliance",
+        "description": [
+          "In AI-assisted decision-making tasks, reliance measures how much a person trusts (and potentially acts on) a model's output. Over-reliance occurs when a person puts too much trust in a model, accepting a model's output when the model's output is likely incorrect. Under-reliance is the opposite, where the person doesn't trust the model but should."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/over-or-under-reliance.html"
+      },
+      {
+        "category": "Unrepresentative data",
+        "description": [
+          "Unrepresentative data occurs when the training or fine-tuning data is not sufficiently representative of the underlying population or does not measure the phenomenon of interest. Synthetic data might not fully capture the complexity and nuances of real-world data. Causes include possible limitations in the seed data quality, biases in generation methods, or inadequate domain knowledge. Thus, AI models might struggle to generalize effectively to real-world scenarios."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/unrepresentative-data.html"
+      },
+      {
+        "category": "Data bias",
+        "description": [
+          "Historical and societal biases might be present in data that are used to train and fine-tune models. Biases can also be inherited from seed data or exacerbated by synthetic data generation methods."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/data-bias.html"
+      },
+      {
+        "category": "Lack of data transparency",
+        "description": [
+          "Lack of data transparency might be due to insufficient documentation of training or tuning dataset details, including synthetic data generation.\u00a0"
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/lack-of-data-transparency.html"
+      },
+      {
+        "category": "Improper usage",
+        "description": [
+          "Improper usage occurs when a model is used for a purpose that it was not originally designed for."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/improper-usage.html"
+      }
+    ],
+    "flagged_fields": {
+      "methodology.metrics": "[Factuality Score: 0.09], low factual alignment with source material",
+      "methodology.calculation": "[Possible Hallucination], no supporting evidence found in source material",
+      "methodology.baseline_results": "[Possible Hallucination], no supporting evidence found in source material",
+      "methodology.validation": "[Possible Hallucination], no supporting evidence found in source material"
+    },
+    "missing_fields": [],
+    "card_info": {
+      "created_at": "2026-03-17T15:27:14.197081",
+      "llm": "deepseek-ai/DeepSeek-V3.2"
+    }
+  }
+}

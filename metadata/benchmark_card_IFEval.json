@@ -1,0 +1,112 @@
+{
+  "benchmark_card": {
+    "benchmark_details": {
+      "name": "Instruction-Following Eval (IFEval)",
+      "overview": "IFEval is a benchmark that measures the ability of large language models to follow natural language instructions. It focuses specifically on 'verifiable instructions'\u2014instructions that can be objectively checked, such as word count requirements or keyword mentions. It is distinctive for providing a straightforward, reproducible, and automatic evaluation that avoids the subjectivity of human judgment and the bias of model-based assessment.",
+      "data_type": "text",
+      "domains": [
+        "instruction following"
+      ],
+      "languages": [
+        "English"
+      ],
+      "similar_benchmarks": [
+        "Not specified"
+      ],
+      "resources": [
+        "https://github.com/google-research/google-research/tree/master/instruction_following_eval",
+        "https://arxiv.org/abs/2311.07911",
+        "https://huggingface.co/datasets/google/IFEval",
+        "https://storage.googleapis.com/crfm-helm-public/capabilities/benchmark_output/releases/v1.15.0/groups/core_scenarios.json"
+      ]
+    },
+    "purpose_and_intended_users": {
+      "goal": "To provide a standardized, objective, and reproducible method for evaluating the instruction-following capability of large language models.",
+      "audience": [
+        "Researchers evaluating large language models"
+      ],
+      "tasks": [
+        "Text generation",
+        "Following verifiable instructions (e.g., word counts, formatting rules, keyword mentions)"
+      ],
+      "limitations": "The benchmark is limited to verifiable instructions and does not support multi-modal use cases, such as generating images. The current implementation is acknowledged to have room for improvement.",
+      "out_of_scope_uses": [
+        "Evaluating subjective or ambiguous instructions (e.g., 'write with a funny tone')"
+      ]
+    },
+    "data": {
+      "source": "The data consists of constructed prompts, as described in the research paper. The specific source material for the prompt content is not specified.",
+      "size": "Approximately 500 prompts, with a train split containing 541 prompts. No information is provided about development or test splits.",
+      "format": "JSON",
+      "annotation": "The prompts contain verifiable instructions, meaning compliance can be checked automatically via predefined rules (e.g., word counting). No human annotation process is described."
+    },
+    "methodology": {
+      "methods": [
+        "Automatic and objective verification of whether the model's output follows the verifiable instructions in the prompt.",
+        "Zero-shot evaluation setup."
+      ],
+      "metrics": [
+        "IFEval"
+      ],
+      "calculation": "Not specified",
+      "interpretation": "Higher scores indicate better performance.",
+      "baseline_results": "Paper baseline: Results for two widely available LLMs are reported, but specific model names and scores are not provided. EEE results: OLMo 2 32B Instruct March 2025 scored 0.7800; YiSM-blossom5.1-34B-SLERP scored 0.5033. Mean score across 2 models is 0.6417.",
+      "validation": "Quality assurance relies on the objective verifiability of the instructions. No additional validation procedures are described."
+    },
+    "ethical_and_legal_considerations": {
+      "privacy_and_anonymity": "Not specified",
+      "data_licensing": "Apache License 2.0",
+      "consent_procedures": "Not specified",
+      "compliance_with_regulations": "Not specified"
+    },
+    "possible_risks": [
+      {
+        "category": "Over- or under-reliance",
+        "description": [
+          "In AI-assisted decision-making tasks, reliance measures how much a person trusts (and potentially acts on) a model's output. Over-reliance occurs when a person puts too much trust in a model, accepting a model's output when the model's output is likely incorrect. Under-reliance is the opposite, where the person doesn't trust the model but should."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/over-or-under-reliance.html"
+      },
+      {
+        "category": "Unrepresentative data",
+        "description": [
+          "Unrepresentative data occurs when the training or fine-tuning data is not sufficiently representative of the underlying population or does not measure the phenomenon of interest. Synthetic data might not fully capture the complexity and nuances of real-world data. Causes include possible limitations in the seed data quality, biases in generation methods, or inadequate domain knowledge. Thus, AI models might struggle to generalize effectively to real-world scenarios."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/unrepresentative-data.html"
+      },
+      {
+        "category": "Lack of data transparency",
+        "description": [
+          "Lack of data transparency might be due to insufficient documentation of training or tuning dataset details, including synthetic data generation.\u00a0"
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/lack-of-data-transparency.html"
+      },
+      {
+        "category": "Reproducibility",
+        "description": [
+          "Replicating agent behavior or output can be impacted by changes or updates made to external services and tools. This impact is increased if the agent is built with generative AI."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/reproducibility-agentic.html"
+      },
+      {
+        "category": "Improper usage",
+        "description": [
+          "Improper usage occurs when a model is used for a purpose that it was not originally designed for."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/improper-usage.html"
+      }
+    ],
+    "flagged_fields": {},
+    "missing_fields": [
+      "benchmark_details.similar_benchmarks",
+      "methodology.calculation",
+      "ethical_and_legal_considerations.privacy_and_anonymity",
+      "ethical_and_legal_considerations.consent_procedures",
+      "ethical_and_legal_considerations.compliance_with_regulations"
+    ],
+    "card_info": {
+      "created_at": "2026-03-17T15:55:54.431294",
+      "llm": "deepseek-ai/DeepSeek-V3.2"
+    }
+  }
+}

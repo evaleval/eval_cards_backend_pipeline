@@ -1,0 +1,114 @@
+{
+  "benchmark_card": {
+    "benchmark_details": {
+      "name": "QuAC",
+      "overview": "QuAC (Question Answering in Context) is a benchmark that measures a model's ability to answer questions within an information-seeking dialogue. It contains 14,000 dialogues comprising 100,000 question-answer pairs. The dataset is distinctive because questions are often open-ended, context-dependent, unanswerable, or only meaningful within the dialog flow, presenting challenges not found in standard machine comprehension datasets.",
+      "data_type": "text",
+      "domains": [
+        "question answering",
+        "dialogue modeling",
+        "text generation"
+      ],
+      "languages": [
+        "English"
+      ],
+      "similar_benchmarks": [
+        "SQuAD"
+      ],
+      "resources": [
+        "http://quac.ai",
+        "https://arxiv.org/abs/1808.07036",
+        "https://huggingface.co/datasets/allenai/quac",
+        "https://storage.googleapis.com/crfm-helm-public/benchmark_output/releases/v0.4.0/groups/core_scenarios.json"
+      ]
+    },
+    "purpose_and_intended_users": {
+      "goal": "To enable models to learn from and participate in information-seeking dialog, handling context-dependent, elliptical, and sometimes unanswerable questions.",
+      "audience": [
+        "Not specified"
+      ],
+      "tasks": [
+        "Extractive question answering",
+        "Text generation",
+        "Fill mask"
+      ],
+      "limitations": "Some questions have lower quality annotations; the dataset filters out the noisiest ~10% of annotations where human F1 is below 40. Questions can be open-ended, unanswerable, or only meaningful within the dialog context, posing inherent challenges.",
+      "out_of_scope_uses": [
+        "Not specified"
+      ]
+    },
+    "data": {
+      "source": "The data is crowdsourced via an interactive dialog between two crowd workers: one acting as a student asking questions to learn about a hidden Wikipedia text, and the other acting as a teacher who answers using short excerpts from that text. The source data comes from Wikipedia.",
+      "size": "The dataset contains 98,407 question-answer pairs from 13,594 dialogs, based on 8,854 unique sections from 3,611 unique Wikipedia articles. The training set has 83,568 questions (11,567 dialogs), the validation set has 7,354 questions (1,000 dialogs), and the test set has 7,353 questions (1,002 dialogs). The dataset size is between 10,000 and 100,000 examples.",
+      "format": "Each dialog is a sequence of question-answer pairs centered around a Wikipedia section. The teacher's response includes a text span, a 'yes/no' indication, a 'no answer' indication, and an encouragement for follow-up questions.",
+      "annotation": "Questions are answered by a teacher selecting short excerpts (spans) from the Wikipedia text. The training set has one reference answer per question, while the validation and test sets each have five reference answers per question to improve evaluation reliability. For evaluation, questions with a human F1 score lower than 40 are not used, as manual inspection revealed lower quality below this threshold."
+    },
+    "methodology": {
+      "methods": [
+        "Models predict a text span to answer a question about a Wikipedia section, given a dialog history of previous questions and answers.",
+        "The evaluation uses a reading comprehension architecture extended to model dialog context."
+      ],
+      "metrics": [
+        "Word-level F1"
+      ],
+      "calculation": "Precision and recall are computed over overlapping words after removing stopwords. For 'no answer' questions, F1 is 1 if correctly predicted and 0 otherwise. The maximum F1 among all references is computed for each question.",
+      "interpretation": "Higher F1 scores indicate better performance. The best model underperforms humans by 20 F1, indicating significant room for improvement.",
+      "baseline_results": "Paper baselines: The best model underperforms humans by 20 F1, but specific model names and scores are not provided. EEE results: Anthropic-LM v4-s3 52B achieves an F1 score of 0.431.",
+      "validation": "Quality assurance includes using multiple references for development and test questions, filtering out questions with low human F1 scores, and manual inspection of low-quality annotations."
+    },
+    "ethical_and_legal_considerations": {
+      "privacy_and_anonymity": "Not specified",
+      "data_licensing": "MIT License",
+      "consent_procedures": "Dialogs were created by two crowd workers, but the specific compensation or platform details are not provided in the paper.",
+      "compliance_with_regulations": "Not specified"
+    },
+    "possible_risks": [
+      {
+        "category": "Over- or under-reliance",
+        "description": [
+          "In AI-assisted decision-making tasks, reliance measures how much a person trusts (and potentially acts on) a model's output. Over-reliance occurs when a person puts too much trust in a model, accepting a model's output when the model's output is likely incorrect. Under-reliance is the opposite, where the person doesn't trust the model but should."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/over-or-under-reliance.html"
+      },
+      {
+        "category": "Unrepresentative data",
+        "description": [
+          "Unrepresentative data occurs when the training or fine-tuning data is not sufficiently representative of the underlying population or does not measure the phenomenon of interest. Synthetic data might not fully capture the complexity and nuances of real-world data. Causes include possible limitations in the seed data quality, biases in generation methods, or inadequate domain knowledge. Thus, AI models might struggle to generalize effectively to real-world scenarios."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/unrepresentative-data.html"
+      },
+      {
+        "category": "Uncertain data provenance",
+        "description": [
+          "Data provenance refers to the traceability of data (including synthetic data), which includes its ownership, origin, transformations, and generation. Proving that the data is the same as the original source with correct usage terms is difficult without standardized methods for verifying data sources or generation."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/data-provenance.html"
+      },
+      {
+        "category": "Data bias",
+        "description": [
+          "Historical and societal biases might be present in data that are used to train and fine-tune models. Biases can also be inherited from seed data or exacerbated by synthetic data generation methods."
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/data-bias.html"
+      },
+      {
+        "category": "Lack of data transparency",
+        "description": [
+          "Lack of data transparency might be due to insufficient documentation of training or tuning dataset details, including synthetic data generation.\u00a0"
+        ],
+        "url": "https://www.ibm.com/docs/en/watsonx/saas?topic=SSYOK8/wsj/ai-risk-atlas/lack-of-data-transparency.html"
+      }
+    ],
+    "flagged_fields": {},
+    "missing_fields": [
+      "purpose_and_intended_users.audience",
+      "purpose_and_intended_users.out_of_scope_uses",
+      "ethical_and_legal_considerations.privacy_and_anonymity",
+      "ethical_and_legal_considerations.compliance_with_regulations"
+    ],
+    "card_info": {
+      "created_at": "2026-03-17T13:45:24.009083",
+      "llm": "deepseek-ai/DeepSeek-V3.2"
+    }
+  }
+}
