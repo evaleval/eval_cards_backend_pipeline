@@ -832,19 +832,30 @@ def main() -> int:
         "totalModels": len({r["model_id"] for s in eval_summaries for r in s["model_results"]}),
     }
 
-    dev_group: dict[str, list[dict]] = defaultdict(list)
+    # ---- FIX 3: group developers by slug to merge case variants ----
+    # e.g. "anthropic" and "Anthropic" both slugify to "anthropic"
+    dev_group_by_slug: dict[str, list[dict]] = defaultdict(list)
+    dev_name_by_slug: dict[str, str] = {}
     for card in model_cards:
         developer = as_string(card.get("developer") or "Unknown")
-        dev_group[developer].append(card)
+        slug = slugify_developer(developer)
+        dev_group_by_slug[slug].append(card)
+        # Keep the most common name variant (or the capitalized one)
+        existing_name = dev_name_by_slug.get(slug)
+        if existing_name is None or (developer[0:1].isupper() and not existing_name[0:1].isupper()):
+            dev_name_by_slug[slug] = developer
 
-    developers = [{"developer": dev, "model_count": len(models)} for dev, models in dev_group.items()]
+    developers = [
+        {"developer": dev_name_by_slug[slug], "model_count": len(models)}
+        for slug, models in dev_group_by_slug.items()
+    ]
     developers.sort(key=lambda d: (-d["model_count"], as_string(d["developer"])))
 
     dev_summaries = []
-    for dev in developers:
-        developer = dev["developer"]
-        models = sorted(dev_group[developer], key=lambda m: as_string(m.get("model_family_name")))
-        dev_summaries.append({"developer": developer, "slug": slugify_developer(developer), "models": models})
+    for slug, models in dev_group_by_slug.items():
+        developer = dev_name_by_slug[slug]
+        sorted_models = sorted(models, key=lambda m: as_string(m.get("model_family_name")))
+        dev_summaries.append({"developer": developer, "slug": slug, "models": sorted_models})
 
     manifest = {
         "generated_at": started_at,
