@@ -13,7 +13,7 @@ from typing import Any
 from huggingface_hub import HfApi, HfFileSystem, hf_hub_download, snapshot_download
 
 
-DATASET_REPO = "evijit/ev_card_be"
+DATASET_REPO = "evaleval/card_backend"
 EEE_DATASET_REPO = "evaleval/EEE_datastore"
 EEE_DATASET_RAW_BASE = f"https://huggingface.co/datasets/{EEE_DATASET_REPO}/raw/main"
 CONFIG_VERSION = 1
