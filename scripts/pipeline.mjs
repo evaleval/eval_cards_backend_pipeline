@@ -35,16 +35,25 @@ const DEFAULT_CONFIG_BATCH_SIZE = 4;
 const DATASET_REPO = { type: 'dataset', name: 'evijit/ev_card_be' };
 const CONFIG_VERSION = 1;
 const VERSION_SUFFIX_REGEX = /^(.*?)-((?:19|20)\d{6})(?:-(.+))?$/;
+const EEE_DATASET_REPO = 'evaleval/EEE_datastore';
+const EEE_DATASET_RESOLVE_BASE = `https://huggingface.co/datasets/${EEE_DATASET_REPO}/resolve/main`;
+const EEE_DATASET_TREE_API_BASE = `https://huggingface.co/api/datasets/${EEE_DATASET_REPO}/tree/main`;
+const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_MAX_RETRIES = 3;
+const REQUEST_RETRY_BASE_DELAY_MS = 750;
+const JSON_LOAD_CHUNK_SIZE = 250;
 
 async function main() {
   const startedAt = new Date().toISOString();
   const dryRun = process.argv.includes('--dry-run');
   const configBatchSize = parsePositiveInt(process.env.CONFIG_BATCH_SIZE, DEFAULT_CONFIG_BATCH_SIZE);
+  const activeConfigs = getActiveConfigs();
 
   await ensureCleanOutputDir();
 
   const metadata = await loadBenchmarkMetadata();
-  const { evaluations, skippedConfigs } = await loadAllEvaluations({ batchSize: configBatchSize });
+  logInfo('metadata.loaded', { benchmark_card_count: metadata.cards.length, metadata_key_count: metadata.lookup.size });
+  const { evaluations, skippedConfigs } = await loadAllEvaluations({ batchSize: configBatchSize, configs: activeConfigs });
 
   // Load instance-level data only in production (skip in dry-run for speed)
   if (!dryRun) {
@@ -67,8 +76,16 @@ async function main() {
     config_version: CONFIG_VERSION,
     skipped_config_count: skippedConfigs.length,
     skipped_configs: skippedConfigs,
-    source_config_count: EEE_CONFIGS.length,
+    source_config_count: activeConfigs.length,
   };
+
+  logInfo('pipeline.summary', {
+    dry_run: dryRun,
+    evaluations_loaded: evaluations.length,
+    model_count: modelCards.length,
+    eval_count: evalSummaries.length,
+    skipped_config_count: skippedConfigs.length,
+  });
 
   await writeOutputFiles({
     modelCards,
@@ -134,7 +151,7 @@ async function loadBenchmarkMetadata() {
   return { cards, lookup, flatMap };
 }
 
-async function loadAllEvaluations({ batchSize }) {
+async function loadAllEvaluations({ batchSize, configs }) {
   const connection = await DuckDBConnection.create();
   const skippedConfigs = [];
   const evaluations = [];
@@ -145,13 +162,32 @@ async function loadAllEvaluations({ batchSize }) {
     console.warn(`DuckDB httpfs extension init warning: ${error.message}`);
   }
 
-  for (let index = 0; index < EEE_CONFIGS.length; index += batchSize) {
-    const batch = EEE_CONFIGS.slice(index, index + batchSize);
+  for (let index = 0; index < configs.length; index += batchSize) {
+    const batch = configs.slice(index, index + batchSize);
+
+    logInfo('config.batch.start', {
+      batch_index: Math.floor(index / batchSize),
+      batch_size: batch.length,
+      configs: batch,
+    });
+
     const results = await Promise.all(batch.map(async (config) => {
       try {
-        const rows = await loadConfigRows(connection, config);
+        const startedAt = Date.now();
+        const { rows, discoveredFiles, discoveryPages } = await loadConfigRows(connection, config);
+        logInfo('config.load.ok', {
+          config,
+          discovered_data_json_files: discoveredFiles.length,
+          discovery_pages: discoveryPages,
+          row_count: rows.length,
+          duration_ms: Date.now() - startedAt,
+        });
         return { config, rows };
       } catch (error) {
+        logInfo('config.load.error', {
+          config,
+          message: String(error?.message || error),
+        });
         return { config, error };
       }
     }));
@@ -165,27 +201,192 @@ async function loadAllEvaluations({ batchSize }) {
 
       evaluations.push(...result.rows.map(mapDuckDbRowToEvaluation));
     }
+
+    logInfo('config.batch.done', {
+      batch_index: Math.floor(index / batchSize),
+      cumulative_evaluations: evaluations.length,
+      cumulative_skipped: skippedConfigs.length,
+    });
   }
 
   connection.closeSync();
   return { evaluations, skippedConfigs };
 }
 
+function getActiveConfigs() {
+  const limit = parsePositiveInt(process.env.CONFIG_LIMIT, EEE_CONFIGS.length);
+  return EEE_CONFIGS.slice(0, Math.max(1, Math.min(limit, EEE_CONFIGS.length)));
+}
+
 async function loadConfigRows(connection, config) {
-  const url = `https://huggingface.co/api/datasets/evaleval/EEE_datastore/parquet/${config}/train/0.parquet`;
-  const sql = `
-    SELECT
-      schema_version,
-      evaluation_id,
-      retrieved_timestamp,
-      to_json(source_metadata) AS source_metadata_json,
-      to_json(eval_library) AS eval_library_json,
-      to_json(model_info) AS model_info_json,
-      to_json(evaluation_results) AS evaluation_results_json
-    FROM read_parquet('${url}')
-  `;
-  const reader = await connection.runAndReadAll(sql);
-  return rowsFromReader(reader);
+  let discoveredFiles = [];
+  let discoveryPages = 0;
+  let discoveryError = null;
+
+  try {
+    const discovery = await listDataJsonFilesForConfig(config);
+    discoveredFiles = discovery.files;
+    discoveryPages = discovery.pages;
+  } catch (error) {
+    discoveryError = String(error?.message || error);
+  }
+
+  logInfo('config.discovery', {
+    config,
+    data_json_files_found: discoveredFiles.length,
+    discovery_pages: discoveryPages,
+    discovery_error: discoveryError,
+  });
+
+  if (!discoveredFiles.length) {
+    throw new Error(`No JSON files discovered under data/${config}`);
+  }
+
+  const urls = discoveredFiles.map((entry) => `${EEE_DATASET_RESOLVE_BASE}/${entry}`);
+  const rows = [];
+
+  for (let offset = 0; offset < urls.length; offset += JSON_LOAD_CHUNK_SIZE) {
+    const chunk = urls.slice(offset, offset + JSON_LOAD_CHUNK_SIZE);
+    const sql = `
+      SELECT
+        schema_version,
+        evaluation_id,
+        retrieved_timestamp,
+        to_json(source_metadata) AS source_metadata_json,
+        to_json(eval_library) AS eval_library_json,
+        to_json(model_info) AS model_info_json,
+        to_json(evaluation_results) AS evaluation_results_json,
+        filename AS source_record_url
+      FROM read_json_auto(${toSqlStringArray(chunk)}, filename = true)
+    `;
+    const reader = await connection.runAndReadAll(sql);
+    rows.push(...rowsFromReader(reader));
+  }
+
+  return {
+    rows,
+    discoveredFiles,
+    discoveryPages,
+  };
+}
+
+async function listDataJsonFilesForConfig(config) {
+  const apiPath = `data/${config}`;
+  let nextUrl = `${EEE_DATASET_TREE_API_BASE}/${apiPath}?recursive=true&expand=true`;
+  const files = [];
+  let pages = 0;
+
+  while (nextUrl) {
+    const { body, headers } = await fetchJsonWithRetry(nextUrl);
+    const entries = Array.isArray(body) ? body : [];
+    pages += 1;
+
+    for (const entry of entries) {
+      const entryPath = asString(entry?.path);
+      if (entryPath.endsWith('.json') && !entryPath.endsWith('.jsonl')) {
+        files.push(entryPath);
+      }
+    }
+
+    nextUrl = parseNextLink(headers.link || headers.Link || '');
+  }
+
+  files.sort((left, right) => left.localeCompare(right));
+  return { files, pages };
+}
+
+function toSqlStringArray(values) {
+  return `[${values.map((value) => `'${asString(value).replace(/'/g, "''")}'`).join(', ')}]`;
+}
+
+async function fetchJsonWithRetry(url) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= REQUEST_MAX_RETRIES; attempt += 1) {
+    try {
+      const { text, headers } = await fetchText(url);
+      return {
+        body: JSON.parse(text),
+        headers,
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt < REQUEST_MAX_RETRIES) {
+        await delay(REQUEST_RETRY_BASE_DELAY_MS * attempt);
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+async function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      timeout: REQUEST_TIMEOUT_MS,
+      headers: {
+        'user-agent': 'eval-cards-backend-pipeline/1.0',
+        accept: 'application/json',
+      },
+    }, (response) => {
+      const statusCode = response.statusCode ?? 0;
+      let body = '';
+
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+
+      response.on('end', () => {
+        if (statusCode >= 200 && statusCode < 300) {
+          resolve({ text: body, headers: response.headers || {} });
+          return;
+        }
+
+        reject(new Error(`HTTP ${statusCode} for ${url}`));
+      });
+    });
+
+    request.on('timeout', () => {
+      request.destroy(new Error(`Timeout fetching ${url}`));
+    });
+
+    request.on('error', (error) => {
+      reject(error);
+    });
+  });
+}
+
+function parseNextLink(linkHeader) {
+  const header = asString(linkHeader);
+  if (!header) {
+    return null;
+  }
+
+  const parts = header.split(',').map((part) => part.trim());
+  for (const part of parts) {
+    if (!part.includes('rel="next"')) {
+      continue;
+    }
+    const match = part.match(/<([^>]+)>/);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return null;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function logInfo(event, details = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    event,
+    ...details,
+  };
+  console.log(`[pipeline] ${JSON.stringify(payload)}`);
 }
 
 function rowsFromReader(reader) {
@@ -212,8 +413,18 @@ function mapDuckDbRowToEvaluation(row) {
     eval_library: evalLibrary,
     model_info: modelInfo,
     generation_config: firstResult?.generation_config ?? null,
+    source_record_url: asString(row.source_record_url) || null,
+    detailed_evaluation_results: deriveJsonlUrl(asString(row.source_record_url)),
     evaluation_results: normalizeEvaluationResults(evaluationResults),
   };
+}
+
+function deriveJsonlUrl(sourceRecordUrl) {
+  const url = asString(sourceRecordUrl);
+  if (!url || !url.endsWith('.json')) {
+    return null;
+  }
+  return `${url.slice(0, -5)}.jsonl`;
 }
 
 function normalizeEvaluationResults(results) {
@@ -230,11 +441,10 @@ function normalizeEvaluationResults(results) {
 }
 
 async function loadInstanceLevelData(evaluations) {
-  // Load instance-level data from EEE_datastore
-  // Instance data is stored in JSONL files, one per evaluation
-  // Process in parallel batches to avoid overwhelming the network
-  
+  // Load companion JSONL files for records discovered in data/*.
   const batchSize = 10;
+  let withInstanceData = 0;
+  let missingInstanceData = 0;
   
   for (let i = 0; i < evaluations.length; i += batchSize) {
     const batch = evaluations.slice(i, i + batchSize);
@@ -244,80 +454,59 @@ async function loadInstanceLevelData(evaluations) {
         const instanceData = await fetchInstanceData(evaluation);
         if (instanceData) {
           evaluation.instance_level_data = instanceData;
+          withInstanceData += 1;
+        } else {
+          missingInstanceData += 1;
         }
-      } catch (error) {
-        // Silently skip evaluations without instance data
-        // This is normal - not all evaluations have per-sample data
+      } catch {
+        missingInstanceData += 1;
       }
     });
     
     await Promise.all(promises);
+
+    logInfo('instance.batch.progress', {
+      processed: Math.min(i + batch.length, evaluations.length),
+      total: evaluations.length,
+      with_instance_data: withInstanceData,
+      missing_instance_data: missingInstanceData,
+    });
   }
+
+  logInfo('instance.load.summary', {
+    total: evaluations.length,
+    with_instance_data: withInstanceData,
+    missing_instance_data: missingInstanceData,
+  });
 }
 
 async function fetchInstanceData(evaluation) {
-  // Try to fetch instance-level data from HF dataset
-  // Instance data is typically referenced via evaluation_id components
-  const config = evaluation.evaluation_id?.split('/')[0];
-  const modelId = evaluation.evaluation_id?.split('/')[1];
-  const timestamp = evaluation.evaluation_id?.split('/')[2];
-  
-  if (!config || !modelId || !timestamp) {
+  const jsonlUrl = evaluation?.detailed_evaluation_results;
+  if (!jsonlUrl) {
     return null;
   }
-  
-  // Try multiple patterns for finding instance data in HF dataset
-  const patterns = [
-    `eee_datastore/${config}/instances/${timestamp}.jsonl`,
-    `${config}/instances/${timestamp}.jsonl`,
-    `instances/${config}/${timestamp}.jsonl`,
-    `${config}/${timestamp}/instances.jsonl`,
-  ];
-  
-  for (const pattern of patterns) {
-    try {
-      const url = `https://huggingface.co/datasets/evaleval/EEE_datastore/resolve/main/${pattern}`;
-      const data = await fetchJsonlFile(url);
-      if (data && Array.isArray(data) && data.length > 0) {
-        return {
-          interaction_type: inferInteractionType(data),
-          instance_count: data.length,
-          instances: data,
-        };
-      }
-    } catch (error) {
-      // Try next pattern
-      continue;
+
+  try {
+    const data = await fetchJsonlFile(jsonlUrl);
+    if (data && Array.isArray(data) && data.length > 0) {
+      return {
+        interaction_type: inferInteractionType(data),
+        instance_count: data.length,
+        source_url: jsonlUrl,
+        instances: data,
+      };
     }
+  } catch {
+    return null;
   }
   
   return null;
 }
 
 async function fetchJsonlFile(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, { timeout: 5000 }, (res) => {
-      if (res.statusCode !== 200) {
-        resolve(null);
-        return;
-      }
-      
-      let data = '';
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      
-      res.on('end', () => {
-        try {
-          const lines = data.trim().split('\n').filter(Boolean);
-          const instances = lines.map(line => JSON.parse(line)).filter(Boolean);
-          resolve(instances);
-        } catch (error) {
-          reject(error);
-        }
-      });
-    }).on('error', reject);
-  });
+  const text = await fetchText(url);
+  const lines = text.trim().split('\n').filter(Boolean);
+  return lines.map((line) => safeJsonParse(line, null)).filter(Boolean);
 }
 
 function inferInteractionType(instances) {
