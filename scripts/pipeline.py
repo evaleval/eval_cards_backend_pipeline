@@ -1227,6 +1227,109 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def iter_output_relative_files(root_dir: Path = OUTPUT_DIR) -> list[str]:
+    if not root_dir.exists():
+        return []
+    return sorted(
+        str(path.relative_to(root_dir)).replace(os.sep, "/")
+        for path in root_dir.rglob("*")
+        if path.is_file()
+    )
+
+
+def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
+    errors: list[str] = []
+
+    eval_list_path = output_dir / "eval-list.json"
+    evals_dir = output_dir / "evals"
+    models_dir = output_dir / "models"
+
+    eval_summary_ids: set[str] = set()
+    if eval_list_path.exists():
+        eval_list = json.loads(eval_list_path.read_text(encoding="utf-8"))
+        eval_summary_ids = {
+            as_string(item.get("eval_summary_id"))
+            for item in (eval_list.get("evals") or [])
+            if as_string(item.get("eval_summary_id"))
+        }
+
+    published_eval_files = {
+        path.stem
+        for path in evals_dir.glob("*.json")
+        if path.is_file()
+    }
+    if eval_summary_ids and published_eval_files != eval_summary_ids:
+        missing_files = sorted(eval_summary_ids - published_eval_files)
+        extra_files = sorted(published_eval_files - eval_summary_ids)
+        if missing_files:
+            errors.append(f"Missing eval files for eval-list entries: {missing_files[:10]}")
+        if extra_files:
+            errors.append(f"Extra eval files not present in eval-list: {extra_files[:10]}")
+
+    required_eval_keys = [
+        "benchmark_family_key",
+        "benchmark_family_name",
+        "benchmark_parent_key",
+        "benchmark_parent_name",
+        "benchmark_leaf_key",
+        "benchmark_leaf_name",
+    ]
+
+    for eval_path in sorted(evals_dir.glob("*.json")):
+        parsed = json.loads(eval_path.read_text(encoding="utf-8"))
+        missing_keys = [key for key in required_eval_keys if not parsed.get(key)]
+        if missing_keys:
+            errors.append(f"{eval_path.name} missing top-level hierarchy keys: {missing_keys}")
+
+        for metric in parsed.get("metrics", []):
+            for row in metric.get("model_results", []):
+                detailed_url = as_string(row.get("detailed_evaluation_results"))
+                if detailed_url and not detailed_url.startswith(f"{DATASET_RESOLVE_BASE}/instances/"):
+                    errors.append(f"{eval_path.name} has non-pipeline detailed_evaluation_results URL: {detailed_url}")
+                instance_data = row.get("instance_level_data") or {}
+                source_url = as_string(instance_data.get("source_url"))
+                if source_url and not source_url.startswith(f"{DATASET_RESOLVE_BASE}/instances/"):
+                    errors.append(f"{eval_path.name} has non-pipeline instance_level_data.source_url: {source_url}")
+
+        for subtask in parsed.get("subtasks", []):
+            for metric in subtask.get("metrics", []):
+                for row in metric.get("model_results", []):
+                    detailed_url = as_string(row.get("detailed_evaluation_results"))
+                    if detailed_url and not detailed_url.startswith(f"{DATASET_RESOLVE_BASE}/instances/"):
+                        errors.append(f"{eval_path.name} has non-pipeline detailed_evaluation_results URL: {detailed_url}")
+                    instance_data = row.get("instance_level_data") or {}
+                    source_url = as_string(instance_data.get("source_url"))
+                    if source_url and not source_url.startswith(f"{DATASET_RESOLVE_BASE}/instances/"):
+                        errors.append(f"{eval_path.name} has non-pipeline instance_level_data.source_url: {source_url}")
+
+    for model_path in sorted(models_dir.glob("*.json")):
+        parsed = json.loads(model_path.read_text(encoding="utf-8"))
+        if "hierarchy_by_category" not in parsed:
+            errors.append(f"{model_path.name} missing hierarchy_by_category")
+
+    if errors:
+        raise RuntimeError("Output contract validation failed:\n- " + "\n- ".join(errors[:50]))
+
+
+def delete_stale_remote_files(api: HfApi, token: str, output_dir: Path = OUTPUT_DIR) -> None:
+    local_files = set(iter_output_relative_files(output_dir))
+    remote_files = set(api.list_repo_files(DATASET_REPO, repo_type="dataset", token=token))
+    stale_files = sorted(remote_files - local_files)
+    if not stale_files:
+        return
+
+    chunk_size = 200
+    for index in range(0, len(stale_files), chunk_size):
+        chunk = stale_files[index : index + chunk_size]
+        api.delete_files(
+            repo_id=DATASET_REPO,
+            repo_type="dataset",
+            token=token,
+            delete_patterns=chunk,
+            commit_message=f"Remove stale pipeline artifacts ({index + 1}-{index + len(chunk)})",
+        )
+
+
 def filter_metric_summary_for_model(metric_summary: dict, family_id: str) -> dict | None:
     model_results = [
         row
@@ -1923,6 +2026,8 @@ def upload_output() -> None:
         api.create_repo(repo_id=DATASET_REPO, repo_type="dataset", private=False, exist_ok=True)
     except Exception as error:
         print(f"create_repo warning: {error}", file=sys.stderr)
+
+    delete_stale_remote_files(api, token, OUTPUT_DIR)
 
     api.upload_large_folder(
         repo_id=DATASET_REPO,
@@ -2692,6 +2797,8 @@ def main() -> int:
         write_json(OUTPUT_DIR / "evals" / f"{summary['eval_summary_id']}.json", summary)
     for summary in dev_summaries:
         write_json(OUTPUT_DIR / "developers" / f"{summary['slug']}.json", {"developer": summary["developer"], "models": summary["models"]})
+
+    validate_output_contract(OUTPUT_DIR)
 
     print(
         f"[pipeline] {json.dumps({'event': 'pipeline.summary', 'dry_run': dry_run, 'evaluations_loaded': len(evaluations), 'model_count': len(model_cards), 'eval_count': len(eval_summaries), 'skipped_config_count': len(skipped_configs)})}"
