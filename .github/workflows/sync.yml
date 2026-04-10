@@ -36,7 +36,7 @@ jobs:
         run: python scripts/pipeline.py
 
       - name: Upload manifest as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: pipeline-manifest
           path: output/manifest.json
