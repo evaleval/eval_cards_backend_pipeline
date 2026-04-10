@@ -237,8 +237,14 @@ def main() -> int:
                         "metrics": {},
                         "slices": {},
                         "metric_sources": Counter(),
+                        "is_summary_score": False,
                     },
                 )
+                # Mark as summary score if the normalized result says so.
+                # We only upgrade (False→True), never downgrade, since all results
+                # for this leaf key should agree.
+                if normalized.get("is_summary_score"):
+                    benchmark_node["is_summary_score"] = True
                 # Check for a card matching this leaf benchmark
                 if not benchmark_node["has_card"]:
                     leaf_card = pipeline.lookup_benchmark_card(
@@ -284,6 +290,7 @@ def main() -> int:
         standalone_benchmarks = []
         for composite in sorted(family["composites"].values(), key=lambda item: item["display_name"].lower()):
             benchmarks = []
+            summary_benchmark_nodes = []
             for single in sorted(composite["benchmarks"].values(), key=lambda item: item["display_name"].lower()):
                 single_benchmark_count += 1
                 metrics = sorted(single["metrics"].values(), key=lambda item: item["display_name"].lower())
@@ -325,23 +332,44 @@ def main() -> int:
                         }
                     )
 
-                benchmarks.append(
-                    {
-                        "key": single["key"],
-                        "display_name": single["display_name"],
-                        "has_card": single.get("has_card", False),
-                        "tags": single.get("tags", _empty_tags()),
-                        "slices": slices,
-                        "metrics": [
-                            {
-                                "key": metric["key"],
-                                "display_name": metric["display_name"],
-                                "sources": sorted(metric["sources"]),
-                            }
-                            for metric in metrics
-                        ],
-                    }
-                )
+                bm_node = {
+                    "key": single["key"],
+                    "display_name": single["display_name"],
+                    "has_card": single.get("has_card", False),
+                    "tags": single.get("tags", _empty_tags()),
+                    "slices": slices,
+                    "metrics": [
+                        {
+                            "key": metric["key"],
+                            "display_name": metric["display_name"],
+                            "sources": sorted(metric["sources"]),
+                        }
+                        for metric in metrics
+                    ],
+                }
+                if single.get("is_summary_score"):
+                    summary_benchmark_nodes.append(bm_node)
+                else:
+                    benchmarks.append(bm_node)
+
+            # If there are real sub-benchmarks alongside summary nodes, keep only
+            # the real benchmarks in the list and surface the summary eval IDs.
+            # If ALL nodes are summaries (e.g. sciarena where every metric is
+            # "overall_*"), treat them as regular benchmarks so the hierarchy
+            # is not left empty.
+            if benchmarks and summary_benchmark_nodes:
+                # Compute the eval_summary_id each summary benchmark maps to.
+                comp_norm_key = pipeline.normalize_benchmark_key(composite["key"])
+                summary_eval_ids = [
+                    pipeline.slugify(f"{comp_norm_key}__{s['key']}")
+                    if s["key"] != comp_norm_key
+                    else pipeline.slugify(comp_norm_key)
+                    for s in summary_benchmark_nodes
+                ]
+            else:
+                # Either no summaries, or ONLY summaries — keep everything as normal benchmarks.
+                benchmarks = benchmarks + summary_benchmark_nodes
+                summary_eval_ids = []
             has_card = composite.get("has_card", False) or any(b.get("has_card") for b in benchmarks)
             comp_category = composite.get("category", "other")
             # Bubble tags up: merge all benchmark tags into composite-level tags
@@ -360,6 +388,7 @@ def main() -> int:
                     bm["has_card"] = has_card
                     bm["tags"] = composite_tags
                     bm["category"] = comp_category
+                    bm["summary_eval_ids"] = summary_eval_ids
                     standalone_benchmarks.append(bm)
                 else:
                     # Names differ (e.g. "Helm mmlu" vs "Mmlu") — keep
@@ -374,6 +403,7 @@ def main() -> int:
                             "category": comp_category,
                             "slices": bm.get("slices", []),
                             "metrics": bm.get("metrics", []),
+                            "summary_eval_ids": summary_eval_ids,
                         }
                     )
                 continue
@@ -386,6 +416,7 @@ def main() -> int:
                     "tags": composite_tags,
                     "category": comp_category,
                     "benchmarks": benchmarks,
+                    "summary_eval_ids": summary_eval_ids,
                 }
             )
         # Flatten redundant nesting when a family wraps a single identical child.
@@ -415,6 +446,7 @@ def main() -> int:
                     "composites": [],
                     "slices": sb.get("slices", []),
                     "metrics": sb.get("metrics", []),
+                    "summary_eval_ids": sb.get("summary_eval_ids", []),
                 }
             )
         elif len(composites) == 1 and not standalone_benchmarks:
@@ -427,6 +459,7 @@ def main() -> int:
                 "category": comp.get("category", family_category),
                 "standalone_benchmarks": [],
                 "composites": [],
+                "summary_eval_ids": comp.get("summary_eval_ids", []),
             }
             if "benchmarks" in comp:
                 promoted["benchmarks"] = comp["benchmarks"]
