@@ -17,6 +17,7 @@ DATASET_REPO = "evaleval/card_backend"
 EEE_DATASET_REPO = "evaleval/EEE_datastore"
 BENCHMARK_METADATA_DATASET_REPO = "evaleval/auto-benchmarkcards"
 EEE_DATASET_RAW_BASE = f"https://huggingface.co/datasets/{EEE_DATASET_REPO}/raw/main"
+DATASET_RESOLVE_BASE = f"https://huggingface.co/datasets/{DATASET_REPO}/resolve/main"
 CONFIG_VERSION = 1
 OUTPUT_DIR = Path("output")
 DEFAULT_LOCAL_DATASET_DIR = ".cache/eee_datastore"
@@ -922,6 +923,132 @@ def maybe_load_instance_data(record: dict, local_dataset_dir: str | None, hf_tok
     return None
 
 
+def read_text_from_dataset_url(url: str, local_dataset_dir: str | None, hf_token: str | None) -> str | None:
+    dataset_path = ""
+    if url.startswith(f"{EEE_DATASET_RAW_BASE}/"):
+        dataset_path = url[len(EEE_DATASET_RAW_BASE) + 1 :]
+
+    try:
+        if local_dataset_dir and dataset_path:
+            return (Path(local_dataset_dir) / dataset_path).read_text(encoding="utf-8")
+        if dataset_path:
+            local_path = hf_hub_download(
+                repo_id=EEE_DATASET_REPO,
+                filename=dataset_path,
+                repo_type="dataset",
+                token=hf_token,
+            )
+            return Path(local_path).read_text(encoding="utf-8")
+    except Exception:
+        return None
+    return None
+
+
+def dataset_resolve_url(relative_path: str) -> str:
+    return f"{DATASET_RESOLVE_BASE}/{relative_path.lstrip('/')}"
+
+
+def build_instance_artifact_relative_path(evaluation: dict) -> str:
+    route_id = as_string((evaluation.get("model_info") or {}).get("model_route_id") or "unknown")
+    evaluation_key = slugify(evaluation.get("evaluation_id") or evaluation.get("source_record_url") or "instance")
+    return f"instances/{route_id}/{evaluation_key}.jsonl"
+
+
+def build_evaluation_hierarchy_payload(evaluation: dict) -> dict:
+    category = infer_category_from_benchmark(as_string(evaluation.get("benchmark")), evaluation.get("benchmark_card"))
+    model_info = evaluation.get("model_info") or {}
+    return {
+        "category": category,
+        "benchmark": evaluation.get("benchmark"),
+        "model_family_id": as_string(model_info.get("family_id")),
+        "model_route_id": as_string(model_info.get("model_route_id")),
+        "eval_summary_ids": evaluation.get("eval_summary_ids", []),
+    }
+
+
+def build_result_hierarchy_payload(evaluation: dict, result: dict) -> dict:
+    normalized = result.get("normalized_result") or {}
+    return {
+        **build_evaluation_hierarchy_payload(evaluation),
+        "eval_summary_id": get_eval_group_id(evaluation, result),
+        "metric_summary_id": get_metric_summary_id(evaluation, result),
+        "benchmark_family_key": normalized.get("benchmark_family_key"),
+        "benchmark_family_name": normalized.get("benchmark_family_name"),
+        "benchmark_parent_key": normalized.get("benchmark_parent_key"),
+        "benchmark_parent_name": normalized.get("benchmark_parent_name"),
+        "benchmark_leaf_key": normalized.get("benchmark_leaf_key"),
+        "benchmark_leaf_name": normalized.get("benchmark_leaf_name"),
+        "benchmark_component_key": normalized.get("benchmark_component_key"),
+        "benchmark_component_name": normalized.get("benchmark_component_name"),
+        "slice_key": normalized.get("slice_key"),
+        "slice_name": normalized.get("slice_name"),
+        "metric_key": normalized.get("metric_key"),
+        "metric_name": normalized.get("metric_name"),
+        "metric_source": normalized.get("metric_source"),
+        "display_name": normalized.get("display_name"),
+        "is_summary_score": bool(normalized.get("is_summary_score")),
+    }
+
+
+def find_matching_result_for_instance_row(evaluation: dict, row: dict) -> dict | None:
+    results = evaluation.get("evaluation_results") or []
+    if not results:
+        return None
+
+    evaluation_result_id = as_string(row.get("evaluation_result_id")).strip()
+    if evaluation_result_id:
+        for result in results:
+            if as_string(result.get("evaluation_result_id")).strip() == evaluation_result_id:
+                return result
+
+    evaluation_name = as_string(row.get("evaluation_name")).strip()
+    if evaluation_name:
+        matches = []
+        for result in results:
+            normalized = result.get("normalized_result") or {}
+            candidate_names = {
+                as_string(result.get("evaluation_name")).strip(),
+                as_string(normalized.get("raw_evaluation_name")).strip(),
+                as_string(normalized.get("display_name")).strip(),
+                as_string(normalized.get("benchmark_leaf_name")).strip(),
+            } - {""}
+            if evaluation_name in candidate_names:
+                matches.append(result)
+        if len(matches) == 1:
+            return matches[0]
+
+    if len(results) == 1:
+        return results[0]
+    return None
+
+
+def annotate_instance_row(evaluation: dict, row: dict) -> dict:
+    annotated = dict(row)
+    matched_result = find_matching_result_for_instance_row(evaluation, annotated)
+    if matched_result is not None:
+        annotated["hierarchy"] = build_result_hierarchy_payload(evaluation, matched_result)
+    else:
+        annotated["hierarchy"] = build_evaluation_hierarchy_payload(evaluation)
+        if len(annotated["hierarchy"].get("eval_summary_ids", [])) == 1:
+            annotated["hierarchy"]["eval_summary_id"] = annotated["hierarchy"]["eval_summary_ids"][0]
+    return annotated
+
+
+def transform_instance_artifact_text(evaluation: dict, artifact_text: str) -> str:
+    transformed_lines = []
+    for line in artifact_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            row = json.loads(stripped)
+        except Exception:
+            transformed_lines.append(stripped)
+            continue
+        transformed_lines.append(json.dumps(annotate_instance_row(evaluation, row), ensure_ascii=False))
+    return "\n".join(transformed_lines) + ("\n" if transformed_lines else "")
+
+
 def normalize_model_info(model_info: dict) -> dict:
     raw_id = as_string(model_info.get("id") or model_info.get("name") or "unknown/unknown")
     fallback_developer = as_string(model_info.get("developer") or raw_id.split("/")[0] or "unknown")
@@ -1092,11 +1219,108 @@ def clean_output_dir() -> None:
     (OUTPUT_DIR / "models").mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / "evals").mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / "developers").mkdir(parents=True, exist_ok=True)
+    (OUTPUT_DIR / "instances").mkdir(parents=True, exist_ok=True)
 
 
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def filter_metric_summary_for_model(metric_summary: dict, family_id: str) -> dict | None:
+    model_results = [
+        row
+        for row in metric_summary.get("model_results", [])
+        if as_string(row.get("model_id")) == family_id
+    ]
+    if not model_results:
+        return None
+
+    filtered = {key: value for key, value in metric_summary.items() if key != "model_results"}
+    filtered["model_results"] = model_results
+    filtered["models_count"] = len(model_results)
+    filtered["top_score"] = model_results[0].get("score") if model_results else None
+    return filtered
+
+
+def filter_eval_summary_for_model(summary: dict, family_id: str) -> dict | None:
+    root_metrics = []
+    for metric in summary.get("metrics", []):
+        filtered_metric = filter_metric_summary_for_model(metric, family_id)
+        if filtered_metric:
+            root_metrics.append(filtered_metric)
+
+    subtasks = []
+    for subtask in summary.get("subtasks", []):
+        subtask_metrics = []
+        for metric in subtask.get("metrics", []):
+            filtered_metric = filter_metric_summary_for_model(metric, family_id)
+            if filtered_metric:
+                subtask_metrics.append(filtered_metric)
+        if subtask_metrics:
+            subtasks.append(
+                {
+                    **subtask,
+                    "metrics": subtask_metrics,
+                    "metrics_count": len(subtask_metrics),
+                    "metric_names": [as_string(metric.get("metric_name")) for metric in subtask_metrics if as_string(metric.get("metric_name"))],
+                }
+            )
+
+    if not root_metrics and not subtasks:
+        return None
+
+    filtered = {
+        key: value
+        for key, value in summary.items()
+        if key not in {"metrics", "subtasks", "instance_data", "models_count", "top_score"}
+    }
+    filtered["metrics"] = root_metrics
+    filtered["subtasks"] = subtasks
+    filtered["subtasks_count"] = len(subtasks)
+    filtered["metrics_count"] = len(root_metrics) + sum(len(subtask.get("metrics", [])) for subtask in subtasks)
+    filtered["metric_names"] = sorted(
+        {
+            as_string(metric.get("metric_name"))
+            for metric in root_metrics
+        }
+        | {
+            as_string(metric.get("metric_name"))
+            for subtask in subtasks
+            for metric in subtask.get("metrics", [])
+        }
+        - {""}
+    )
+    primary_metrics = root_metrics or (subtasks[0].get("metrics", []) if subtasks else [])
+    filtered["primary_metric_name"] = as_string(primary_metrics[0].get("metric_name")) if primary_metrics else None
+    filtered["models_count"] = 1
+    filtered["top_score"] = primary_metrics[0].get("top_score") if len(primary_metrics) == 1 and not subtasks else None
+
+    instance_urls: set[str] = set()
+    models_with_instance = 0
+    for metric in root_metrics:
+        for row in metric.get("model_results", []):
+            url = as_string(row.get("detailed_evaluation_results"))
+            if url:
+                instance_urls.add(url)
+            if row.get("instance_level_data") is not None:
+                models_with_instance += 1
+    for subtask in subtasks:
+        for metric in subtask.get("metrics", []):
+            for row in metric.get("model_results", []):
+                url = as_string(row.get("detailed_evaluation_results"))
+                if url:
+                    instance_urls.add(url)
+                if row.get("instance_level_data") is not None:
+                    models_with_instance += 1
+
+    filtered["instance_data"] = {
+        "available": bool(instance_urls),
+        "url_count": len(instance_urls),
+        "sample_urls": sorted(instance_urls)[:3],
+        "models_with_loaded_instances": models_with_instance,
+    }
+    return filtered
 
 
 def generate_readme(manifest: dict, eval_list: dict, benchmark_metadata: dict, hierarchy_path: Path | None = None) -> str:
@@ -1213,6 +1437,8 @@ Generated by the [eval-cards backend pipeline](https://github.com/evaleval/eval_
 ├── peer-ranks.json                  # Per-benchmark model rankings (averaged across metrics)
 ├── benchmark-metadata.json          # Benchmark cards (methodology, ethics, etc.)
 ├── developers.json                  # Developer index with model counts
+├── instances/
+│   └── {{model_route_id}}/{{evaluation_id}}.jsonl  # Pipeline-owned instance artifacts with hierarchy keys
 ├── models/
 │   └── {{model_route_id}}.json      # Per-model detail  ({model_count:,} files)
 ├── evals/
@@ -1294,16 +1520,117 @@ is available for many benchmarks. To check and access it:
 
 1. Check `eval-list.json → evals[].instance_data.available` to see if a benchmark has instance data
 2. Load the eval detail: `GET /evals/{{eval_summary_id}}.json`
-3. Each `model_results[]` entry has:
-   - `detailed_evaluation_results`: URL to the JSONL file with instance-level data
-   - `instance_level_data`: Pre-loaded sample instances (when available), containing:
-     - `interaction_type`: "single_turn", "multi_turn", or "non_interactive"
-     - `instance_count`: Total number of instances
-     - `source_url`: Full URL to the JSONL file
-     - `instance_examples`: Up to 5 sample instance rows
+3. Each `model_results[]` entry has these fields:
+    - `detailed_evaluation_results`: URL to the pipeline-owned JSONL file under `instances/...`
+    - `instance_level_data`: Pre-loaded sample instances metadata and examples
+    - `instance_level_data.interaction_type`: `single_turn`, `multi_turn`, or `non_interactive`
+    - `instance_level_data.instance_count`: Total number of instances
+    - `instance_level_data.source_url`: Full URL to the pipeline-owned JSONL file
+    - `instance_level_data.upstream_source_url`: Original JSONL URL in the source dataset
+    - `instance_level_data.instance_examples`: Up to 5 sample instance rows
 
-The instance JSONL files are hosted in the source dataset (`{EEE_DATASET_REPO}`)
-and can be fetched directly via the URL in `detailed_evaluation_results`.
+The instance JSONL files are written into this dataset under `instances/...`.
+Each row is the original sample row augmented with a `hierarchy` object containing
+the same keys used elsewhere in the pipeline, such as `category`, `eval_summary_id`,
+`metric_summary_id`, `benchmark_family_key`, `benchmark_leaf_key`, `slice_key`,
+and `metric_key`.
+
+---
+
+## Frontend Agent Instructions
+
+These instructions are intended for the frontend agent or anyone refactoring the
+frontend data layer. The goal is to consume backend-declared hierarchy directly
+and stop reconstructing benchmark structure with frontend heuristics.
+
+### Canonical Sources
+
+Use these fields as the source of truth:
+
+- `eval-list.json → evals[]`: canonical benchmark list, category assignment, display
+  names, summary-score flags, and sibling summary links
+- `evals/{{eval_summary_id}}.json`: canonical per-benchmark hierarchy for all models
+- `models/{{model_route_id}}.json → hierarchy_by_category`: canonical per-model
+  hierarchy grouped the same way as `eval-list/evals`
+- `model_results[].detailed_evaluation_results`: canonical URL for instance artifacts
+  owned by this dataset
+- `instances/...jsonl → row.hierarchy`: canonical hierarchy keys for each instance row
+
+Treat these fields as compatibility/fallback only:
+
+- `models/{{model_route_id}}.json → evaluations_by_category`
+- `models/{{model_route_id}}.json → evaluation_summaries_by_category`
+- any frontend-only benchmark/category inference such as regexes or
+  `inferCategoryFromBenchmark(...)`
+
+### Required Frontend Changes
+
+1. Replace category inference with backend categories.
+    Read `category` directly from `eval-list`, `evals`, `models/.../hierarchy_by_category`,
+    and `instances/...jsonl → row.hierarchy.category`. Do not re-derive categories from names.
+
+2. Replace benchmark grouping heuristics with backend keys.
+    Use `benchmark_family_key`, `benchmark_parent_key`, `benchmark_leaf_key`,
+    `slice_key`, and `metric_key` as stable grouping identifiers. Use `display_name`
+    and the corresponding `*_name` fields for UI labels.
+
+3. Treat summary scores as rollups, not peer benchmarks.
+    If `is_summary_score` is `true`, render the node as an overall/aggregate score for
+    `summary_score_for`. If `summary_eval_ids` is present on a non-summary benchmark or
+    composite, use those ids to surface the related overall score in the same section.
+
+4. Use `hierarchy_by_category` for model detail pages.
+    This structure is already aligned to the backend hierarchy and includes
+    `eval_summary_id`, benchmark keys, subtasks, metrics, summary-score annotations,
+    and instance availability. The frontend should render this structure directly rather
+    than rebuilding sections from raw `evaluations_by_category` records.
+
+5. Use pipeline-owned instance artifacts.
+    The `detailed_evaluation_results` URL now points to `instances/...` within this
+    dataset. Those rows already include a `hierarchy` object, so benchmark detail pages
+    can attach samples directly to the active benchmark/metric without remapping names.
+
+6. Keep raw upstream links only as provenance.
+    `instance_level_data.upstream_source_url` is for provenance/debugging. It should not
+    be treated as the main fetch target in the UI.
+
+### Suggested Frontend Refactor Plan
+
+1. Data client layer:
+    Make the data client treat `hierarchy_by_category` and `instances/...` as canonical.
+    Remove transforms whose only job is to infer suite/benchmark/category structure.
+
+2. Model detail page:
+    Render `hierarchy_by_category` directly. Each rendered benchmark section should use:
+    `eval_summary_id`, `display_name`, `is_summary_score`, `summary_eval_ids`,
+    `metrics[]`, and `subtasks[]`.
+
+3. Benchmark detail page:
+    Use `evals/{{eval_summary_id}}.json` for model comparisons and use
+    `model_results[].detailed_evaluation_results` for samples. Match sample rows via
+    `row.hierarchy.eval_summary_id` and `row.hierarchy.metric_summary_id`.
+
+4. Summary-score UI:
+    Render overall/aggregate scores in a visually distinct area. They should appear as
+    rollups attached to their parent suite, not as sibling leaf benchmarks alongside
+    real tasks like `Corporate Lawyer` or `DIY`.
+
+5. Cleanup pass:
+    After the refactor is stable, remove frontend code paths that reconstruct hierarchy
+    from names or raw records. Likely cleanup targets include modules such as
+    `hf-data.ts`, `model-data.ts`, `eval-processing.ts`, and `benchmark-detail.tsx`.
+
+### Rendering Rules
+
+- Prefer backend-provided `display_name` over frontend formatting.
+- Use backend keys for equality/grouping and backend names for labels.
+- If `summary_eval_ids` exists, render the linked summary evals near the relevant
+  parent suite or benchmark.
+- If `is_summary_score` is `true`, do not count the node as a standalone benchmark in
+  breadcrumb logic, hierarchy trees, or benchmark totals.
+- For samples, prefer `row.hierarchy.metric_summary_id` when available; fall back to
+  `row.hierarchy.eval_summary_id` only when the instance artifact does not distinguish
+  between multiple metrics.
 
 ---
 
@@ -1442,6 +1769,22 @@ and can be fetched directly via the URL in `detailed_evaluation_results`.
     "agentic": [ /* evaluation objects */ ],
     "other": [ /* evaluation objects */ ]
   }},
+    "hierarchy_by_category": {{                        // Canonical hierarchy-aligned eval groups for this model
+        "agentic": [
+            {{
+                "eval_summary_id": "apex_agents_corporate_lawyer",
+                "benchmark_family_key": "apex_agents",
+                "benchmark_parent_key": "apex_agents",
+                "benchmark_leaf_key": "corporate_lawyer",
+                "display_name": "Corporate Lawyer",
+                "is_summary_score": false,
+                "summary_eval_ids": ["apex_agents_overall"],
+                "metrics": [{{ "metric_summary_id": "apex_agents_corporate_lawyer_mean_score", "model_results": [{{ "score": 0.71 }}] }}],
+                "subtasks": []
+            }}
+        ]
+    }},
+    "evaluation_summaries_by_category": {{ /* compatibility alias of hierarchy_by_category */ }},
   "total_evaluations": 45,
   "categories_covered": ["agentic", "other"],
   "variants": [ /* variant details */ ]
@@ -1744,6 +2087,42 @@ def main() -> int:
             enriched["normalized_result"] = normalized
             enriched_results.append(enriched)
         evaluation["evaluation_results"] = enriched_results
+
+        evaluation["eval_summary_ids"] = sorted(
+            {
+                get_eval_group_id(evaluation, result)
+                for result in evaluation.get("evaluation_results") or []
+                if extract_score(result) is not None
+            }
+        )
+
+        raw_instance_url = as_string(evaluation.get("detailed_evaluation_results"))
+        if raw_instance_url:
+            evaluation["source_detailed_evaluation_results"] = raw_instance_url
+            artifact_text = read_text_from_dataset_url(raw_instance_url, local_dataset_dir, hf_token)
+            if artifact_text is not None:
+                instance_relative_path = build_instance_artifact_relative_path(evaluation)
+                instance_output_path = OUTPUT_DIR / instance_relative_path
+                instance_output_path.parent.mkdir(parents=True, exist_ok=True)
+                transformed_artifact_text = transform_instance_artifact_text(evaluation, artifact_text)
+                instance_output_path.write_text(transformed_artifact_text, encoding="utf-8")
+                pipeline_instance_url = dataset_resolve_url(instance_relative_path)
+                evaluation["detailed_evaluation_results"] = pipeline_instance_url
+                evaluation["instance_artifact"] = {
+                    "path": instance_relative_path,
+                    "url": pipeline_instance_url,
+                    "eval_summary_ids": evaluation.get("eval_summary_ids", []),
+                }
+                if evaluation.get("instance_level_data"):
+                    evaluation["instance_level_data"] = {
+                        **(evaluation.get("instance_level_data") or {}),
+                        "source_url": pipeline_instance_url,
+                        "upstream_source_url": raw_instance_url,
+                        "instance_examples": [
+                            annotate_instance_row(evaluation, row) if isinstance(row, dict) else row
+                            for row in ((evaluation.get("instance_level_data") or {}).get("instance_examples") or [])
+                        ],
+                    }
 
     benchmark_groups: dict[str, dict] = {}
     model_family_groups: dict[str, list[dict]] = defaultdict(list)
@@ -2110,6 +2489,8 @@ def main() -> int:
             "model_family_name": family_name,
             "raw_model_ids": raw_model_ids,
             "evaluations_by_category": dict(by_category),
+            "evaluation_summaries_by_category": {},
+            "hierarchy_by_category": {},
             "total_evaluations": len(family_evals),
             "last_updated": last_updated,
             "categories_covered": sorted(by_category.keys()),
@@ -2124,6 +2505,20 @@ def main() -> int:
                 for v in variants_map.values()
             ],
         }
+        summary["evaluation_summaries_by_category"] = {
+            category: filtered_summaries
+            for category in sorted(summary["categories_covered"])
+            if (filtered_summaries := [
+                filtered_summary
+                for filtered_summary in (
+                    filter_eval_summary_for_model(eval_summary, family_id)
+                    for eval_summary in eval_summaries
+                    if as_string(eval_summary.get("category")) == category
+                )
+                if filtered_summary is not None
+            ])
+        }
+        summary["hierarchy_by_category"] = summary["evaluation_summaries_by_category"]
         model_summaries.append(summary)
 
         if score_values:
