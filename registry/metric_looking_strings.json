@@ -1,0 +1,1300 @@
+{
+  "generated_at": "2026-04-10T14:13:20.709053Z",
+  "source_dataset": "evaleval/EEE_datastore",
+  "local_data_root": ".cache/eee_datastore/data",
+  "record_file_count": 6270,
+  "registry_entry_count": 54,
+  "source_totals": {
+    "evaluation_description_prefix": 32926,
+    "evaluation_name_suffix": 3547,
+    "metric_id": 4797,
+    "metric_name": 4797,
+    "score_details_tab": 5153
+  },
+  "alias_to_normalized": {
+    "ARC score": "score",
+    "Acc": "accuracy",
+    "Accuracy": "accuracy",
+    "Average Attempts": "average_attempts",
+    "Average guesses used per game": "average_guesses_used_per_game",
+    "BLEU-4": "bleu_4",
+    "COT correct": "cot_correct",
+    "Cost": "cost",
+    "Cost per 100 calls": "cost_per_100_calls",
+    "Cost per task": "cost_per_task",
+    "EM": "exact_match",
+    "Efficiency": "efficiency",
+    "Elo rating": "elo",
+    "Exact Match": "exact_match",
+    "F1": "f1",
+    "Format sensitivity max delta": "format_sensitivity_max_delta",
+    "Format sensitivity standard deviation": "format_sensitivity_stddev",
+    "Harmlessness": "harmlessness",
+    "How many models this model outperform": "how_many_models_this_model_outperform",
+    "How many models this model outperforms": "how_many_models_this_model_outperforms",
+    "IFEval Strict Acc": "ifeval_strict_acc",
+    "Instruction Following": "instruction_following",
+    "Irrelevance detection accuracy": "irrelevance_detection_accuracy",
+    "Latency 95th percentile": "latency_p95",
+    "Latency mean": "latency_mean",
+    "Latency standard deviation": "latency_std",
+    "Live accuracy": "live_accuracy",
+    "Live multiple AST accuracy": "live_multiple_ast_accuracy",
+    "Live parallel AST accuracy": "live_parallel_ast_accuracy",
+    "Live parallel multiple AST accuracy": "live_parallel_multiple_ast_accuracy",
+    "Live simple AST accuracy": "live_simple_ast_accuracy",
+    "Mean Score": "mean_score",
+    "Memory KV accuracy": "kv_accuracy",
+    "Memory accuracy": "accuracy",
+    "Memory recursive summarization accuracy": "recursive_summarization_accuracy",
+    "Memory vector accuracy": "vector_accuracy",
+    "Multi-turn accuracy": "accuracy",
+    "Multi-turn base accuracy": "base_accuracy",
+    "Multi-turn long-context accuracy": "long_context_accuracy",
+    "Multi-turn missing function accuracy": "miss_function_accuracy",
+    "Multi-turn missing parameter accuracy": "miss_parameter_accuracy",
+    "NDCG@10": "ndcg_10",
+    "Non-live AST accuracy": "ast_accuracy",
+    "Non-live multiple AST accuracy": "multiple_ast_accuracy",
+    "Non-live parallel AST accuracy": "parallel_ast_accuracy",
+    "Non-live parallel multiple AST accuracy": "parallel_multiple_ast_accuracy",
+    "Non-live simple AST accuracy": "simple_ast_accuracy",
+    "Overall accuracy": "overall_accuracy",
+    "Overall rank": "rank",
+    "Pass@1": "pass_at_1",
+    "Pass@8": "pass_at_8",
+    "ROUGE-2": "rouge_2",
+    "Rank": "rank",
+    "Relevance detection accuracy": "relevance_detection_accuracy",
+    "Total cost": "total_cost",
+    "WB Score": "wb_score",
+    "Web-search accuracy": "accuracy",
+    "Web-search base accuracy": "base_accuracy",
+    "Web-search no-snippet accuracy": "no_snippet_accuracy",
+    "Win Rate": "win_rate",
+    "Win rate": "win_rate",
+    "acc": "accuracy",
+    "accuracy": "accuracy",
+    "arc_score": "score",
+    "ast_accuracy": "ast_accuracy",
+    "average_attempts": "average_attempts",
+    "average_guesses_used_per_game": "average_guesses_used_per_game",
+    "avg_attempts": "average_attempts",
+    "avg_latency_ms": "average_latency_ms",
+    "base_accuracy": "base_accuracy",
+    "bfcl.format_sensitivity.max_delta": "format_sensitivity_max_delta",
+    "bfcl.format_sensitivity.stddev": "format_sensitivity_stddev",
+    "bfcl.live.live_accuracy": "live_accuracy",
+    "bfcl.live.live_multiple_ast_accuracy": "live_multiple_ast_accuracy",
+    "bfcl.live.live_parallel_ast_accuracy": "live_parallel_ast_accuracy",
+    "bfcl.live.live_parallel_multiple_ast_accuracy": "live_parallel_multiple_ast_accuracy",
+    "bfcl.live.live_simple_ast_accuracy": "live_simple_ast_accuracy",
+    "bfcl.memory.accuracy": "accuracy",
+    "bfcl.memory.kv_accuracy": "kv_accuracy",
+    "bfcl.memory.recursive_summarization_accuracy": "recursive_summarization_accuracy",
+    "bfcl.memory.vector_accuracy": "vector_accuracy",
+    "bfcl.multi_turn.accuracy": "accuracy",
+    "bfcl.multi_turn.base_accuracy": "base_accuracy",
+    "bfcl.multi_turn.long_context_accuracy": "long_context_accuracy",
+    "bfcl.multi_turn.miss_function_accuracy": "miss_function_accuracy",
+    "bfcl.multi_turn.miss_parameter_accuracy": "miss_parameter_accuracy",
+    "bfcl.non_live.ast_accuracy": "ast_accuracy",
+    "bfcl.non_live.multiple_ast_accuracy": "multiple_ast_accuracy",
+    "bfcl.non_live.parallel_ast_accuracy": "parallel_ast_accuracy",
+    "bfcl.non_live.parallel_multiple_ast_accuracy": "parallel_multiple_ast_accuracy",
+    "bfcl.non_live.simple_ast_accuracy": "simple_ast_accuracy",
+    "bfcl.overall.latency_mean_s": "latency_mean",
+    "bfcl.overall.latency_p95_s": "latency_p95",
+    "bfcl.overall.latency_std_s": "latency_std",
+    "bfcl.overall.overall_accuracy": "overall_accuracy",
+    "bfcl.overall.rank": "rank",
+    "bfcl.overall.total_cost_usd": "total_cost",
+    "bfcl.relevance.irrelevance_detection_accuracy": "irrelevance_detection_accuracy",
+    "bfcl.relevance.relevance_detection_accuracy": "relevance_detection_accuracy",
+    "bfcl.web_search.accuracy": "accuracy",
+    "bfcl.web_search.base_accuracy": "base_accuracy",
+    "bfcl.web_search.no_snippet_accuracy": "no_snippet_accuracy",
+    "bfcl_format_sensitivity_max_delta": "format_sensitivity_max_delta",
+    "bfcl_format_sensitivity_stddev": "format_sensitivity_stddev",
+    "bfcl_live_live_accuracy": "live_accuracy",
+    "bfcl_live_live_multiple_ast_accuracy": "live_multiple_ast_accuracy",
+    "bfcl_live_live_parallel_ast_accuracy": "live_parallel_ast_accuracy",
+    "bfcl_live_live_parallel_multiple_ast_accuracy": "live_parallel_multiple_ast_accuracy",
+    "bfcl_live_live_simple_ast_accuracy": "live_simple_ast_accuracy",
+    "bfcl_memory_accuracy": "accuracy",
+    "bfcl_memory_kv_accuracy": "kv_accuracy",
+    "bfcl_memory_recursive_summarization_accuracy": "recursive_summarization_accuracy",
+    "bfcl_memory_vector_accuracy": "vector_accuracy",
+    "bfcl_multi_turn_accuracy": "accuracy",
+    "bfcl_multi_turn_base_accuracy": "base_accuracy",
+    "bfcl_multi_turn_long_context_accuracy": "long_context_accuracy",
+    "bfcl_multi_turn_miss_function_accuracy": "miss_function_accuracy",
+    "bfcl_multi_turn_miss_parameter_accuracy": "miss_parameter_accuracy",
+    "bfcl_non_live_ast_accuracy": "ast_accuracy",
+    "bfcl_non_live_multiple_ast_accuracy": "multiple_ast_accuracy",
+    "bfcl_non_live_parallel_ast_accuracy": "parallel_ast_accuracy",
+    "bfcl_non_live_parallel_multiple_ast_accuracy": "parallel_multiple_ast_accuracy",
+    "bfcl_non_live_simple_ast_accuracy": "simple_ast_accuracy",
+    "bfcl_overall_latency_mean_s": "latency_mean",
+    "bfcl_overall_latency_p95_s": "latency_p95",
+    "bfcl_overall_latency_std_s": "latency_std",
+    "bfcl_overall_overall_accuracy": "overall_accuracy",
+    "bfcl_overall_rank": "rank",
+    "bfcl_overall_total_cost_usd": "total_cost",
+    "bfcl_relevance_irrelevance_detection_accuracy": "irrelevance_detection_accuracy",
+    "bfcl_relevance_relevance_detection_accuracy": "relevance_detection_accuracy",
+    "bfcl_web_search_accuracy": "accuracy",
+    "bfcl_web_search_base_accuracy": "base_accuracy",
+    "bfcl_web_search_no_snippet_accuracy": "no_snippet_accuracy",
+    "bleu_4": "bleu_4",
+    "cost": "cost",
+    "cost_per_100_calls": "cost_per_100_calls",
+    "cost_per_100_calls_usd": "cost_per_100_calls",
+    "cost_per_task": "cost_per_task",
+    "cot_correct": "cot_correct",
+    "efficiency": "efficiency",
+    "elo": "elo",
+    "elo_rating": "elo",
+    "em": "exact_match",
+    "exact_match": "exact_match",
+    "f1": "f1",
+    "fibble1_arena.avg_attempts": "average_attempts",
+    "fibble1_arena.win_rate": "win_rate",
+    "fibble1_arena_avg_attempts": "average_attempts",
+    "fibble1_arena_win_rate": "win_rate",
+    "fibble2_arena.avg_attempts": "average_attempts",
+    "fibble2_arena.win_rate": "win_rate",
+    "fibble2_arena_avg_attempts": "average_attempts",
+    "fibble2_arena_win_rate": "win_rate",
+    "fibble3_arena.avg_attempts": "average_attempts",
+    "fibble3_arena.win_rate": "win_rate",
+    "fibble3_arena_avg_attempts": "average_attempts",
+    "fibble3_arena_win_rate": "win_rate",
+    "fibble4_arena.avg_attempts": "average_attempts",
+    "fibble4_arena.win_rate": "win_rate",
+    "fibble4_arena_avg_attempts": "average_attempts",
+    "fibble4_arena_win_rate": "win_rate",
+    "fibble5_arena.avg_attempts": "average_attempts",
+    "fibble5_arena.win_rate": "win_rate",
+    "fibble5_arena_avg_attempts": "average_attempts",
+    "fibble5_arena_win_rate": "win_rate",
+    "format_sensitivity_max_delta": "format_sensitivity_max_delta",
+    "format_sensitivity_standard_deviation": "format_sensitivity_stddev",
+    "harmlessness": "harmlessness",
+    "how_many_models_this_model_outperform": "how_many_models_this_model_outperform",
+    "how_many_models_this_model_outperforms": "how_many_models_this_model_outperforms",
+    "ifeval_strict_acc": "ifeval_strict_acc",
+    "instruction_following": "instruction_following",
+    "irrelevance_detection_accuracy": "irrelevance_detection_accuracy",
+    "kv_accuracy": "kv_accuracy",
+    "latency_95th_percentile": "latency_p95",
+    "latency_mean": "latency_mean",
+    "latency_mean_s": "latency_mean",
+    "latency_p95_s": "latency_p95",
+    "latency_standard_deviation": "latency_std",
+    "latency_std_s": "latency_std",
+    "live_accuracy": "live_accuracy",
+    "live_multiple_ast_accuracy": "live_multiple_ast_accuracy",
+    "live_parallel_ast_accuracy": "live_parallel_ast_accuracy",
+    "live_parallel_multiple_ast_accuracy": "live_parallel_multiple_ast_accuracy",
+    "live_simple_ast_accuracy": "live_simple_ast_accuracy",
+    "long_context_accuracy": "long_context_accuracy",
+    "max_delta": "format_sensitivity_max_delta",
+    "mean_score": "mean_score",
+    "memory_accuracy": "accuracy",
+    "memory_kv_accuracy": "kv_accuracy",
+    "memory_recursive_summarization_accuracy": "recursive_summarization_accuracy",
+    "memory_vector_accuracy": "vector_accuracy",
+    "miss_function_accuracy": "miss_function_accuracy",
+    "miss_parameter_accuracy": "miss_parameter_accuracy",
+    "multi_turn_accuracy": "accuracy",
+    "multi_turn_base_accuracy": "base_accuracy",
+    "multi_turn_long_context_accuracy": "long_context_accuracy",
+    "multi_turn_missing_function_accuracy": "miss_function_accuracy",
+    "multi_turn_missing_parameter_accuracy": "miss_parameter_accuracy",
+    "multiple_ast_accuracy": "multiple_ast_accuracy",
+    "ndcg_10": "ndcg_10",
+    "no_snippet_accuracy": "no_snippet_accuracy",
+    "non_live_ast_accuracy": "ast_accuracy",
+    "non_live_multiple_ast_accuracy": "multiple_ast_accuracy",
+    "non_live_parallel_ast_accuracy": "parallel_ast_accuracy",
+    "non_live_parallel_multiple_ast_accuracy": "parallel_multiple_ast_accuracy",
+    "non_live_simple_ast_accuracy": "simple_ast_accuracy",
+    "overall_accuracy": "overall_accuracy",
+    "overall_rank": "rank",
+    "parallel_ast_accuracy": "parallel_ast_accuracy",
+    "parallel_multiple_ast_accuracy": "parallel_multiple_ast_accuracy",
+    "pass_1": "pass_at_1",
+    "pass_8": "pass_at_8",
+    "rank": "rank",
+    "recursive_summarization_accuracy": "recursive_summarization_accuracy",
+    "relevance_detection_accuracy": "relevance_detection_accuracy",
+    "rouge_2": "rouge_2",
+    "score": "score",
+    "simple_ast_accuracy": "simple_ast_accuracy",
+    "stddev": "format_sensitivity_stddev",
+    "total_cost": "total_cost",
+    "total_cost_usd": "total_cost",
+    "vector_accuracy": "vector_accuracy",
+    "wb_score": "wb_score",
+    "web_search_accuracy": "accuracy",
+    "web_search_base_accuracy": "base_accuracy",
+    "web_search_no_snippet_accuracy": "no_snippet_accuracy",
+    "win rate": "win_rate",
+    "win_rate": "win_rate",
+    "wordle_arena.avg_attempts": "average_attempts",
+    "wordle_arena.win_rate": "win_rate",
+    "wordle_arena_avg_attempts": "average_attempts",
+    "wordle_arena_win_rate": "win_rate"
+  },
+  "entries": [
+    {
+      "normalized": "accuracy",
+      "total_count": 31029,
+      "display_name": "Accuracy",
+      "sources": [
+        "evaluation_description_prefix",
+        "evaluation_name_suffix",
+        "metric_id",
+        "metric_name",
+        "score_details_tab"
+      ],
+      "examples": [
+        {
+          "value": "Accuracy",
+          "count": 27916
+        },
+        {
+          "value": "accuracy",
+          "count": 2398
+        },
+        {
+          "value": "bfcl.multi_turn.accuracy",
+          "count": 109
+        },
+        {
+          "value": "Multi-turn accuracy",
+          "count": 109
+        },
+        {
+          "value": "bfcl.web_search.accuracy",
+          "count": 109
+        },
+        {
+          "value": "Web-search accuracy",
+          "count": 109
+        },
+        {
+          "value": "bfcl.memory.accuracy",
+          "count": 109
+        },
+        {
+          "value": "Memory accuracy",
+          "count": 109
+        },
+        {
+          "value": "Acc",
+          "count": 61
+        }
+      ]
+    },
+    {
+      "normalized": "exact_match",
+      "total_count": 8330,
+      "display_name": "Exact Match",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "Exact Match",
+          "count": 4574
+        },
+        {
+          "value": "EM",
+          "count": 3756
+        }
+      ]
+    },
+    {
+      "normalized": "win_rate",
+      "total_count": 1328,
+      "display_name": "Win Rate",
+      "sources": [
+        "evaluation_description_prefix",
+        "evaluation_name_suffix",
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "win_rate",
+          "count": 394
+        },
+        {
+          "value": "win rate",
+          "count": 241
+        },
+        {
+          "value": "Win Rate",
+          "count": 231
+        },
+        {
+          "value": "Win rate",
+          "count": 231
+        },
+        {
+          "value": "wordle_arena.win_rate",
+          "count": 43
+        },
+        {
+          "value": "fibble1_arena.win_rate",
+          "count": 40
+        },
+        {
+          "value": "fibble2_arena.win_rate",
+          "count": 38
+        },
+        {
+          "value": "fibble5_arena.win_rate",
+          "count": 37
+        },
+        {
+          "value": "fibble3_arena.win_rate",
+          "count": 37
+        },
+        {
+          "value": "fibble4_arena.win_rate",
+          "count": 36
+        }
+      ]
+    },
+    {
+      "normalized": "score",
+      "total_count": 1020,
+      "display_name": "Score",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "score",
+          "count": 510
+        },
+        {
+          "value": "ARC score",
+          "count": 510
+        }
+      ]
+    },
+    {
+      "normalized": "cost_per_task",
+      "total_count": 1012,
+      "display_name": "Cost per Task",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "cost_per_task",
+          "count": 506
+        },
+        {
+          "value": "Cost per task",
+          "count": 506
+        }
+      ]
+    },
+    {
+      "normalized": "base_accuracy",
+      "total_count": 436,
+      "display_name": "Multi-turn base accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.multi_turn.base_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Multi-turn base accuracy",
+          "count": 109
+        },
+        {
+          "value": "bfcl.web_search.base_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Web-search base accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "average_attempts",
+      "total_count": 409,
+      "display_name": "Average Attempts",
+      "sources": [
+        "evaluation_name_suffix",
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "avg_attempts",
+          "count": 245
+        },
+        {
+          "value": "Average Attempts",
+          "count": 82
+        },
+        {
+          "value": "wordle_arena.avg_attempts",
+          "count": 32
+        },
+        {
+          "value": "fibble1_arena.avg_attempts",
+          "count": 24
+        },
+        {
+          "value": "fibble5_arena.avg_attempts",
+          "count": 13
+        },
+        {
+          "value": "fibble2_arena.avg_attempts",
+          "count": 8
+        },
+        {
+          "value": "fibble3_arena.avg_attempts",
+          "count": 3
+        },
+        {
+          "value": "fibble4_arena.avg_attempts",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "normalized": "f1",
+      "total_count": 383,
+      "display_name": "F1",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "F1",
+          "count": 383
+        }
+      ]
+    },
+    {
+      "normalized": "rank",
+      "total_count": 332,
+      "display_name": "Rank",
+      "sources": [
+        "evaluation_name_suffix",
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.overall.rank",
+          "count": 109
+        },
+        {
+          "value": "Overall rank",
+          "count": 109
+        },
+        {
+          "value": "rank",
+          "count": 76
+        },
+        {
+          "value": "Rank",
+          "count": 38
+        }
+      ]
+    },
+    {
+      "normalized": "ast_accuracy",
+      "total_count": 218,
+      "display_name": "Non-live AST accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.non_live.ast_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Non-live AST accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "irrelevance_detection_accuracy",
+      "total_count": 218,
+      "display_name": "Irrelevance detection accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.relevance.irrelevance_detection_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Irrelevance detection accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "kv_accuracy",
+      "total_count": 218,
+      "display_name": "Memory KV accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.memory.kv_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Memory KV accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "latency_mean",
+      "total_count": 218,
+      "display_name": "Latency Mean",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.overall.latency_mean_s",
+          "count": 109
+        },
+        {
+          "value": "Latency mean",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "latency_p95",
+      "total_count": 218,
+      "display_name": "Latency 95th Percentile",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.overall.latency_p95_s",
+          "count": 109
+        },
+        {
+          "value": "Latency 95th percentile",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "latency_std",
+      "total_count": 218,
+      "display_name": "Latency Standard Deviation",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.overall.latency_std_s",
+          "count": 109
+        },
+        {
+          "value": "Latency standard deviation",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "live_accuracy",
+      "total_count": 218,
+      "display_name": "Live accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.live.live_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Live accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "live_multiple_ast_accuracy",
+      "total_count": 218,
+      "display_name": "Live multiple AST accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.live.live_multiple_ast_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Live multiple AST accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "live_parallel_ast_accuracy",
+      "total_count": 218,
+      "display_name": "Live parallel AST accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.live.live_parallel_ast_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Live parallel AST accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "live_parallel_multiple_ast_accuracy",
+      "total_count": 218,
+      "display_name": "Live parallel multiple AST accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.live.live_parallel_multiple_ast_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Live parallel multiple AST accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "live_simple_ast_accuracy",
+      "total_count": 218,
+      "display_name": "Live simple AST accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.live.live_simple_ast_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Live simple AST accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "long_context_accuracy",
+      "total_count": 218,
+      "display_name": "Multi-turn long-context accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.multi_turn.long_context_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Multi-turn long-context accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "miss_function_accuracy",
+      "total_count": 218,
+      "display_name": "Multi-turn missing function accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.multi_turn.miss_function_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Multi-turn missing function accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "miss_parameter_accuracy",
+      "total_count": 218,
+      "display_name": "Multi-turn missing parameter accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.multi_turn.miss_parameter_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Multi-turn missing parameter accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "multiple_ast_accuracy",
+      "total_count": 218,
+      "display_name": "Non-live multiple AST accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.non_live.multiple_ast_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Non-live multiple AST accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "no_snippet_accuracy",
+      "total_count": 218,
+      "display_name": "Web-search no-snippet accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.web_search.no_snippet_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Web-search no-snippet accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "overall_accuracy",
+      "total_count": 218,
+      "display_name": "Overall Accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.overall.overall_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Overall accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "parallel_ast_accuracy",
+      "total_count": 218,
+      "display_name": "Non-live parallel AST accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.non_live.parallel_ast_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Non-live parallel AST accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "parallel_multiple_ast_accuracy",
+      "total_count": 218,
+      "display_name": "Non-live parallel multiple AST accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.non_live.parallel_multiple_ast_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Non-live parallel multiple AST accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "recursive_summarization_accuracy",
+      "total_count": 218,
+      "display_name": "Memory recursive summarization accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.memory.recursive_summarization_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Memory recursive summarization accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "relevance_detection_accuracy",
+      "total_count": 218,
+      "display_name": "Relevance detection accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.relevance.relevance_detection_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Relevance detection accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "simple_ast_accuracy",
+      "total_count": 218,
+      "display_name": "Non-live simple AST accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.non_live.simple_ast_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Non-live simple AST accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "total_cost",
+      "total_count": 218,
+      "display_name": "Total Cost",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.overall.total_cost_usd",
+          "count": 109
+        },
+        {
+          "value": "Total cost",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "vector_accuracy",
+      "total_count": 218,
+      "display_name": "Memory vector accuracy",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.memory.vector_accuracy",
+          "count": 109
+        },
+        {
+          "value": "Memory vector accuracy",
+          "count": 109
+        }
+      ]
+    },
+    {
+      "normalized": "how_many_models_this_model_outperforms",
+      "total_count": 170,
+      "display_name": "How many models this model outperforms",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "How many models this model outperforms",
+          "count": 170
+        }
+      ]
+    },
+    {
+      "normalized": "average_guesses_used_per_game",
+      "total_count": 163,
+      "display_name": "Average guesses used per game",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "Average guesses used per game",
+          "count": 163
+        }
+      ]
+    },
+    {
+      "normalized": "average_latency_ms",
+      "total_count": 157,
+      "display_name": "Average Latency (ms)",
+      "sources": [
+        "evaluation_name_suffix"
+      ],
+      "examples": [
+        {
+          "value": "avg_latency_ms",
+          "count": 157
+        }
+      ]
+    },
+    {
+      "normalized": "rouge_2",
+      "total_count": 134,
+      "display_name": "ROUGE-2",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "ROUGE-2",
+          "count": 134
+        }
+      ]
+    },
+    {
+      "normalized": "pass_at_1",
+      "total_count": 125,
+      "display_name": "Pass@1",
+      "sources": [
+        "evaluation_description_prefix",
+        "evaluation_name_suffix"
+      ],
+      "examples": [
+        {
+          "value": "Pass@1",
+          "count": 125
+        }
+      ]
+    },
+    {
+      "normalized": "cot_correct",
+      "total_count": 122,
+      "display_name": "COT correct",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "COT correct",
+          "count": 122
+        }
+      ]
+    },
+    {
+      "normalized": "bleu_4",
+      "total_count": 91,
+      "display_name": "BLEU-4",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "BLEU-4",
+          "count": 91
+        }
+      ]
+    },
+    {
+      "normalized": "format_sensitivity_max_delta",
+      "total_count": 80,
+      "display_name": "Format Sensitivity Max Delta",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.format_sensitivity.max_delta",
+          "count": 40
+        },
+        {
+          "value": "Format sensitivity max delta",
+          "count": 40
+        }
+      ]
+    },
+    {
+      "normalized": "format_sensitivity_stddev",
+      "total_count": 80,
+      "display_name": "Format Sensitivity Standard Deviation",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "bfcl.format_sensitivity.stddev",
+          "count": 40
+        },
+        {
+          "value": "Format sensitivity standard deviation",
+          "count": 40
+        }
+      ]
+    },
+    {
+      "normalized": "efficiency",
+      "total_count": 79,
+      "display_name": "Efficiency",
+      "sources": [
+        "score_details_tab"
+      ],
+      "examples": [
+        {
+          "value": "Efficiency",
+          "count": 79
+        }
+      ]
+    },
+    {
+      "normalized": "cost_per_100_calls",
+      "total_count": 76,
+      "display_name": "Cost per 100 Calls",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "cost_per_100_calls_usd",
+          "count": 38
+        },
+        {
+          "value": "Cost per 100 calls",
+          "count": 38
+        }
+      ]
+    },
+    {
+      "normalized": "elo",
+      "total_count": 76,
+      "display_name": "Elo Rating",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "elo",
+          "count": 38
+        },
+        {
+          "value": "Elo rating",
+          "count": 38
+        }
+      ]
+    },
+    {
+      "normalized": "how_many_models_this_model_outperform",
+      "total_count": 71,
+      "display_name": "How many models this model outperform",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "How many models this model outperform",
+          "count": 71
+        }
+      ]
+    },
+    {
+      "normalized": "ndcg_10",
+      "total_count": 67,
+      "display_name": "NDCG@10",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "NDCG@10",
+          "count": 67
+        }
+      ]
+    },
+    {
+      "normalized": "ifeval_strict_acc",
+      "total_count": 61,
+      "display_name": "IFEval Strict Acc",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "IFEval Strict Acc",
+          "count": 61
+        }
+      ]
+    },
+    {
+      "normalized": "wb_score",
+      "total_count": 61,
+      "display_name": "WB Score",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "WB Score",
+          "count": 61
+        }
+      ]
+    },
+    {
+      "normalized": "instruction_following",
+      "total_count": 28,
+      "display_name": "Instruction Following",
+      "sources": [
+        "score_details_tab"
+      ],
+      "examples": [
+        {
+          "value": "Instruction Following",
+          "count": 28
+        }
+      ]
+    },
+    {
+      "normalized": "mean_score",
+      "total_count": 28,
+      "display_name": "Mean Score",
+      "sources": [
+        "evaluation_name_suffix"
+      ],
+      "examples": [
+        {
+          "value": "Mean Score",
+          "count": 28
+        }
+      ]
+    },
+    {
+      "normalized": "harmlessness",
+      "total_count": 24,
+      "display_name": "Harmlessness",
+      "sources": [
+        "evaluation_description_prefix"
+      ],
+      "examples": [
+        {
+          "value": "Harmlessness",
+          "count": 24
+        }
+      ]
+    },
+    {
+      "normalized": "cost",
+      "total_count": 8,
+      "display_name": "Cost",
+      "sources": [
+        "metric_id",
+        "metric_name"
+      ],
+      "examples": [
+        {
+          "value": "cost",
+          "count": 4
+        },
+        {
+          "value": "Cost",
+          "count": 4
+        }
+      ]
+    },
+    {
+      "normalized": "pass_at_8",
+      "total_count": 8,
+      "display_name": "Pass@8",
+      "sources": [
+        "evaluation_name_suffix"
+      ],
+      "examples": [
+        {
+          "value": "Pass@8",
+          "count": 8
+        }
+      ]
+    }
+  ]
+}
