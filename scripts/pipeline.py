@@ -1497,6 +1497,424 @@ def iter_output_relative_files(root_dir: Path = OUTPUT_DIR) -> list[str]:
     )
 
 
+# Uniform grouping for every metric the pipeline emits. The group label is
+# attached to each metric in comparison-index.json so the frontend can render
+# tabs in a consistent order ("Capability" before "Cost" before "Latency"
+# etc.) across every benchmark, and is also used internally to choose a
+# primary metric for eval-list.json's ``primary_metric_name``.
+#
+# Rules were derived empirically from the full set of 207 metric occurrences
+# across 89 evals (see commit message). ``metric_kind`` from upstream EEE
+# takes precedence; for the ~78% of metrics where ``metric_kind`` is absent
+# we fall back to name regexes that cover every observed metric name.
+_METRIC_KIND_TO_GROUP = {
+    "accuracy": "capability",
+    "elo": "capability",
+    "score": "capability",
+    "pass": "capability",
+    "f1": "capability",
+    "win_rate": "capability",
+    "winrate": "capability",
+    "cost": "cost",
+    "latency": "latency",
+    "throughput": "latency",
+    "time": "latency",
+    "rank": "rank",
+    "difference": "robustness",
+}
+
+# Order matters: first matching pattern wins. Listed most-specific first so
+# e.g. "Latency Standard Deviation" lands in latency rather than robustness.
+_METRIC_NAME_GROUP_RULES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    (
+        "cost",
+        re.compile(r"\b(?:cost|usd|dollar|price)\b", re.IGNORECASE),
+    ),
+    (
+        "latency",
+        re.compile(
+            r"\b(?:latency|throughput|elapsed|wall[\s_]?time|"
+            r"tokens?[\s_/]?(?:per|sec|s)\b|p\d{2,3}|percentile)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "rank",
+        re.compile(r"\brank\b", re.IGNORECASE),
+    ),
+    (
+        "robustness",
+        re.compile(
+            r"\b(?:sensitivity|delta|stddev|standard[\s_]?deviation|"
+            r"variance|robustness)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "efficiency",
+        re.compile(r"\b(?:attempts|retries|tries)\b", re.IGNORECASE),
+    ),
+    (
+        "capability",
+        re.compile(
+            r"\b(?:accuracy|acc|elo|score|pass@\d+|win[\s_]?rate|f1|"
+            r"exact[\s_]?match|em|bleu|rouge(?:-\d+)?|recall|precision|"
+            r"mrr|ndcg|coverage|correct|harmlessness)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+# Tab order in the histogram UI. Capability surfaces first (the actual
+# task score), followed by capability-adjacent groups, then instrumental
+# groups, with "other" as a fallback bucket.
+METRIC_GROUP_ORDER = (
+    "capability",
+    "robustness",
+    "efficiency",
+    "cost",
+    "latency",
+    "rank",
+    "other",
+)
+_METRIC_GROUP_INDEX = {group: i for i, group in enumerate(METRIC_GROUP_ORDER)}
+
+
+def metric_group(metric: dict) -> str:
+    """Classify a metric into one of ``METRIC_GROUP_ORDER``.
+
+    ``metric_kind`` from upstream EEE is authoritative when present (e.g.
+    ``kind=cost`` always means ``cost`` regardless of name). Otherwise we
+    match the metric name against the rules above. Defaults to ``other``.
+    """
+    config = metric.get("metric_config") or {}
+    kind = (as_string(config.get("metric_kind")) or "").lower()
+    if kind in _METRIC_KIND_TO_GROUP:
+        return _METRIC_KIND_TO_GROUP[kind]
+    name = as_string(metric.get("metric_name"))
+    if name:
+        for group, pattern in _METRIC_NAME_GROUP_RULES:
+            if pattern.search(name):
+                return group
+    return "other"
+
+
+def metric_group_order_index(group: str) -> int:
+    """Sort key for a metric group. Lower = surfaced first in the UI."""
+    return _METRIC_GROUP_INDEX.get(group, _METRIC_GROUP_INDEX["other"])
+
+
+# Tier mapping derived from the group taxonomy: capability wins, then
+# capability-adjacent (robustness / efficiency / other), then instrumental.
+# Used only for eval-list.json's ``primary_metric_name`` — comparison-index
+# emits all metrics so doesn't pick a primary.
+_METRIC_TIER_BY_GROUP = {
+    "capability": 0,
+    "robustness": 1,
+    "efficiency": 1,
+    "other": 1,
+    "cost": 2,
+    "latency": 2,
+    "rank": 2,
+}
+
+
+def metric_priority_tier(metric: dict) -> int:
+    """Rank a metric for ``primary_metric_name`` selection. Derived from
+    ``metric_group`` so the picker and the comparison-index tab order stay
+    in lockstep.
+    """
+    return _METRIC_TIER_BY_GROUP.get(metric_group(metric), 1)
+
+
+def pick_primary_metric(metrics: list[dict]) -> dict | None:
+    """Pick one canonical metric from a list, preferring capability scores
+    over instrumental ones. Stable secondary sort matches the existing
+    alphabetical order so within-tier choices stay deterministic and align
+    with the order metrics appear in eval-list.json. Used for eval-list's
+    ``primary_metric_name`` only — the comparison index emits every metric
+    via a tabbed UI and no longer needs a single pick.
+    """
+    if not metrics:
+        return None
+    return min(
+        metrics,
+        key=lambda m: (
+            metric_priority_tier(m),
+            as_string(m.get("metric_name")),
+            as_string(m.get("metric_summary_id")),
+        ),
+    )
+
+
+# Submission "axes" — the kind of thing that differentiates one row from
+# another for the same (model_route_id, eval, metric). Surfaced per row so
+# the frontend can label the bar correctly: "Harness: droid" vs "Variant:
+# thinking-8k" vs "Re-run: 2026-03-17".
+RUN_KIND_HARNESS = "harness"   # different agent / scaffold (terminal_bench, swe_bench)
+RUN_KIND_VARIANT = "variant"   # raw_model_id varies (reasoning budget, snapshot)
+RUN_KIND_RERUN = "rerun"       # same setup, re-evaluated later
+RUN_KIND_DEFAULT = "default"   # the only submission for this peer
+
+
+def extract_run_descriptor(row: dict) -> tuple[str, str]:
+    """Return ``(run_kind, run_label)`` for a single ``model_results`` row.
+
+    These rows are *submissions*, not subtasks. Multiple rows for the same
+    ``model_route_id`` on a benchmark generally mean one of three things:
+
+      * **harness**: same model run by different agent scaffolding —
+        terminal_bench's droid / letta-code / mux / openhands / claude-code
+        agents, browsecompplus's smolagents-code / openai-solo / claude-
+        code-cli, swe_bench's openai-solo / claude-code-cli / smolagents-
+        code. The harness is encoded as the ``<harness>__<model>`` segment
+        of ``evaluation_id``.
+      * **variant**: same family but a different ``raw_model_id`` —
+        reasoning-budget variants (claude-haiku-4-5 + ``-thinking-1k`` /
+        ``-thinking-8k``) or snapshot dates (claude-3-5-sonnet
+        ``-20240620`` / ``-20241022``) that the canonical model identity
+        collapses to one family.
+      * **rerun**: identical model and setup, evaluated at a later date —
+        differentiated only by ``retrieved_timestamp`` /
+        ``evaluation_timestamp``.
+
+    Returned ``run_kind`` is one of ``RUN_KIND_*``; ``run_label`` is a
+    short string the frontend can display ("droid", "thinking-8k",
+    "2026-03-17"). Single-submission peers receive
+    ``(RUN_KIND_DEFAULT, "")`` from the caller — this function only runs
+    when there is something to differentiate.
+    """
+    eval_id = as_string(row.get("evaluation_id"))
+    if eval_id:
+        parts = eval_id.split("/")
+        if len(parts) >= 2 and "__" in parts[1]:
+            harness = parts[1].split("__", 1)[0].strip()
+            if harness:
+                return RUN_KIND_HARNESS, harness
+
+    raw = as_string(row.get("raw_model_id"))
+    family = as_string(row.get("model_id"))
+    if raw and family and raw != family:
+        if raw.lower().startswith(family.lower()):
+            tail = raw[len(family):].lstrip("-_/").strip()
+            if tail:
+                return RUN_KIND_VARIANT, tail
+        return RUN_KIND_VARIANT, raw
+
+    pt = row.get("passthrough_top_level_fields") or {}
+    eval_ts = as_string(pt.get("evaluation_timestamp"))
+    if eval_ts:
+        return RUN_KIND_RERUN, eval_ts
+
+    retrieved = as_string(row.get("retrieved_timestamp"))
+    if retrieved:
+        try:
+            iso = datetime.fromtimestamp(float(retrieved), tz=timezone.utc).date().isoformat()
+            return RUN_KIND_RERUN, iso
+        except (TypeError, ValueError):
+            return RUN_KIND_RERUN, retrieved
+    return RUN_KIND_RERUN, "submission"
+
+
+def build_comparison_index(eval_summaries: list[dict], generated_at: str) -> dict:
+    """Build an exhaustive per-eval, per-metric comparison index.
+
+    For each eval_summary, emits every metric the eval reports — the frontend
+    renders one tab per metric in its histogram view, so there is no
+    ``primary metric`` here. Each metric carries its full ``scores`` list:
+    one entry per scoring model_route_id, ranked best-first respecting
+    ``lower_is_better``. Also emits an inverse ``by_model`` index keyed by
+    (model_route_id, eval_summary_id, metric_summary_id) so a model detail
+    page can look up its peer comparisons in O(1) per benchmark+metric.
+
+    Metrics within an eval are ordered by ``metric_group`` (capability tabs
+    first, then robustness / efficiency / cost / latency / rank / other), so
+    the tab strip has the same shape across every benchmark.
+    """
+
+    evals_out: dict[str, dict] = {}
+    by_model: dict[str, dict[str, dict[str, dict]]] = defaultdict(lambda: defaultdict(dict))
+
+    for summary in eval_summaries:
+        eval_summary_id = as_string(summary.get("eval_summary_id"))
+        if not eval_summary_id:
+            continue
+
+        # Use root metrics if the eval has any; otherwise fall back to the
+        # first subtask's metrics. Mirrors the same fallback that
+        # ``primary_metric_name`` uses in eval-list.json.
+        root_metrics = summary.get("metrics") or []
+        subtasks = summary.get("subtasks") or []
+        candidate_metrics = root_metrics or (subtasks[0].get("metrics") if subtasks else None) or []
+        if not candidate_metrics:
+            continue
+
+        # Capability tabs surface first across every eval. Within-group
+        # ordering is alphabetical to keep the artifact deterministic.
+        ordered_metrics = sorted(
+            candidate_metrics,
+            key=lambda m: (
+                metric_group_order_index(metric_group(m)),
+                as_string(m.get("metric_name")),
+                as_string(m.get("metric_summary_id")),
+            ),
+        )
+
+        metrics_out: list[dict] = []
+        for metric in ordered_metrics:
+            metric_summary_id = as_string(metric.get("metric_summary_id"))
+            if not metric_summary_id:
+                continue
+            lower_is_better = bool(metric.get("lower_is_better"))
+            group = metric_group(metric)
+
+            # Group rows by model_route_id. Multiple rows per route are
+            # *submissions* (different agent harnesses, reasoning-budget
+            # variants, model snapshots, or simple re-runs) — see
+            # `extract_run_descriptor`. The headline bar uses the best
+            # submission's score; the full submission list is kept so the
+            # frontend can drill in.
+            rows_by_route: dict[str, list[dict]] = defaultdict(list)
+            for row in metric.get("model_results") or []:
+                route = as_string(row.get("model_route_id"))
+                if not route:
+                    continue
+                if row.get("score") is None:
+                    continue
+                rows_by_route[route].append(row)
+
+            # Build a per-route headline entry + its submission tail.
+            route_entries: list[tuple[str, dict, list[dict]]] = []
+            for route, rows in rows_by_route.items():
+                # Sort submissions best-first within the route.
+                rows = sorted(
+                    rows,
+                    key=lambda r: r["score"],
+                    reverse=not lower_is_better,
+                )
+                headline = rows[0]
+                # Only label submissions when more than one exists for this
+                # route — single-submission peers don't need a setup label.
+                if len(rows) > 1:
+                    submissions = []
+                    for sub in rows:
+                        run_kind, run_label = extract_run_descriptor(sub)
+                        submissions.append(
+                            {
+                                "score": sub["score"],
+                                "run_kind": run_kind,
+                                "run_label": run_label,
+                                "raw_model_id": as_string(sub.get("raw_model_id")) or None,
+                            }
+                        )
+                else:
+                    submissions = []
+                route_entries.append((route, headline, submissions))
+
+            # Two-pass stable sort across routes: route id ascending
+            # tiebreak, then headline score in the metric's preferred
+            # direction.
+            route_entries.sort(key=lambda e: e[0])
+            route_entries.sort(key=lambda e: e[1]["score"], reverse=not lower_is_better)
+
+            total = len(route_entries)
+            scores_out: list[dict] = []
+            position = 0
+            previous_score = None
+            for idx, (route_id, headline, submissions) in enumerate(route_entries, start=1):
+                row_score = headline["score"]
+                if previous_score is None or row_score != previous_score:
+                    position = idx
+                    previous_score = row_score
+                # Detect the submission axis for this peer (used by the UI to
+                # decide how to caption the drill-in: "8 harnesses" vs
+                # "3 reasoning budgets" vs "2 re-runs").
+                if submissions:
+                    kinds = {s["run_kind"] for s in submissions}
+                    submission_axis = next(iter(kinds)) if len(kinds) == 1 else "mixed"
+                    headline_kind, headline_label = extract_run_descriptor(headline)
+                else:
+                    submission_axis = RUN_KIND_DEFAULT
+                    headline_kind, headline_label = RUN_KIND_DEFAULT, ""
+
+                entry: dict = {
+                    "model_route_id": route_id,
+                    "model_family_id": as_string(headline.get("model_id")),
+                    "model_family_name": as_string(headline.get("model_name")),
+                    "developer": as_string(headline.get("developer")),
+                    "variant_key": as_string(headline.get("variant_key")) or "default",
+                    "score": row_score,
+                    "rank": position,
+                    "total": total,
+                    "submission_count": len(submissions) if submissions else 1,
+                    "submission_axis": submission_axis,
+                }
+                if submissions:
+                    entry["headline_run_kind"] = headline_kind
+                    entry["headline_run_label"] = headline_label
+                    entry["submissions"] = submissions
+                scores_out.append(entry)
+
+                by_model[route_id][eval_summary_id][metric_summary_id] = {
+                    "score": row_score,
+                    "rank": position,
+                    "total": total,
+                    "submission_count": entry["submission_count"],
+                    "submission_axis": submission_axis,
+                }
+
+            metric_config = metric.get("metric_config") or {}
+            unit = (
+                as_string(metric_config.get("unit"))
+                or as_string(metric_config.get("metric_unit"))
+                or None
+            )
+
+            metrics_out.append(
+                {
+                    "metric_summary_id": metric_summary_id,
+                    "metric_name": as_string(metric.get("metric_name")),
+                    "metric_id": as_string(metric.get("metric_id")),
+                    "metric_key": as_string(metric.get("metric_key")),
+                    "group": group,
+                    "group_order": metric_group_order_index(group),
+                    "lower_is_better": lower_is_better,
+                    "unit": unit,
+                    "scores": scores_out,
+                }
+            )
+
+        if not metrics_out:
+            continue
+
+        evals_out[eval_summary_id] = {
+            "eval_summary_id": eval_summary_id,
+            "benchmark_family_key": summary.get("benchmark_family_key"),
+            "benchmark_family_name": summary.get("benchmark_family_name"),
+            "benchmark_parent_key": summary.get("benchmark_parent_key"),
+            "benchmark_parent_name": summary.get("benchmark_parent_name"),
+            "benchmark_leaf_key": summary.get("benchmark_leaf_key"),
+            "benchmark_leaf_name": summary.get("benchmark_leaf_name"),
+            "display_name": summary.get("display_name"),
+            "category": summary.get("category", "other"),
+            "is_summary_score": bool(summary.get("is_summary_score")),
+            "summary_score_for": summary.get("summary_score_for"),
+            "summary_eval_ids": summary.get("summary_eval_ids", []),
+            "metrics": metrics_out,
+        }
+
+    return {
+        "generated_at": generated_at,
+        "config_version": CONFIG_VERSION,
+        "metric_group_order": list(METRIC_GROUP_ORDER),
+        "evals": evals_out,
+        "by_model": {
+            route: {eid: dict(metric_map) for eid, metric_map in eval_map.items()}
+            for route, eval_map in by_model.items()
+        },
+    }
+
+
 def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
     errors: list[str] = []
 
@@ -2728,6 +3146,7 @@ def main() -> int:
                     "model_route_id": as_string((evaluation.get("model_info") or {}).get("model_route_id")),
                     "model_name": as_string((evaluation.get("model_info") or {}).get("family_name") or (evaluation.get("model_info") or {}).get("name")),
                     "developer": as_string((evaluation.get("model_info") or {}).get("developer")),
+                    "variant_key": as_string((evaluation.get("model_info") or {}).get("variant_key")) or "default",
                     "raw_model_id": as_string((evaluation.get("model_info") or {}).get("id")),
                     "score": score,
                     "evaluation_id": evaluation.get("evaluation_id"),
@@ -2804,8 +3223,9 @@ def main() -> int:
         summary["models_count"] = len(model_ids_for_group)
         summary["metric_names"] = sorted(name for name in unique_metric_names if name)
         primary_metrics = root_metrics or (subtask_summaries[0]["metrics"] if subtask_summaries else [])
-        summary["primary_metric_name"] = as_string(primary_metrics[0].get("metric_name")) if primary_metrics else None
-        summary["top_score"] = primary_metrics[0].get("top_score") if len(primary_metrics) == 1 and not subtask_summaries else None
+        primary_metric = pick_primary_metric(primary_metrics)
+        summary["primary_metric_name"] = as_string(primary_metric.get("metric_name")) if primary_metric else None
+        summary["top_score"] = primary_metric.get("top_score") if primary_metric and len(primary_metrics) == 1 and not subtask_summaries else None
 
         # Peer ranks at single-benchmark level: average rank across all metrics
         all_metric_summaries = list(root_metrics)
@@ -2880,6 +3300,8 @@ def main() -> int:
                 summary["summary_eval_ids"] = sibling_summary_ids
 
     eval_summaries.sort(key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id"))))
+
+    comparison_index = build_comparison_index(eval_summaries, started_at)
 
     # Strip temporary fields from metric summaries before serialization
     for summary in eval_summaries:
@@ -3195,6 +3617,7 @@ def main() -> int:
     write_json(OUTPUT_DIR / "model-cards.json", model_cards)
     write_json(OUTPUT_DIR / "eval-list.json", eval_list)
     write_json(OUTPUT_DIR / "peer-ranks.json", peer_ranks)
+    write_json(OUTPUT_DIR / "comparison-index.json", comparison_index)
     write_json(OUTPUT_DIR / "benchmark-metadata.json", benchmark_metadata)
     write_json(OUTPUT_DIR / "developers.json", developers)
     write_json(OUTPUT_DIR / "manifest.json", manifest)
