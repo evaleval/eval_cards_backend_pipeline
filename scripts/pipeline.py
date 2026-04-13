@@ -1428,6 +1428,7 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
     errors: list[str] = []
 
     eval_list_path = output_dir / "eval-list.json"
+    model_cards_path = output_dir / "model-cards.json"
     evals_dir = output_dir / "evals"
     models_dir = output_dir / "models"
 
@@ -1499,6 +1500,67 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
         parsed = json.loads(model_path.read_text(encoding="utf-8"))
         if "hierarchy_by_category" not in parsed:
             errors.append(f"{model_path.name} missing hierarchy_by_category")
+
+    model_cards_by_route_id: dict[str, dict] = {}
+    if model_cards_path.exists():
+        parsed_model_cards = json.loads(model_cards_path.read_text(encoding="utf-8"))
+        if isinstance(parsed_model_cards, list):
+            model_cards_by_route_id = {
+                as_string(card.get("model_route_id")): card
+                for card in parsed_model_cards
+                if as_string(card.get("model_route_id"))
+            }
+
+    for model_path in sorted(models_dir.glob("*.json")):
+        parsed = json.loads(model_path.read_text(encoding="utf-8"))
+        hierarchy_by_category = parsed.get("hierarchy_by_category") or {}
+        hierarchy_categories = sorted(
+            category
+            for category, summaries in hierarchy_by_category.items()
+            if summaries
+        )
+        actual_eval_summary_ids = {
+            as_string(summary.get("eval_summary_id"))
+            for summaries in hierarchy_by_category.values()
+            for summary in summaries or []
+            if as_string(summary.get("eval_summary_id"))
+        }
+
+        declared_categories = sorted(
+            as_string(category)
+            for category in parsed.get("categories_covered") or []
+            if as_string(category)
+        )
+        if declared_categories != hierarchy_categories:
+            errors.append(
+                f"{model_path.name} categories_covered mismatch: declared={declared_categories} actual={hierarchy_categories}"
+            )
+
+        route_id = as_string(parsed.get("model_route_id")) or model_path.stem
+        model_card = model_cards_by_route_id.get(route_id)
+        if not model_card:
+            continue
+
+        expected_eval_summary_ids = {
+            as_string(entry.get("benchmarkKey"))
+            for entry in model_card.get("top_benchmark_scores") or []
+            if as_string(entry.get("benchmarkKey")) in eval_summary_ids
+        }
+        missing_eval_summary_ids = sorted(expected_eval_summary_ids - actual_eval_summary_ids)
+        if missing_eval_summary_ids:
+            errors.append(
+                f"{model_path.name} missing hierarchy nodes for model-card top_benchmark_scores: {missing_eval_summary_ids[:10]}"
+            )
+
+        card_categories = sorted(
+            as_string(category)
+            for category in model_card.get("categories_covered") or []
+            if as_string(category)
+        )
+        if card_categories != hierarchy_categories:
+            errors.append(
+                f"{model_path.name} model-card categories_covered mismatch: card={card_categories} actual={hierarchy_categories}"
+            )
 
     for relative_path in iter_output_relative_files(output_dir):
         text = (output_dir / relative_path).read_text(encoding="utf-8")
@@ -2825,7 +2887,7 @@ def main() -> int:
             "hierarchy_by_category": {},
             "total_evaluations": len(family_evals),
             "last_updated": last_updated,
-            "categories_covered": sorted(by_category.keys()),
+            "categories_covered": [],
             "variants": [
                 {
                     "variant_key": v["variant_key"],
@@ -2837,18 +2899,29 @@ def main() -> int:
                 for v in variants_map.values()
             ],
         }
+        filtered_eval_summaries = [
+            filtered_summary
+            for filtered_summary in (
+                filter_eval_summary_for_model(eval_summary, family_id)
+                for eval_summary in eval_summaries
+            )
+            if filtered_summary is not None
+        ]
+        summary_categories = sorted(
+            {
+                as_string(filtered_summary.get("category") or "other")
+                for filtered_summary in filtered_eval_summaries
+                if as_string(filtered_summary.get("category") or "other")
+            }
+        )
+        summary["categories_covered"] = summary_categories
         summary["evaluation_summaries_by_category"] = {
-            category: filtered_summaries
-            for category in sorted(summary["categories_covered"])
-            if (filtered_summaries := [
+            category: [
                 filtered_summary
-                for filtered_summary in (
-                    filter_eval_summary_for_model(eval_summary, family_id)
-                    for eval_summary in eval_summaries
-                    if as_string(eval_summary.get("category")) == category
-                )
-                if filtered_summary is not None
-            ])
+                for filtered_summary in filtered_eval_summaries
+                if as_string(filtered_summary.get("category") or "other") == category
+            ]
+            for category in summary_categories
         }
         summary["hierarchy_by_category"] = summary["evaluation_summaries_by_category"]
         model_summaries.append(summary)
@@ -2879,7 +2952,7 @@ def main() -> int:
                         if as_string(((result.get("normalized_result") or {}).get("benchmark_family_key")))
                     }
                 ),
-                "categories_covered": sorted(by_category.keys()),
+                "categories_covered": summary_categories,
                 "last_updated": last_updated,
                 "variants": summary["variants"],
                 "score_summary": score_summary,
