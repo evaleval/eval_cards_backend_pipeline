@@ -99,6 +99,12 @@ BUILTIN_METRIC_DISPLAY_MAP = {
     "format_sensitivity_stddev": "Format Sensitivity Standard Deviation",
     "format_sensitivity_max_delta": "Format Sensitivity Max Delta",
 }
+PREFERRED_BENCHMARK_DISPLAY_NAMES = {
+    "ace": "ACE",
+    "apex": "APEX",
+    "apex_agents": "APEX Agents",
+    "apex_v1": "APEX v1",
+}
 METRIC_REGISTRY_ALIAS_LOOKUP: dict[str, str] = {}
 METRIC_REGISTRY_ENTRIES: dict[str, dict] = {}
 METRIC_SUFFIX_ALIAS_CANDIDATES: list[str] = []
@@ -391,6 +397,42 @@ def humanize_token_key(value: Any) -> str:
     return humanize_slug(text)
 
 
+def canonical_benchmark_display_name(*values: Any, fallback: Any = None) -> str:
+    candidates = [as_string(value).strip() for value in values if as_string(value).strip()]
+
+    for candidate in candidates:
+        preferred = PREFERRED_BENCHMARK_DISPLAY_NAMES.get(normalize_benchmark_key(candidate))
+        if preferred:
+            return preferred
+
+    for candidate in candidates:
+        if any(char.isupper() for char in candidate) or " " in candidate:
+            return candidate
+
+    fallback_text = as_string(fallback).strip()
+    if fallback_text:
+        preferred = PREFERRED_BENCHMARK_DISPLAY_NAMES.get(normalize_benchmark_key(fallback_text))
+        if preferred:
+            return preferred
+        return humanize_token_key(fallback_text)
+
+    if candidates:
+        return humanize_token_key(candidates[0])
+    return ""
+
+
+def join_display_name_parts(*values: Any) -> str:
+    parts: list[str] = []
+    for value in values:
+        text = as_string(value).strip()
+        if not text:
+            continue
+        if parts and parts[-1] == text:
+            continue
+        parts.append(text)
+    return " / ".join(parts)
+
+
 def load_metric_registry(path: Path = DEFAULT_METRIC_REGISTRY_PATH) -> None:
     global METRIC_REGISTRY_ALIAS_LOOKUP
     global METRIC_REGISTRY_ENTRIES
@@ -677,10 +719,10 @@ def infer_top_level_benchmark_name(benchmark: Any, benchmark_family_name: str) -
     benchmark_key = normalize_benchmark_key(benchmark)
     if benchmark_key.startswith("helm_"):
         suffix = benchmark_key.split("_", 1)[1]
-        return humanize_token_key(suffix)
+        return canonical_benchmark_display_name(suffix, fallback=suffix)
     if benchmark_family_name and normalize_benchmark_key(benchmark_family_name) == benchmark_key:
         return benchmark_family_name
-    return humanize_token_key(benchmark or benchmark_family_name)
+    return canonical_benchmark_display_name(benchmark, fallback=benchmark or benchmark_family_name)
 
 
 def infer_subset_slice_from_name(name: Any, benchmark: Any) -> tuple[str | None, str | None]:
@@ -767,9 +809,15 @@ def infer_benchmark_leaf_and_slice(
         return top_level_key, top_level_name, subset_key, subset_name
 
     if raw_name and raw_name_key and dataset_key and raw_name_key == dataset_key:
+        canonical_raw_name = canonical_benchmark_display_name(
+            raw_name,
+            benchmark or dataset_name,
+            benchmark_family_name,
+            fallback=top_level_name,
+        )
         if is_language_subset_name(raw_name, benchmark_card) and raw_name_key != top_level_key:
             return top_level_key, top_level_name, raw_name_key, raw_name
-        return raw_name_key, raw_name, None, None
+        return raw_name_key, canonical_raw_name, None, None
 
     if component_name:
         if top_level_benchmark_owns_slices(benchmark or dataset_name, benchmark_card) or is_language_subset_name(component_name, benchmark_card):
@@ -786,9 +834,15 @@ def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: d
     source_data = result.get("source_data") if isinstance(result.get("source_data"), dict) else {}
     dataset_name = as_string((source_data or {}).get("dataset_name"))
     benchmark_family_key = canonical_benchmark_family_key(benchmark or dataset_name)
+    benchmark_card_name = as_string(((benchmark_card or {}).get("benchmark_details") or {}).get("name"))
     benchmark_family_name = (
-        as_string(((benchmark_card or {}).get("benchmark_details") or {}).get("name"))
-        or humanize_token_key(benchmark_family_key or benchmark or dataset_name)
+        canonical_benchmark_display_name(
+            benchmark_family_key,
+            benchmark_card_name,
+            benchmark,
+            dataset_name,
+            fallback=benchmark_family_key or benchmark or dataset_name,
+        )
         or "Unknown Benchmark"
     )
     raw_name = as_string(result.get("evaluation_name")).strip()
@@ -860,10 +914,6 @@ def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: d
     if component_name and not component_key:
         component_key = normalize_benchmark_key(component_name)
 
-    display_parts = [part for part in [component_name, metric["metric_name"]] if part]
-    if not display_parts:
-        display_parts = [benchmark_family_name]
-
     benchmark_leaf_key, benchmark_leaf_name, slice_key, slice_name = infer_benchmark_leaf_and_slice(
         evaluation,
         result,
@@ -883,12 +933,29 @@ def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: d
         and benchmark_leaf_key in SUMMARY_SCORE_LEAF_KEYS
         and benchmark_leaf_key != parent_key
     )
+    benchmark_parent_name = canonical_benchmark_display_name(
+        parent_key,
+        benchmark,
+        dataset_name,
+        benchmark_card_name,
+        fallback=benchmark or dataset_name,
+    )
+    display_name = join_display_name_parts(component_name, metric["metric_name"])
+    if not display_name:
+        display_name = benchmark_leaf_name or benchmark_parent_name or benchmark_family_name
+    canonical_display_name = join_display_name_parts(
+        benchmark_leaf_name or benchmark_parent_name or benchmark_family_name,
+        slice_name,
+        metric["metric_name"],
+    )
+    if not canonical_display_name:
+        canonical_display_name = display_name
 
     return {
         "benchmark_family_key": benchmark_family_key or parent_key,
         "benchmark_family_name": benchmark_family_name,
         "benchmark_parent_key": parent_key,
-        "benchmark_parent_name": humanize_token_key(benchmark or dataset_name),
+        "benchmark_parent_name": benchmark_parent_name,
         "benchmark_component_key": component_key,
         "benchmark_component_name": component_name,
         "benchmark_leaf_key": benchmark_leaf_key,
@@ -899,7 +966,8 @@ def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: d
         "metric_id": metric["metric_id"],
         "metric_key": metric["metric_key"],
         "metric_source": metric_source,
-        "display_name": " / ".join(display_parts),
+        "display_name": display_name,
+        "canonical_display_name": canonical_display_name,
         "raw_evaluation_name": raw_name or None,
         "is_summary_score": is_summary_score,
     }
@@ -1172,6 +1240,7 @@ def build_result_hierarchy_payload(evaluation: dict, result: dict) -> dict:
         "metric_name": normalized.get("metric_name"),
         "metric_source": normalized.get("metric_source"),
         "display_name": normalized.get("display_name"),
+        "canonical_display_name": normalized.get("canonical_display_name"),
         "is_summary_score": bool(normalized.get("is_summary_score")),
     }
 
@@ -1196,6 +1265,7 @@ def find_matching_result_for_instance_row(evaluation: dict, row: dict) -> dict |
                 as_string(result.get("evaluation_name")).strip(),
                 as_string(normalized.get("raw_evaluation_name")).strip(),
                 as_string(normalized.get("display_name")).strip(),
+                as_string(normalized.get("canonical_display_name")).strip(),
                 as_string(normalized.get("benchmark_leaf_name")).strip(),
             } - {""}
             if evaluation_name in candidate_names:
@@ -1461,6 +1531,7 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
         "benchmark_parent_name",
         "benchmark_leaf_key",
         "benchmark_leaf_name",
+        "canonical_display_name",
     ]
 
     for eval_path in sorted(evals_dir.glob("*.json")):
@@ -1937,7 +2008,8 @@ Treat these fields as compatibility/fallback only:
 2. Replace benchmark grouping heuristics with backend keys.
     Use `benchmark_family_key`, `benchmark_parent_key`, `benchmark_leaf_key`,
     `slice_key`, and `metric_key` as stable grouping identifiers. Use `display_name`
-    and the corresponding `*_name` fields for UI labels.
+    for compact UI labels and `canonical_display_name` whenever a row, metric, or
+    slice label needs full benchmark context.
 
 3. Treat summary scores as rollups, not peer benchmarks.
     If `is_summary_score` is `true`, render the node as an overall/aggregate score for
@@ -1989,6 +2061,9 @@ Treat these fields as compatibility/fallback only:
 ### Rendering Rules
 
 - Prefer backend-provided `display_name` over frontend formatting.
+- Prefer `canonical_display_name` for row labels in tables, breadcrumbs, tooltips,
+  chips, compare dialogs, and any surface where names like `Overall` or
+  `Investment Banking` would be ambiguous without benchmark context.
 - Use backend keys for equality/grouping and backend names for labels.
 - If `summary_eval_ids` exists, render the linked summary evals near the relevant
   parent suite or benchmark.
@@ -2035,13 +2110,14 @@ Treat these fields as compatibility/fallback only:
   "evals": [
     {{
       "eval_summary_id": "hfopenllm_v2_bbh",          // Use for /evals/ file lookup
-      "benchmark": "hfopenllm_v2",                     // Top-level benchmark config
+            "benchmark": "HF Open LLM v2",                  // Canonical benchmark display name
       "benchmark_family_key": "hfopenllm",             // Family grouping key
       "benchmark_family_name": "Hfopenllm",
       "benchmark_parent_key": "hfopenllm_v2",
       "benchmark_leaf_key": "bbh",                     // Leaf benchmark
       "benchmark_leaf_name": "BBH",
       "display_name": "BBH",
+            "canonical_display_name": "BBH / Accuracy",     // Full contextual label for rows/metrics
       "is_summary_score": false,                        // true = this is a rollup score across all sub-benchmarks (e.g. "Overall"), not a standalone benchmark
       "summary_score_for": null,                        // if is_summary_score, the parent benchmark_parent_key this summarises
       "summary_score_for_name": null,                   // human-readable version of summary_score_for
@@ -2083,10 +2159,13 @@ Treat these fields as compatibility/fallback only:
 ```jsonc
 {{
   "eval_summary_id": "ace_diy",
-  "benchmark": "ace",
+    "benchmark": "ACE",
   "benchmark_family_key": "ace",
+    "benchmark_family_name": "ACE",
+    "benchmark_parent_name": "ACE",
   "benchmark_leaf_key": "diy",
   "benchmark_leaf_name": "DIY",
+    "canonical_display_name": "ACE / DIY / Score",
   "source_data": {{
     "dataset_name": "ace",
     "source_type": "hf_dataset",
@@ -2143,6 +2222,7 @@ Treat these fields as compatibility/fallback only:
                 "benchmark_parent_key": "apex_agents",
                 "benchmark_leaf_key": "corporate_lawyer",
                 "display_name": "Corporate Lawyer",
+                "canonical_display_name": "APEX Agents / Corporate Lawyer / Mean Score",
                 "is_summary_score": false,
                 "summary_eval_ids": ["apex_agents_overall"],
                 "metrics": [{{ "metric_summary_id": "apex_agents_corporate_lawyer_mean_score", "model_results": [{{ "score": 0.71 }}] }}],
@@ -2531,7 +2611,7 @@ def main() -> int:
                 eval_group_id,
                 {
                     "eval_summary_id": eval_group_id,
-                    "benchmark": evaluation.get("benchmark"),
+                    "benchmark": normalized.get("benchmark_parent_name") or evaluation.get("benchmark"),
                     "benchmark_family_key": normalized.get("benchmark_family_key"),
                     "benchmark_family_name": normalized.get("benchmark_family_name"),
                     "benchmark_parent_key": normalized.get("benchmark_parent_key"),
@@ -2542,6 +2622,7 @@ def main() -> int:
                     "benchmark_component_name": normalized.get("benchmark_component_name"),
                     "evaluation_name": normalized.get("benchmark_leaf_name") or normalized.get("benchmark_family_name"),
                     "display_name": normalized.get("benchmark_leaf_name") or normalized.get("benchmark_family_name"),
+                    "canonical_display_name": normalized.get("benchmark_leaf_name") or normalized.get("benchmark_parent_name") or normalized.get("benchmark_family_name"),
                     "is_summary_score": bool(normalized.get("is_summary_score")),
                     "category": infer_category_from_benchmark(as_string(evaluation.get("benchmark"))),
                     "source_data": result.get("source_data"),
@@ -2582,6 +2663,10 @@ def main() -> int:
                     "subtask_key": None if subtask_key == "__root__" else normalized.get("slice_key"),
                     "subtask_name": normalized.get("slice_name"),
                     "display_name": normalized.get("slice_name") or normalized.get("benchmark_leaf_name") or normalized.get("benchmark_family_name"),
+                    "canonical_display_name": join_display_name_parts(
+                        normalized.get("benchmark_leaf_name") or normalized.get("benchmark_parent_name") or normalized.get("benchmark_family_name"),
+                        normalized.get("slice_name"),
+                    ),
                     "metrics": {},
                 },
             )
@@ -2605,6 +2690,7 @@ def main() -> int:
                             if part
                         ]
                     ),
+                    "canonical_display_name": normalized.get("canonical_display_name"),
                     "benchmark_leaf_key": normalized.get("benchmark_leaf_key"),
                     "benchmark_leaf_name": normalized.get("benchmark_leaf_name"),
                     "slice_key": normalized.get("slice_key"),
@@ -2814,10 +2900,6 @@ def main() -> int:
             iso = iso_from_epoch_string(evaluation.get("retrieved_timestamp"))
             last_updated = max_iso(last_updated, iso)
 
-            bm_name = as_string(evaluation.get("benchmark"))
-            if bm_name:
-                benchmark_names_set.add(bm_name)
-
             model_variant_key = as_string((evaluation.get("model_info") or {}).get("variant_key") or "default")
             variant = variants_map.setdefault(
                 model_variant_key,
@@ -2836,6 +2918,13 @@ def main() -> int:
             variant["last_updated"] = max_iso(variant["last_updated"], iso)
 
             for result in evaluation.get("evaluation_results") or []:
+                normalized = result.get("normalized_result") or {}
+                benchmark_display_name = as_string(
+                    normalized.get("benchmark_parent_name")
+                    or normalized.get("benchmark_family_name")
+                )
+                if benchmark_display_name:
+                    benchmark_names_set.add(benchmark_display_name)
                 score = extract_score(result)
                 if score is not None:
                     score_values.append(score)
@@ -2854,8 +2943,12 @@ def main() -> int:
                     )
                     if is_better:
                         best_per_metric[esid] = {
-                            "benchmark": bm_name,
+                            "benchmark": benchmark_display_name or as_string(evaluation.get("benchmark")),
                             "benchmarkKey": esid,
+                            "canonical_display_name": as_string(
+                                normalized.get("canonical_display_name")
+                                or normalized.get("display_name")
+                            ),
                             "evaluation_name": eval_name,
                             "score": score,
                             "metric": as_string(
@@ -2981,6 +3074,7 @@ def main() -> int:
                 "benchmark_component_name": s.get("benchmark_component_name"),
                 "evaluation_name": s["evaluation_name"],
                 "display_name": s.get("display_name"),
+                "canonical_display_name": s.get("canonical_display_name"),
                 "is_summary_score": s.get("is_summary_score", False),
                 "summary_score_for": s.get("summary_score_for"),
                 "summary_score_for_name": s.get("summary_score_for_name"),
@@ -3001,6 +3095,7 @@ def main() -> int:
                         "metric_id": metric.get("metric_id"),
                         "metric_key": metric.get("metric_key"),
                         "metric_source": metric.get("metric_source"),
+                        "canonical_display_name": metric.get("canonical_display_name"),
                         "lower_is_better": metric.get("lower_is_better"),
                         "models_count": metric.get("models_count"),
                         "top_score": metric.get("top_score"),
@@ -3012,6 +3107,7 @@ def main() -> int:
                         "subtask_key": subtask.get("subtask_key"),
                         "subtask_name": subtask.get("subtask_name"),
                         "display_name": subtask.get("display_name"),
+                        "canonical_display_name": subtask.get("canonical_display_name"),
                         "metrics_count": subtask.get("metrics_count"),
                         "metric_names": subtask.get("metric_names"),
                         "metrics": [
@@ -3021,6 +3117,7 @@ def main() -> int:
                                 "metric_id": metric.get("metric_id"),
                                 "metric_key": metric.get("metric_key"),
                                 "metric_source": metric.get("metric_source"),
+                                "canonical_display_name": metric.get("canonical_display_name"),
                                 "lower_is_better": metric.get("lower_is_better"),
                                 "models_count": metric.get("models_count"),
                                 "top_score": metric.get("top_score"),
