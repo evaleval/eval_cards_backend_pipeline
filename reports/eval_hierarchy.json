@@ -1,164 +1,89 @@
 {
   "stats": {
     "family_count": 20,
-    "composite_count": 20,
-    "standalone_benchmark_count": 10,
-    "single_benchmark_count": 108,
-    "slice_count": 58,
+    "composite_count": 16,
+    "standalone_benchmark_count": 14,
+    "single_benchmark_count": 67,
+    "slice_count": 82,
     "metric_count": 208,
     "metric_rows_scanned": 41616
   },
   "qa": {
-    "fallback_metric_count": 2231,
+    "fallback_metric_count": 1248,
     "fallback_metrics": [
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
         "composite_benchmark": "appworld",
-        "single_benchmark": "appworld/test_normal",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
-        "metric_name": "Score"
-      },
-      {
-        "composite_benchmark": "browsecompplus",
-        "single_benchmark": "browsecompplus",
+        "single_benchmark": "Appworld",
         "metric_name": "Score"
       },
       {
@@ -187,78 +112,153 @@
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Chat",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Factuality",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Chat Hard",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Precise IF",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Math",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
         "single_benchmark": "Safety",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Reasoning",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Focus",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Prior Sets (0.5 weight)",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Ties",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Chat",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Factuality",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Chat Hard",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Precise IF",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Math",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
         "single_benchmark": "Safety",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Reasoning",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Focus",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Prior Sets (0.5 weight)",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Ties",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Chat",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Factuality",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Chat Hard",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Precise IF",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Math",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
         "single_benchmark": "Safety",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Reasoning",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Focus",
         "metric_name": "Score"
       },
       {
-        "composite_benchmark": "reward-bench",
-        "single_benchmark": "Prior Sets (0.5 weight)",
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Ties",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Factuality",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Precise IF",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Math",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Safety",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Focus",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Ties",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Factuality",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Precise IF",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Math",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Safety",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Focus",
+        "metric_name": "Score"
+      },
+      {
+        "composite_benchmark": "reward-bench-2",
+        "single_benchmark": "Ties",
         "metric_name": "Score"
       }
     ],
@@ -270,27 +270,29 @@
   "families": [
     {
       "key": "ace",
-      "display_name": "Ace",
-      "has_card": false,
+      "display_name": "ace",
+      "has_card": true,
       "tags": {
-        "domains": [],
-        "languages": [],
-        "tasks": []
+        "domains": [
+          "DIY/home improvement",
+          "food/recipes",
+          "shopping/products",
+          "gaming design"
+        ],
+        "languages": [
+          "Not specified"
+        ],
+        "tasks": [
+          "Not specified"
+        ]
       },
       "category": "other",
       "standalone_benchmarks": [],
       "composites": [],
-      "benchmarks": [
+      "slices": [
         {
           "key": "diy",
           "display_name": "DIY",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
@@ -304,13 +306,6 @@
         {
           "key": "food",
           "display_name": "Food",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
@@ -324,13 +319,6 @@
         {
           "key": "gaming",
           "display_name": "Gaming",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
@@ -344,13 +332,6 @@
         {
           "key": "overall",
           "display_name": "Overall",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
@@ -364,13 +345,6 @@
         {
           "key": "shopping",
           "display_name": "Shopping",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
@@ -381,41 +355,60 @@
             }
           ]
         }
-      ]
+      ],
+      "metrics": [],
+      "summary_eval_ids": []
     },
     {
       "key": "apex",
       "display_name": "Apex",
-      "has_card": false,
+      "has_card": true,
       "tags": {
-        "domains": [],
-        "languages": [],
-        "tasks": []
+        "domains": [
+          "investment banking",
+          "management consulting",
+          "corporate law",
+          "finance",
+          "legal",
+          "medical",
+          "consulting"
+        ],
+        "languages": [
+          "English"
+        ],
+        "tasks": [
+          "Executing realistic professional work prompts requiring multi-application tool use",
+          "Producing deliverables in investment banking, management consulting, and corporate law domains",
+          "Text generation",
+          "Question answering"
+        ]
       },
-      "category": "agentic",
+      "category": "knowledge",
       "standalone_benchmarks": [],
       "composites": [
         {
           "key": "apex-agents",
           "display_name": "Apex Agents",
-          "has_card": false,
+          "has_card": true,
           "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
+            "domains": [
+              "investment banking",
+              "management consulting",
+              "corporate law"
+            ],
+            "languages": [
+              "English"
+            ],
+            "tasks": [
+              "Executing realistic professional work prompts requiring multi-application tool use",
+              "Producing deliverables in investment banking, management consulting, and corporate law domains"
+            ]
           },
           "category": "agentic",
-          "benchmarks": [
+          "slices": [
             {
               "key": "corporate_law",
               "display_name": "Corporate Law",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "pass_at_1",
@@ -429,13 +422,6 @@
             {
               "key": "corporate_lawyer",
               "display_name": "Corporate Lawyer",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "mean_score",
@@ -449,13 +435,6 @@
             {
               "key": "investment_banking",
               "display_name": "Investment Banking",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "pass_at_1",
@@ -469,13 +448,6 @@
             {
               "key": "management_consulting",
               "display_name": "Management Consulting",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "pass_at_1",
@@ -489,13 +461,6 @@
             {
               "key": "overall",
               "display_name": "Overall",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "mean_score",
@@ -520,29 +485,34 @@
                 }
               ]
             }
-          ]
+          ],
+          "metrics": [],
+          "summary_eval_ids": []
         },
         {
           "key": "apex-v1",
           "display_name": "Apex V1",
-          "has_card": false,
+          "has_card": true,
           "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
+            "domains": [
+              "finance",
+              "legal",
+              "medical",
+              "consulting"
+            ],
+            "languages": [
+              "English"
+            ],
+            "tasks": [
+              "Text generation",
+              "Question answering"
+            ]
           },
-          "category": "other",
-          "benchmarks": [
+          "category": "knowledge",
+          "slices": [
             {
               "key": "big_law",
               "display_name": "Big Law",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "score",
@@ -556,13 +526,6 @@
             {
               "key": "consulting",
               "display_name": "Consulting",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "score",
@@ -576,13 +539,6 @@
             {
               "key": "investment_banking",
               "display_name": "Investment Banking",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "score",
@@ -596,13 +552,6 @@
             {
               "key": "medicine_md",
               "display_name": "Medicine (MD)",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "score",
@@ -616,13 +565,6 @@
             {
               "key": "overall",
               "display_name": "Overall",
-              "has_card": false,
-              "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
-              },
-              "slices": [],
               "metrics": [
                 {
                   "key": "score",
@@ -633,7 +575,9 @@
                 }
               ]
             }
-          ]
+          ],
+          "metrics": [],
+          "summary_eval_ids": []
         }
       ]
     },
@@ -649,16 +593,23 @@
       "category": "agentic",
       "standalone_benchmarks": [],
       "composites": [],
-      "slices": [],
-      "metrics": [
+      "slices": [
         {
-          "key": "score",
-          "display_name": "Score",
-          "sources": [
-            "fallback"
+          "key": "test_normal",
+          "display_name": "Test normal",
+          "metrics": [
+            {
+              "key": "score",
+              "display_name": "Score",
+              "sources": [
+                "fallback"
+              ]
+            }
           ]
         }
-      ]
+      ],
+      "metrics": [],
+      "summary_eval_ids": []
     },
     {
       "key": "arc-agi",
@@ -672,6 +623,7 @@
       "category": "other",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [],
       "benchmarks": [
         {
           "key": "v1_public_eval",
@@ -849,6 +801,9 @@
       "category": "other",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [
+        "bfcl_overall"
+      ],
       "benchmarks": [
         {
           "key": "format_sensitivity",
@@ -1063,61 +1018,6 @@
           ]
         },
         {
-          "key": "overall",
-          "display_name": "Overall",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
-          "metrics": [
-            {
-              "key": "latency_p95",
-              "display_name": "Latency 95th Percentile",
-              "sources": [
-                "metric_config"
-              ]
-            },
-            {
-              "key": "latency_mean",
-              "display_name": "Latency Mean",
-              "sources": [
-                "metric_config"
-              ]
-            },
-            {
-              "key": "latency_std",
-              "display_name": "Latency Standard Deviation",
-              "sources": [
-                "metric_config"
-              ]
-            },
-            {
-              "key": "overall_accuracy",
-              "display_name": "Overall Accuracy",
-              "sources": [
-                "metric_config"
-              ]
-            },
-            {
-              "key": "rank",
-              "display_name": "Rank",
-              "sources": [
-                "metric_config"
-              ]
-            },
-            {
-              "key": "total_cost",
-              "display_name": "Total Cost",
-              "sources": [
-                "metric_config"
-              ]
-            }
-          ]
-        },
-        {
           "key": "relevance",
           "display_name": "Relevance",
           "has_card": false,
@@ -1183,25 +1083,36 @@
     {
       "key": "browsecompplus",
       "display_name": "browsecompplus",
-      "has_card": false,
+      "has_card": true,
       "tags": {
-        "domains": [],
-        "languages": [],
-        "tasks": []
+        "domains": [
+          "information retrieval",
+          "question answering",
+          "deep-research agents"
+        ],
+        "languages": [
+          "No language information provided in sources"
+        ],
+        "tasks": [
+          "Answering complex fact-seeking questions that require deep research",
+          "Evaluating end-to-end agents for answer generation",
+          "Evaluating retriever-only systems using retrieval metrics"
+        ]
       },
-      "category": "agentic",
+      "category": "knowledge",
       "standalone_benchmarks": [],
       "composites": [],
       "slices": [],
       "metrics": [
         {
-          "key": "score",
-          "display_name": "Score",
+          "key": "accuracy",
+          "display_name": "Accuracy",
           "sources": [
-            "fallback"
+            "benchmark_card"
           ]
         }
-      ]
+      ],
+      "summary_eval_ids": []
     },
     {
       "key": "fibble",
@@ -1247,7 +1158,8 @@
               ]
             }
           ],
-          "category": "other"
+          "category": "other",
+          "summary_eval_ids": []
         },
         {
           "key": "fibble1_arena",
@@ -1275,7 +1187,8 @@
               ]
             }
           ],
-          "category": "other"
+          "category": "other",
+          "summary_eval_ids": []
         },
         {
           "key": "fibble2_arena",
@@ -1312,7 +1225,8 @@
               ]
             }
           ],
-          "category": "other"
+          "category": "other",
+          "summary_eval_ids": []
         },
         {
           "key": "fibble3_arena",
@@ -1349,7 +1263,8 @@
               ]
             }
           ],
-          "category": "other"
+          "category": "other",
+          "summary_eval_ids": []
         },
         {
           "key": "fibble4_arena",
@@ -1386,7 +1301,8 @@
               ]
             }
           ],
-          "category": "other"
+          "category": "other",
+          "summary_eval_ids": []
         },
         {
           "key": "fibble5_arena",
@@ -1423,7 +1339,8 @@
               ]
             }
           ],
-          "category": "other"
+          "category": "other",
+          "summary_eval_ids": []
         }
       ],
       "composites": []
@@ -1431,11 +1348,34 @@
     {
       "key": "global_mmlu_lite",
       "display_name": "Global MMLU Lite",
-      "has_card": false,
+      "has_card": true,
       "tags": {
-        "domains": [],
-        "languages": [],
-        "tasks": []
+        "domains": [
+          "multiple subjects"
+        ],
+        "languages": [
+          "English",
+          "Arabic",
+          "bn",
+          "Spanish",
+          "French",
+          "Hindi",
+          "German",
+          "id",
+          "Italian",
+          "Japanese",
+          "Korean",
+          "my",
+          "Portuguese",
+          "Chinese",
+          "yo",
+          "sw",
+          "cy",
+          "sq"
+        ],
+        "tasks": [
+          "Multiple-choice question answering"
+        ]
       },
       "category": "reasoning",
       "standalone_benchmarks": [],
@@ -1449,7 +1389,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1462,7 +1402,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1475,7 +1415,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1488,7 +1428,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1501,7 +1441,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1514,7 +1454,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1527,7 +1467,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1540,7 +1480,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1553,7 +1493,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1566,7 +1506,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1579,7 +1519,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1592,7 +1532,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1605,7 +1545,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1618,7 +1558,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1631,7 +1571,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1644,7 +1584,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1657,7 +1597,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1670,7 +1610,7 @@
               "key": "accuracy",
               "display_name": "Accuracy",
               "sources": [
-                "benchmark_default"
+                "benchmark_card"
               ]
             }
           ]
@@ -1681,10 +1621,11 @@
           "key": "accuracy",
           "display_name": "Accuracy",
           "sources": [
-            "benchmark_default"
+            "benchmark_card"
           ]
         }
-      ]
+      ],
+      "summary_eval_ids": []
     },
     {
       "key": "helm",
@@ -1692,13 +1633,15 @@
       "has_card": true,
       "tags": {
         "domains": [
+          "question answering",
+          "information retrieval",
+          "summarization",
+          "sentiment analysis",
+          "toxicity detection",
           "biology",
           "physics",
           "chemistry",
-          "open domain qa",
-          "open book qa",
-          "multiple choice qa",
-          "instruction following",
+          "The paper does not specify particular research domains or subject areas covered by the benchmark.",
           "STEM",
           "humanities",
           "social sciences",
@@ -1712,6 +1655,7 @@
           "philosophy",
           "computer science",
           "history",
+          "mathematics",
           "olympiads",
           "Info Seeking",
           "Math & Data",
@@ -1724,51 +1668,91 @@
           "bias measurement",
           "toxic comment classification",
           "text classification",
-          "summarization",
+          "reasoning",
+          "bias detection",
+          "language understanding",
+          "language generation",
           "journalism",
           "news media",
           "commonsense reasoning",
-          "question answering",
+          "machine reading comprehension",
+          "stories and narratives",
+          "information extraction",
+          "Not specified",
           "dialogue modeling",
           "text generation",
+          "medical literature",
+          "customer service",
+          "academic research",
+          "legal documents",
+          "news articles",
+          "social media content",
+          "finance",
+          "politics",
           "grade school mathematics",
           "math word problems",
           "legal",
-          "finance",
+          "mathematical reasoning",
+          "legal analysis",
+          "multilingual understanding",
           "medical knowledge",
+          "narrative comprehension",
+          "explanation generation",
           "professional medical exams"
         ],
         "languages": [
-          "English"
+          "English",
+          "Not specified",
+          "multiple"
         ],
         "tasks": [
-          "Multiple-choice question answering",
           "Question answering",
+          "Information retrieval",
+          "Summarization",
+          "Sentiment analysis",
+          "Toxicity detection",
+          "Multiple-choice question answering",
           "Text generation",
-          "Following verifiable instructions (e.g., word counts, formatting rules, keyword mentions)",
-          "Multiple-choice question answering across a broad range of subjects",
+          "Following verifiable instructions",
           "Solving Olympiad-level mathematical problems",
-          "Solving competition-level mathematical problems",
-          "Rule-based evaluation on a filtered subset of problems (Omni-MATH-Rule)",
-          "Open-ended text generation in response to diverse user queries",
           "Yes/no question answering",
           "Text-pair classification",
           "Binary toxicity classification (toxic vs. non-toxic)",
           "Analysis of performance across identity subgroups",
-          "Summarization",
+          "Text summarization",
+          "Text classification",
+          "Reasoning",
+          "Toxic comment identification",
           "Four-way multiple-choice selection for event continuation",
           "Commonsense inference",
+          "Binary sentiment classification",
+          "Predicting if a question is answerable given context passages and synthesizing an answer",
+          "Generating a well-formed answer based on context",
+          "Ranking retrieved passages for a question",
+          "Natural language generation",
+          "Answering questions about stories by reading entire books or movie scripts",
+          "Answering questions using human-written summaries (summaries only)",
+          "Answering questions using the full story text (stories only)",
+          "Open-domain question answering",
           "Extractive question answering",
           "Fill mask",
+          "Single-document extreme summarization",
+          "News article summarization",
+          "Not specified",
           "Solving grade school math word problems",
           "Text generation for question answering",
-          "Text classification",
           "Rule-application tasks",
-          "Free-form multiple-choice question answering",
-          "Open-domain question answering"
+          "Mathematical reasoning",
+          "Legal reasoning",
+          "Medical question answering",
+          "General knowledge evaluation",
+          "Reading comprehension",
+          "Machine translation",
+          "Generating a final answer sequence given a math problem",
+          "Free-form multiple-choice question answering"
         ]
       },
-      "category": "general",
+      "category": "knowledge",
       "standalone_benchmarks": [],
       "composites": [
         {
@@ -1777,13 +1761,15 @@
           "has_card": true,
           "tags": {
             "domains": [
+              "question answering",
+              "information retrieval",
+              "summarization",
+              "sentiment analysis",
+              "toxicity detection",
               "biology",
               "physics",
               "chemistry",
-              "open domain qa",
-              "open book qa",
-              "multiple choice qa",
-              "instruction following",
+              "The paper does not specify particular research domains or subject areas covered by the benchmark.",
               "STEM",
               "humanities",
               "social sciences",
@@ -1797,6 +1783,7 @@
               "philosophy",
               "computer science",
               "history",
+              "mathematics",
               "olympiads",
               "Info Seeking",
               "Math & Data",
@@ -1807,27 +1794,41 @@
               "English"
             ],
             "tasks": [
-              "Multiple-choice question answering",
               "Question answering",
+              "Information retrieval",
+              "Summarization",
+              "Sentiment analysis",
+              "Toxicity detection",
+              "Multiple-choice question answering",
               "Text generation",
-              "Following verifiable instructions (e.g., word counts, formatting rules, keyword mentions)",
-              "Multiple-choice question answering across a broad range of subjects",
-              "Solving Olympiad-level mathematical problems",
-              "Solving competition-level mathematical problems",
-              "Rule-based evaluation on a filtered subset of problems (Omni-MATH-Rule)",
-              "Open-ended text generation in response to diverse user queries"
+              "Following verifiable instructions",
+              "Solving Olympiad-level mathematical problems"
             ]
           },
-          "category": "general",
+          "category": "knowledge",
           "benchmarks": [
             {
               "key": "helm_capabilities",
               "display_name": "Capabilities",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "question answering",
+                  "information retrieval",
+                  "summarization",
+                  "sentiment analysis",
+                  "toxicity detection"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Question answering",
+                  "Information retrieval",
+                  "Summarization",
+                  "Sentiment analysis",
+                  "Toxicity detection"
+                ]
               },
               "slices": [
                 {
@@ -1854,18 +1855,13 @@
                 "domains": [
                   "biology",
                   "physics",
-                  "chemistry",
-                  "open domain qa",
-                  "open book qa",
-                  "multiple choice qa"
+                  "chemistry"
                 ],
                 "languages": [
                   "English"
                 ],
                 "tasks": [
-                  "Multiple-choice question answering",
-                  "Question answering",
-                  "Text generation"
+                  "Multiple-choice question answering"
                 ]
               },
               "slices": [],
@@ -1885,14 +1881,14 @@
               "has_card": true,
               "tags": {
                 "domains": [
-                  "instruction following"
+                  "The paper does not specify particular research domains or subject areas covered by the benchmark."
                 ],
                 "languages": [
                   "English"
                 ],
                 "tasks": [
                   "Text generation",
-                  "Following verifiable instructions (e.g., word counts, formatting rules, keyword mentions)"
+                  "Following verifiable instructions"
                 ]
               },
               "slices": [],
@@ -1933,7 +1929,7 @@
                   "English"
                 ],
                 "tasks": [
-                  "Multiple-choice question answering across a broad range of subjects"
+                  "Multiple-choice question answering"
                 ]
               },
               "slices": [],
@@ -1953,16 +1949,14 @@
               "has_card": true,
               "tags": {
                 "domains": [
-                  "math",
+                  "mathematics",
                   "olympiads"
                 ],
                 "languages": [
                   "English"
                 ],
                 "tasks": [
-                  "Solving Olympiad-level mathematical problems",
-                  "Solving competition-level mathematical problems",
-                  "Rule-based evaluation on a filtered subset of problems (Omni-MATH-Rule)"
+                  "Solving Olympiad-level mathematical problems"
                 ]
               },
               "slices": [],
@@ -1991,7 +1985,7 @@
                   "English"
                 ],
                 "tasks": [
-                  "Open-ended text generation in response to diverse user queries"
+                  "Text generation"
                 ]
               },
               "slices": [],
@@ -2005,7 +1999,8 @@
                 }
               ]
             }
-          ]
+          ],
+          "summary_eval_ids": []
         },
         {
           "key": "helm_classic",
@@ -2020,16 +2015,36 @@
               "bias measurement",
               "toxic comment classification",
               "text classification",
+              "question answering",
               "summarization",
+              "reasoning",
+              "bias detection",
+              "language understanding",
+              "language generation",
               "journalism",
               "news media",
               "commonsense reasoning",
+              "sentiment analysis",
               "STEM",
               "humanities",
               "social sciences",
-              "question answering",
+              "information retrieval",
+              "machine reading comprehension",
+              "stories and narratives",
+              "information extraction",
+              "Not specified",
               "dialogue modeling",
-              "text generation"
+              "text generation",
+              "medical literature",
+              "customer service",
+              "academic research",
+              "legal documents",
+              "news articles",
+              "social media content",
+              "health",
+              "law",
+              "finance",
+              "politics"
             ],
             "languages": [
               "English"
@@ -2039,16 +2054,32 @@
               "Text-pair classification",
               "Binary toxicity classification (toxic vs. non-toxic)",
               "Analysis of performance across identity subgroups",
+              "Question answering",
+              "Text summarization",
+              "Text classification",
+              "Reasoning",
+              "Toxic comment identification",
               "Summarization",
               "Four-way multiple-choice selection for event continuation",
               "Commonsense inference",
+              "Binary sentiment classification",
               "Multiple-choice question answering",
+              "Predicting if a question is answerable given context passages and synthesizing an answer",
+              "Generating a well-formed answer based on context",
+              "Ranking retrieved passages for a question",
+              "Natural language generation",
+              "Answering questions about stories by reading entire books or movie scripts",
+              "Answering questions using human-written summaries (summaries only)",
+              "Answering questions using the full story text (stories only)",
+              "Open-domain question answering",
               "Extractive question answering",
               "Text generation",
-              "Fill mask"
+              "Fill mask",
+              "Single-document extreme summarization",
+              "News article summarization"
             ]
           },
-          "category": "general",
+          "category": "knowledge",
           "benchmarks": [
             {
               "key": "boolq",
@@ -2112,11 +2143,26 @@
             {
               "key": "helm_classic",
               "display_name": "Classic",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "question answering",
+                  "summarization",
+                  "reasoning",
+                  "bias detection",
+                  "language understanding",
+                  "language generation"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Question answering",
+                  "Text summarization",
+                  "Text classification",
+                  "Reasoning",
+                  "Toxic comment identification"
+                ]
               },
               "slices": [
                 {
@@ -2194,11 +2240,18 @@
             {
               "key": "imdb",
               "display_name": "IMDB",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "sentiment analysis"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Binary sentiment classification",
+                  "Text classification"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2242,11 +2295,23 @@
             {
               "key": "ms_marco_trec",
               "display_name": "MS MARCO (TREC)",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "information retrieval",
+                  "question answering",
+                  "machine reading comprehension"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Predicting if a question is answerable given context passages and synthesizing an answer",
+                  "Generating a well-formed answer based on context",
+                  "Ranking retrieved passages for a question",
+                  "Question answering",
+                  "Natural language generation"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2262,11 +2327,21 @@
             {
               "key": "narrativeqa",
               "display_name": "NarrativeQA",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "reading comprehension",
+                  "natural language understanding",
+                  "stories and narratives"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Answering questions about stories by reading entire books or movie scripts",
+                  "Answering questions using human-written summaries (summaries only)",
+                  "Answering questions using the full story text (stories only)"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2282,11 +2357,19 @@
             {
               "key": "naturalquestions_open_book",
               "display_name": "NaturalQuestions (open-book)",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "question answering",
+                  "reading comprehension",
+                  "information extraction"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Open-domain question answering"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2302,11 +2385,17 @@
             {
               "key": "openbookqa",
               "display_name": "OpenbookQA",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "Not specified"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Open-domain question answering"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2352,11 +2441,23 @@
             {
               "key": "raft",
               "display_name": "RAFT",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "text classification",
+                  "medical literature",
+                  "customer service",
+                  "academic research",
+                  "legal documents",
+                  "news articles",
+                  "social media content"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Text classification"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2372,11 +2473,21 @@
             {
               "key": "truthfulqa",
               "display_name": "TruthfulQA",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "health",
+                  "law",
+                  "finance",
+                  "politics"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Text generation",
+                  "Multiple-choice question answering"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2392,11 +2503,19 @@
             {
               "key": "xsum",
               "display_name": "XSUM",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "news articles",
+                  "summarization"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Single-document extreme summarization",
+                  "News article summarization"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2409,18 +2528,36 @@
                 }
               ]
             }
-          ]
+          ],
+          "summary_eval_ids": []
         },
         {
           "key": "helm_instruct",
           "display_name": "Helm instruct",
-          "has_card": false,
+          "has_card": true,
           "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
+            "domains": [
+              "question answering",
+              "information retrieval",
+              "summarization",
+              "sentiment analysis",
+              "toxicity detection",
+              "Not specified"
+            ],
+            "languages": [
+              "Not specified",
+              "English"
+            ],
+            "tasks": [
+              "Question answering",
+              "Information retrieval",
+              "Summarization",
+              "Sentiment analysis",
+              "Toxicity detection",
+              "Not specified"
+            ]
           },
-          "category": "general",
+          "category": "knowledge",
           "benchmarks": [
             {
               "key": "anthropic_rlhf_dataset",
@@ -2465,11 +2602,25 @@
             {
               "key": "helm_instruct",
               "display_name": "Instruct",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "question answering",
+                  "information retrieval",
+                  "summarization",
+                  "sentiment analysis",
+                  "toxicity detection"
+                ],
+                "languages": [
+                  "Not specified"
+                ],
+                "tasks": [
+                  "Question answering",
+                  "Information retrieval",
+                  "Summarization",
+                  "Sentiment analysis",
+                  "Toxicity detection"
+                ]
               },
               "slices": [
                 {
@@ -2511,11 +2662,17 @@
             {
               "key": "open_assistant",
               "display_name": "Open Assistant",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "Not specified"
+                ],
+                "languages": [
+                  "Not specified"
+                ],
+                "tasks": [
+                  "Not specified"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2531,11 +2688,17 @@
             {
               "key": "self_instruct",
               "display_name": "Self Instruct",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "Not specified"
+                ],
+                "languages": [
+                  "Not specified"
+                ],
+                "tasks": [
+                  "Not specified"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2551,11 +2714,17 @@
             {
               "key": "vicuna",
               "display_name": "Vicuna",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "Not specified"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Not specified"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2568,7 +2737,8 @@
                 }
               ]
             }
-          ]
+          ],
+          "summary_eval_ids": []
         },
         {
           "key": "helm_lite",
@@ -2581,14 +2751,25 @@
               "legal",
               "law",
               "finance",
+              "mathematical reasoning",
+              "legal analysis",
+              "multilingual understanding",
               "medical knowledge",
+              "narrative comprehension",
+              "question answering",
+              "explanation generation",
               "professional medical exams",
               "STEM",
               "humanities",
-              "social sciences"
+              "social sciences",
+              "reading comprehension",
+              "natural language understanding",
+              "stories and narratives",
+              "Not specified"
             ],
             "languages": [
-              "English"
+              "English",
+              "multiple"
             ],
             "tasks": [
               "Solving grade school math word problems",
@@ -2597,12 +2778,22 @@
               "Question answering",
               "Text generation",
               "Rule-application tasks",
+              "Mathematical reasoning",
+              "Legal reasoning",
+              "Medical question answering",
+              "General knowledge evaluation",
+              "Reading comprehension",
+              "Machine translation",
+              "Generating a final answer sequence given a math problem",
               "Free-form multiple-choice question answering",
               "Open-domain question answering",
-              "Multiple-choice question answering"
+              "Multiple-choice question answering",
+              "Answering questions about stories by reading entire books or movie scripts",
+              "Answering questions using human-written summaries (summaries only)",
+              "Answering questions using the full story text (stories only)"
             ]
           },
-          "category": "general",
+          "category": "reasoning",
           "benchmarks": [
             {
               "key": "gsm8k",
@@ -2666,11 +2857,28 @@
             {
               "key": "helm_lite",
               "display_name": "Lite",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "mathematical reasoning",
+                  "legal analysis",
+                  "multilingual understanding",
+                  "medical knowledge",
+                  "narrative comprehension",
+                  "question answering"
+                ],
+                "languages": [
+                  "English",
+                  "multiple"
+                ],
+                "tasks": [
+                  "Mathematical reasoning",
+                  "Legal reasoning",
+                  "Medical question answering",
+                  "General knowledge evaluation",
+                  "Reading comprehension",
+                  "Machine translation"
+                ]
               },
               "slices": [
                 {
@@ -2692,19 +2900,26 @@
             {
               "key": "math",
               "display_name": "MATH",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "mathematical reasoning",
+                  "explanation generation"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Generating a final answer sequence given a math problem"
+                ]
               },
               "slices": [],
               "metrics": [
                 {
-                  "key": "accuracy",
-                  "display_name": "Accuracy",
+                  "key": "exact_match_em_for_gsm8k_legalbench_mmlu_medqa_and_openbookqa",
+                  "display_name": "Exact Match (EM) for GSM8K, LegalBench, MMLU, MedQA, and OpenbookQA",
                   "sources": [
-                    "score_details"
+                    "benchmark_card"
                   ]
                 }
               ]
@@ -2768,11 +2983,21 @@
             {
               "key": "narrativeqa",
               "display_name": "NarrativeQA",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "reading comprehension",
+                  "natural language understanding",
+                  "stories and narratives"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Answering questions about stories by reading entire books or movie scripts",
+                  "Answering questions using human-written summaries (summaries only)",
+                  "Answering questions using the full story text (stories only)"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2788,11 +3013,17 @@
             {
               "key": "naturalquestions_closed_book",
               "display_name": "NaturalQuestions (closed-book)",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "Not specified"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Question answering"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2808,11 +3039,17 @@
             {
               "key": "openbookqa",
               "display_name": "OpenbookQA",
-              "has_card": false,
+              "has_card": true,
               "tags": {
-                "domains": [],
-                "languages": [],
-                "tasks": []
+                "domains": [
+                  "Not specified"
+                ],
+                "languages": [
+                  "English"
+                ],
+                "tasks": [
+                  "Open-domain question answering"
+                ]
               },
               "slices": [],
               "metrics": [
@@ -2845,24 +3082,17 @@
                 }
               ]
             }
-          ]
+          ],
+          "summary_eval_ids": []
         },
         {
           "key": "helm_mmlu",
           "display_name": "Helm mmlu",
-          "has_card": true,
+          "has_card": false,
           "tags": {
-            "domains": [
-              "STEM",
-              "humanities",
-              "social sciences"
-            ],
-            "languages": [
-              "English"
-            ],
-            "tasks": [
-              "Multiple-choice question answering"
-            ]
+            "domains": [],
+            "languages": [],
+            "tasks": []
           },
           "category": "reasoning",
           "slices": [
@@ -3335,7 +3565,8 @@
               ]
             }
           ],
-          "metrics": []
+          "metrics": [],
+          "summary_eval_ids": []
         }
       ]
     },
@@ -3345,13 +3576,11 @@
       "has_card": true,
       "tags": {
         "domains": [
+          "Not specified",
           "biology",
           "physics",
           "chemistry",
-          "open domain qa",
-          "open book qa",
-          "multiple choice qa",
-          "instruction following",
+          "The paper does not specify particular research domains or subject areas covered by the benchmark.",
           "mathematics",
           "explanation generation",
           "STEM",
@@ -3372,34 +3601,72 @@
           "planning"
         ],
         "languages": [
+          "Not specified",
           "English"
         ],
         "tasks": [
+          "Boolean expressions",
+          "Causal judgement",
+          "Date understanding",
+          "Disambiguation",
+          "Dyck languages",
+          "Formal fallacies",
+          "Geometric shapes",
+          "Logical deduction",
+          "Movie recommendation",
+          "Multistep arithmetic",
+          "Navigation",
+          "Object counting",
+          "Reasoning about colored objects",
+          "Temporal sequences",
+          "Tracking shuffled objects",
+          "Word sorting",
           "Multiple-choice question answering",
-          "Question answering",
           "Text generation",
-          "Following verifiable instructions (e.g., word counts, formatting rules, keyword mentions)",
+          "Following verifiable instructions",
           "Mathematical problem solving",
           "Step-by-step solution generation",
           "Final answer generation",
-          "Multiple-choice question answering across a broad range of subjects",
+          "Question answering",
           "Solving murder mysteries",
           "Solving object placement problems",
           "Solving team allocation problems"
         ]
       },
-      "category": "instruction_following",
+      "category": "reasoning",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [],
       "benchmarks": [
         {
           "key": "bbh",
           "display_name": "BBH",
-          "has_card": false,
+          "has_card": true,
           "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
+            "domains": [
+              "Not specified"
+            ],
+            "languages": [
+              "Not specified"
+            ],
+            "tasks": [
+              "Boolean expressions",
+              "Causal judgement",
+              "Date understanding",
+              "Disambiguation",
+              "Dyck languages",
+              "Formal fallacies",
+              "Geometric shapes",
+              "Logical deduction",
+              "Movie recommendation",
+              "Multistep arithmetic",
+              "Navigation",
+              "Object counting",
+              "Reasoning about colored objects",
+              "Temporal sequences",
+              "Tracking shuffled objects",
+              "Word sorting"
+            ]
           },
           "slices": [],
           "metrics": [
@@ -3420,18 +3687,13 @@
             "domains": [
               "biology",
               "physics",
-              "chemistry",
-              "open domain qa",
-              "open book qa",
-              "multiple choice qa"
+              "chemistry"
             ],
             "languages": [
               "English"
             ],
             "tasks": [
-              "Multiple-choice question answering",
-              "Question answering",
-              "Text generation"
+              "Multiple-choice question answering"
             ]
           },
           "slices": [],
@@ -3451,14 +3713,14 @@
           "has_card": true,
           "tags": {
             "domains": [
-              "instruction following"
+              "The paper does not specify particular research domains or subject areas covered by the benchmark."
             ],
             "languages": [
               "English"
             ],
             "tasks": [
               "Text generation",
-              "Following verifiable instructions (e.g., word counts, formatting rules, keyword mentions)"
+              "Following verifiable instructions"
             ]
           },
           "slices": [],
@@ -3528,7 +3790,7 @@
               "English"
             ],
             "tasks": [
-              "Multiple-choice question answering across a broad range of subjects"
+              "Multiple-choice question answering"
             ]
           },
           "slices": [],
@@ -3596,20 +3858,22 @@
             "fallback"
           ]
         }
-      ]
+      ],
+      "summary_eval_ids": []
     },
     {
       "key": "livecodebenchpro",
       "display_name": "Livecodebenchpro",
-      "has_card": false,
+      "has_card": true,
       "tags": {
         "domains": [],
         "languages": [],
         "tasks": []
       },
-      "category": "agentic",
+      "category": "coding",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [],
       "benchmarks": [
         {
           "key": "easy_problems",
@@ -3674,34 +3938,37 @@
       ]
     },
     {
-      "key": "reward-bench",
+      "key": "reward_bench",
       "display_name": "Reward Bench",
-      "has_card": false,
+      "has_card": true,
       "tags": {
-        "domains": [],
-        "languages": [],
-        "tasks": []
+        "domains": [
+          "chat",
+          "reasoning",
+          "safety"
+        ],
+        "languages": [
+          "English"
+        ],
+        "tasks": [
+          "Reward model evaluation",
+          "Comparing prompt-chosen-rejected trios",
+          "Question answering"
+        ]
       },
-      "category": "safety",
+      "category": "reasoning",
       "standalone_benchmarks": [],
       "composites": [],
-      "benchmarks": [
+      "slices": [
         {
           "key": "chat",
           "display_name": "Chat",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
               "display_name": "Score",
               "sources": [
-                "fallback"
+                "benchmark_card"
               ]
             }
           ]
@@ -3709,19 +3976,12 @@
         {
           "key": "chat_hard",
           "display_name": "Chat Hard",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
               "display_name": "Score",
               "sources": [
-                "fallback"
+                "benchmark_card"
               ]
             }
           ]
@@ -3729,19 +3989,12 @@
         {
           "key": "prior_sets_0_5_weight",
           "display_name": "Prior Sets (0.5 weight)",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
               "display_name": "Score",
               "sources": [
-                "fallback"
+                "benchmark_card"
               ]
             }
           ]
@@ -3749,39 +4002,12 @@
         {
           "key": "reasoning",
           "display_name": "Reasoning",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
               "display_name": "Score",
               "sources": [
-                "fallback"
-              ]
-            }
-          ]
-        },
-        {
-          "key": "reward_bench",
-          "display_name": "Reward bench",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
-          "metrics": [
-            {
-              "key": "score",
-              "display_name": "Score",
-              "sources": [
-                "evaluation_name"
+                "benchmark_card"
               ]
             }
           ]
@@ -3789,24 +4015,27 @@
         {
           "key": "safety",
           "display_name": "Safety",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
           "metrics": [
             {
               "key": "score",
               "display_name": "Score",
               "sources": [
-                "fallback"
+                "benchmark_card"
               ]
             }
           ]
         }
-      ]
+      ],
+      "metrics": [
+        {
+          "key": "score",
+          "display_name": "Score",
+          "sources": [
+            "evaluation_name"
+          ]
+        }
+      ],
+      "summary_eval_ids": []
     },
     {
       "key": "reward-bench-2",
@@ -3820,6 +4049,7 @@
       "category": "safety",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [],
       "benchmarks": [
         {
           "key": "factuality",
@@ -3975,6 +4205,9 @@
       "category": "other",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [
+        "sciarena_overall"
+      ],
       "slices": [],
       "metrics": [
         {
@@ -4003,29 +4236,38 @@
     {
       "key": "swe-bench",
       "display_name": "Swe Bench",
-      "has_card": false,
+      "has_card": true,
       "tags": {
-        "domains": [],
-        "languages": [],
-        "tasks": []
+        "domains": [
+          "software engineering",
+          "issue resolution",
+          "code generation"
+        ],
+        "languages": [
+          "Python"
+        ],
+        "tasks": [
+          "Issue resolution"
+        ]
       },
-      "category": "agentic",
+      "category": "coding",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [],
       "slices": [],
       "metrics": [
         {
-          "key": "score",
-          "display_name": "Score",
+          "key": "swe_bench_benchmark_evaluation",
+          "display_name": "SWE-bench benchmark evaluation",
           "sources": [
-            "fallback"
+            "benchmark_card"
           ]
         }
       ]
     },
     {
-      "key": "tau-bench-2",
-      "display_name": "Tau Bench 2",
+      "key": "tau_bench_2",
+      "display_name": "Tau bench 2",
       "has_card": false,
       "tags": {
         "domains": [],
@@ -4035,17 +4277,10 @@
       "category": "agentic",
       "standalone_benchmarks": [],
       "composites": [],
-      "benchmarks": [
+      "slices": [
         {
-          "key": "tau_bench_2_airline",
-          "display_name": "tau-bench-2/airline",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
+          "key": "airline",
+          "display_name": "Airline",
           "metrics": [
             {
               "key": "score",
@@ -4057,15 +4292,8 @@
           ]
         },
         {
-          "key": "tau_bench_2_retail",
-          "display_name": "tau-bench-2/retail",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
+          "key": "retail",
+          "display_name": "Retail",
           "metrics": [
             {
               "key": "score",
@@ -4077,15 +4305,8 @@
           ]
         },
         {
-          "key": "tau_bench_2_telecom",
-          "display_name": "tau-bench-2/telecom",
-          "has_card": false,
-          "tags": {
-            "domains": [],
-            "languages": [],
-            "tasks": []
-          },
-          "slices": [],
+          "key": "telecom",
+          "display_name": "Telecom",
           "metrics": [
             {
               "key": "score",
@@ -4096,27 +4317,44 @@
             }
           ]
         }
-      ]
+      ],
+      "metrics": [],
+      "summary_eval_ids": []
     },
     {
       "key": "terminal-bench-2.0",
       "display_name": "Terminal Bench 2 0",
-      "has_card": false,
+      "has_card": true,
       "tags": {
-        "domains": [],
-        "languages": [],
-        "tasks": []
+        "domains": [
+          "benchmark",
+          "agents",
+          "terminal",
+          "code",
+          "evaluation",
+          "harbor"
+        ],
+        "languages": [
+          "English"
+        ],
+        "tasks": [
+          "Text generation",
+          "Protein assembly",
+          "Debugging async code",
+          "Resolving security vulnerabilities"
+        ]
       },
       "category": "agentic",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [],
       "slices": [],
       "metrics": [
         {
-          "key": "score",
-          "display_name": "Score",
+          "key": "task_resolution_accuracy_across_87_terminal_tasks_with_5_trials_each",
+          "display_name": "Task resolution accuracy across 87 terminal tasks with 5 trials each",
           "sources": [
-            "fallback"
+            "benchmark_card"
           ]
         }
       ]
@@ -4133,6 +4371,7 @@
       "category": "other",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [],
       "slices": [],
       "metrics": [
         {
@@ -4181,7 +4420,8 @@
             "metric_config"
           ]
         }
-      ]
+      ],
+      "summary_eval_ids": []
     }
   ]
 }

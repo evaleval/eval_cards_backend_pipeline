@@ -2,108 +2,109 @@
 
 ## QA Summary
 - Families: `20`
-- Composite benchmarks: `20`
-- Standalone benchmarks: `10`
-- Benchmarks: `108`
-- Slices: `58`
+- Composite benchmarks: `16`
+- Standalone benchmarks: `14`
+- Benchmarks: `67`
+- Slices: `82`
 - Unique metrics: `208`
 - Metric rows scanned: `41616`
-- Fallback metrics: `2231`
+- Fallback metrics: `1248`
 - Benchmarks that still look metric-like: `0`
 - Benchmarks where name matches the only metric: `0`
 
 ### Fallback Metrics
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `appworld` -> `appworld/test_normal` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
-- `browsecompplus` -> `browsecompplus` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
+- `appworld` -> `Appworld` -> `Score`
 - `la_leaderboard` -> `La leaderboard` -> `Score`
 - `la_leaderboard` -> `La leaderboard` -> `Score`
 - `la_leaderboard` -> `La leaderboard` -> `Score`
 - `la_leaderboard` -> `La leaderboard` -> `Score`
 - `la_leaderboard` -> `La leaderboard` -> `Score`
-- `reward-bench` -> `Chat` -> `Score`
-- `reward-bench` -> `Chat Hard` -> `Score`
-- `reward-bench` -> `Safety` -> `Score`
-- `reward-bench` -> `Reasoning` -> `Score`
-- `reward-bench` -> `Prior Sets (0.5 weight)` -> `Score`
-- `reward-bench` -> `Chat` -> `Score`
-- `reward-bench` -> `Chat Hard` -> `Score`
-- `reward-bench` -> `Safety` -> `Score`
-- `reward-bench` -> `Reasoning` -> `Score`
-- `reward-bench` -> `Prior Sets (0.5 weight)` -> `Score`
-- `reward-bench` -> `Chat` -> `Score`
-- `reward-bench` -> `Chat Hard` -> `Score`
-- `reward-bench` -> `Safety` -> `Score`
-- `reward-bench` -> `Reasoning` -> `Score`
-- `reward-bench` -> `Prior Sets (0.5 weight)` -> `Score`
+- `reward-bench-2` -> `Factuality` -> `Score`
+- `reward-bench-2` -> `Precise IF` -> `Score`
+- `reward-bench-2` -> `Math` -> `Score`
+- `reward-bench-2` -> `Safety` -> `Score`
+- `reward-bench-2` -> `Focus` -> `Score`
+- `reward-bench-2` -> `Ties` -> `Score`
+- `reward-bench-2` -> `Factuality` -> `Score`
+- `reward-bench-2` -> `Precise IF` -> `Score`
+- `reward-bench-2` -> `Math` -> `Score`
+- `reward-bench-2` -> `Safety` -> `Score`
+- `reward-bench-2` -> `Focus` -> `Score`
+- `reward-bench-2` -> `Ties` -> `Score`
+- `reward-bench-2` -> `Factuality` -> `Score`
+- `reward-bench-2` -> `Precise IF` -> `Score`
+- `reward-bench-2` -> `Math` -> `Score`
+- `reward-bench-2` -> `Safety` -> `Score`
+- `reward-bench-2` -> `Focus` -> `Score`
+- `reward-bench-2` -> `Ties` -> `Score`
+- `reward-bench-2` -> `Factuality` -> `Score`
+- `reward-bench-2` -> `Precise IF` -> `Score`
+- `reward-bench-2` -> `Math` -> `Score`
+- `reward-bench-2` -> `Safety` -> `Score`
+- `reward-bench-2` -> `Focus` -> `Score`
+- `reward-bench-2` -> `Ties` -> `Score`
+- `reward-bench-2` -> `Factuality` -> `Score`
+- `reward-bench-2` -> `Precise IF` -> `Score`
+- `reward-bench-2` -> `Math` -> `Score`
+- `reward-bench-2` -> `Safety` -> `Score`
+- `reward-bench-2` -> `Focus` -> `Score`
+- `reward-bench-2` -> `Ties` -> `Score`
 
 ## Hierarchy
 
-- [ ] Ace
-  - [ ] DIY
+- [x] ace
+  - DIY
     - Score
-  - [ ] Food
+  - Food
     - Score
-  - [ ] Gaming
+  - Gaming
     - Score
-  - [ ] Overall
+  - Overall
     - Score
-  - [ ] Shopping
+  - Shopping
     - Score
-- [ ] Apex
-  - [ ] Apex Agents
-    - [ ] Corporate Law
+- [x] Apex
+  - [x] Apex Agents
+    - Corporate Law
       - Pass@1
-    - [ ] Corporate Lawyer
+    - Corporate Lawyer
       - Mean Score
-    - [ ] Investment Banking
+    - Investment Banking
       - Pass@1
-    - [ ] Management Consulting
+    - Management Consulting
       - Pass@1
-    - [ ] Overall
+    - Overall
       - Mean Score
       - Pass@1
       - Pass@8
-  - [ ] Apex V1
-    - [ ] Big Law
+  - [x] Apex V1
+    - Big Law
       - Score
-    - [ ] Consulting
+    - Consulting
       - Score
-    - [ ] Investment Banking
+    - Investment Banking
       - Score
-    - [ ] Medicine (MD)
+    - Medicine (MD)
       - Score
-    - [ ] Overall
+    - Overall
       - Score
 - [ ] Appworld
-  - Score
+  - Test normal
+    - Score
 - [ ] Arc Agi
   - [ ] v1_Public_Eval
     - Cost per Task
@@ -150,13 +151,6 @@
     - Non-live parallel AST accuracy
     - Non-live parallel multiple AST accuracy
     - Non-live simple AST accuracy
-  - [ ] Overall
-    - Latency 95th Percentile
-    - Latency Mean
-    - Latency Standard Deviation
-    - Overall Accuracy
-    - Rank
-    - Total Cost
   - [ ] Relevance
     - Irrelevance detection accuracy
     - Relevance detection accuracy
@@ -164,8 +158,8 @@
     - Accuracy
     - Multi-turn base accuracy
     - Web-search no-snippet accuracy
-- [ ] browsecompplus
-  - Score
+- [x] browsecompplus
+  - Accuracy
 - [ ] Fibble
   - [ ] Fibble arena
     - Average Attempts
@@ -190,7 +184,7 @@
     - Average Attempts
     - Average Latency (ms)
     - Win Rate
-- [ ] Global MMLU Lite
+- [x] Global MMLU Lite
   - Arabic
     - Accuracy
   - Bengali
@@ -230,7 +224,7 @@
   - Accuracy
 - [x] HELM
   - [x] Helm capabilities
-    - [ ] Capabilities
+    - [x] Capabilities
       - Mean
         - Score
     - [x] GPQA
@@ -248,72 +242,72 @@
       - Exact Match
     - [x] CivilComments
       - Exact Match
-    - [ ] Classic
+    - [x] Classic
       - Mean
         - Win Rate
     - [x] CNN/DailyMail
       - ROUGE-2
     - [x] HellaSwag
       - Exact Match
-    - [ ] IMDB
+    - [x] IMDB
       - Exact Match
     - [x] MMLU
       - Exact Match
-    - [ ] MS MARCO (TREC)
+    - [x] MS MARCO (TREC)
       - NDCG@10
-    - [ ] NarrativeQA
+    - [x] NarrativeQA
       - F1
-    - [ ] NaturalQuestions (open-book)
+    - [x] NaturalQuestions (open-book)
       - F1
-    - [ ] OpenbookQA
+    - [x] OpenbookQA
       - Exact Match
     - [x] QuAC
       - F1
-    - [ ] RAFT
+    - [x] RAFT
       - Exact Match
-    - [ ] TruthfulQA
+    - [x] TruthfulQA
       - Exact Match
-    - [ ] XSUM
+    - [x] XSUM
       - ROUGE-2
-  - [ ] Helm instruct
+  - [x] Helm instruct
     - [ ] Anthropic RLHF dataset
       - Harmlessness
     - [ ] Best ChatGPT Prompts
       - Harmlessness
-    - [ ] Instruct
+    - [x] Instruct
       - Mean
         - Win Rate
     - [ ] Koala test dataset
       - Harmlessness
-    - [ ] Open Assistant
+    - [x] Open Assistant
       - Harmlessness
-    - [ ] Self Instruct
+    - [x] Self Instruct
       - Harmlessness
-    - [ ] Vicuna
+    - [x] Vicuna
       - Harmlessness
   - [x] Helm lite
     - [x] GSM8K
       - Exact Match
     - [x] LegalBench
       - Exact Match
-    - [ ] Lite
+    - [x] Lite
       - Mean
         - Win Rate
-    - [ ] MATH
-      - Accuracy
+    - [x] MATH
+      - Exact Match (EM) for GSM8K, LegalBench, MMLU, MedQA, and OpenbookQA
     - [x] MedQA
       - Exact Match
     - [x] MMLU
       - Exact Match
-    - [ ] NarrativeQA
+    - [x] NarrativeQA
       - F1
-    - [ ] NaturalQuestions (closed-book)
+    - [x] NaturalQuestions (closed-book)
       - F1
-    - [ ] OpenbookQA
+    - [x] OpenbookQA
       - Exact Match
     - [ ] WMT 2014
       - BLEU-4
-  - [x] Helm mmlu
+  - [ ] Helm mmlu
     - Abstract Algebra
       - Exact Match
     - Anatomy
@@ -387,7 +381,7 @@
     - World Religions
       - Exact Match
 - [x] Hfopenllm v2
-  - [ ] BBH
+  - [x] BBH
     - Accuracy
   - [x] GPQA
     - Accuracy
@@ -401,26 +395,25 @@
     - Accuracy
 - [ ] La leaderboard
   - Score
-- [ ] Livecodebenchpro
+- [x] Livecodebenchpro
   - [ ] Easy Problems
     - Pass@1
   - [ ] Hard Problems
     - Pass@1
   - [ ] Medium Problems
     - Pass@1
-- [ ] Reward Bench
-  - [ ] Chat
+- [x] Reward Bench
+  - Chat
     - Score
-  - [ ] Chat Hard
+  - Chat Hard
     - Score
-  - [ ] Prior Sets (0.5 weight)
+  - Prior Sets (0.5 weight)
     - Score
-  - [ ] Reasoning
+  - Reasoning
     - Score
-  - [ ] Reward bench
+  - Safety
     - Score
-  - [ ] Safety
-    - Score
+  - Score
 - [ ] Reward Bench 2
   - [ ] Factuality
     - Score
@@ -440,17 +433,17 @@
   - Cost per 100 Calls
   - Elo Rating
   - Rank
-- [ ] Swe Bench
-  - Score
-- [ ] Tau Bench 2
-  - [ ] tau-bench-2/airline
+- [x] Swe Bench
+  - SWE-bench benchmark evaluation
+- [ ] Tau bench 2
+  - Airline
     - Score
-  - [ ] tau-bench-2/retail
+  - Retail
     - Score
-  - [ ] tau-bench-2/telecom
+  - Telecom
     - Score
-- [ ] Terminal Bench 2 0
-  - Score
+- [x] Terminal Bench 2 0
+  - Task resolution accuracy across 87 terminal tasks with 5 trials each
 - [ ] Theory of mind
   - Score
 - [ ] Wordle arena

@@ -39,6 +39,44 @@ BENCHMARK_DEFAULT_METRICS = {
 # Leaf-key values that indicate a score is a summary across all sub-benchmarks
 # rather than an independent benchmark of its own.
 SUMMARY_SCORE_LEAF_KEYS = {"overall", "aggregate", "total", "all"}
+COMMON_LANGUAGE_SUBSET_KEYS = {
+    "albanian",
+    "arabic",
+    "ar",
+    "bengali",
+    "bn",
+    "burmese",
+    "chinese",
+    "cy",
+    "english",
+    "en",
+    "french",
+    "fr",
+    "german",
+    "de",
+    "hindi",
+    "hi",
+    "id",
+    "indonesian",
+    "italian",
+    "it",
+    "japanese",
+    "ja",
+    "korean",
+    "ko",
+    "my",
+    "portuguese",
+    "pt",
+    "spanish",
+    "es",
+    "sq",
+    "sw",
+    "swahili",
+    "welsh",
+    "yo",
+    "yoruba",
+    "zh",
+}
 BUILTIN_METRIC_DISPLAY_MAP = {
     "accuracy": "Accuracy",
     "exact_match": "Exact Match",
@@ -156,7 +194,7 @@ def max_iso(left: str | None, right: str | None) -> str | None:
 
 
 def load_benchmark_metadata(metadata_cache_dir: str) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
-    return load_benchmark_metadata_from_dir(Path(metadata_cache_dir) / "cards")
+    return load_benchmark_metadata_from_dir(Path(metadata_cache_dir))
 
 
 def canonical_benchmark_family_key(value: Any) -> str:
@@ -173,6 +211,10 @@ def canonical_benchmark_family_key(value: Any) -> str:
     return key
 
 
+def compact_benchmark_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", as_string(value).lower())
+
+
 def load_benchmark_metadata_from_dir(root_dir: Path) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
     cards = []
     lookup: dict[str, dict] = {}
@@ -181,29 +223,55 @@ def load_benchmark_metadata_from_dir(root_dir: Path) -> tuple[list[dict], dict[s
     if not root_dir.exists():
         return cards, lookup, flat_map
 
-    for file_path in sorted(root_dir.glob("benchmark_card_*.json")):
-        parsed = json.loads(file_path.read_text(encoding="utf-8"))
-        card = parsed.get("benchmark_card")
-        if not card:
-            continue
-        base_name = file_path.stem.replace("benchmark_card_", "")
-        keys = candidate_benchmark_keys(base_name, card.get("benchmark_details", {}).get("name"))
-        cards.append({"file_name": file_path.name, "base_name": base_name, "card": card, "keys": keys})
+    flat_metadata_path = root_dir / "benchmark-metadata.json"
+    if flat_metadata_path.exists():
+        parsed = json.loads(flat_metadata_path.read_text(encoding="utf-8"))
+        if isinstance(parsed, dict):
+            for raw_key, raw_card in parsed.items():
+                if not isinstance(raw_card, dict) or not isinstance(raw_card.get("benchmark_details"), dict):
+                    continue
+                card_id = normalize_benchmark_key(raw_key)
+                if card_id:
+                    flat_map[card_id] = raw_card
+
+    cards_dir = root_dir / "cards"
+    if cards_dir.exists():
+        for file_path in sorted(cards_dir.glob("*.json")):
+            parsed = json.loads(file_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict) and isinstance(parsed.get("benchmark_card"), dict):
+                card = parsed["benchmark_card"]
+                base_name = file_path.stem.replace("benchmark_card_", "")
+            elif isinstance(parsed, dict) and isinstance(parsed.get("benchmark_details"), dict):
+                card = parsed
+                base_name = file_path.stem
+            else:
+                continue
+            card_id = normalize_benchmark_key(base_name)
+            if card_id and card_id not in flat_map:
+                flat_map[card_id] = card
+
+    for card_id, card in sorted(flat_map.items()):
+        keys = candidate_benchmark_keys(card_id, card.get("benchmark_details", {}).get("name"))
+        cards.append({"file_name": f"{card_id}.json", "base_name": card_id, "card": card, "keys": keys})
         for key in keys:
             lookup[key] = card
-            flat_map[key] = card
 
     return cards, lookup, flat_map
+
+
+def has_cached_benchmark_metadata(cards_dir: Path, flat_metadata_path: Path) -> bool:
+    return flat_metadata_path.exists() or (cards_dir.exists() and any(cards_dir.glob("*.json")))
 
 
 def ensure_local_benchmark_metadata_snapshot(local_metadata_dir: str, hf_token: str | None, force_refresh: bool) -> str | None:
     target_dir = Path(local_metadata_dir).resolve()
     cards_dir = target_dir / "cards"
+    flat_metadata_path = target_dir / "benchmark-metadata.json"
 
     if force_refresh and target_dir.exists():
         shutil.rmtree(target_dir)
 
-    if cards_dir.exists() and any(cards_dir.glob("benchmark_card_*.json")):
+    if has_cached_benchmark_metadata(cards_dir, flat_metadata_path):
         return str(target_dir)
 
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -213,11 +281,11 @@ def ensure_local_benchmark_metadata_snapshot(local_metadata_dir: str, hf_token: 
             repo_id=BENCHMARK_METADATA_DATASET_REPO,
             repo_type="dataset",
             local_dir=str(target_dir),
-            allow_patterns=["cards/**"],
+            allow_patterns=["benchmark-metadata.json", "cards/**"],
             token=hf_token,
         )
     except Exception:
-        if cards_dir.exists() and any(cards_dir.glob("benchmark_card_*.json")):
+        if has_cached_benchmark_metadata(cards_dir, flat_metadata_path):
             return str(target_dir)
         return None
 
@@ -230,9 +298,14 @@ def candidate_benchmark_keys(*values: Any) -> list[str]:
         text = as_string(value)
         if not text:
             continue
-        keys.add(normalize_benchmark_key(text))
-        keys.add(normalize_benchmark_key(re.sub(r"^benchmark_card_", "", text, flags=re.IGNORECASE)))
-        keys.add(normalize_benchmark_key(re.sub(r"[_-]+", " ", text)))
+        normalized = normalize_benchmark_key(text)
+        stripped = normalize_benchmark_key(re.sub(r"^benchmark_card_", "", text, flags=re.IGNORECASE))
+        separated = normalize_benchmark_key(re.sub(r"[_-]+", " ", text))
+        compact = compact_benchmark_key(text)
+        keys.add(normalized)
+        keys.add(stripped)
+        keys.add(separated)
+        keys.add(compact)
         family_key = canonical_benchmark_family_key(text)
         if family_key:
             keys.add(family_key)
@@ -246,6 +319,57 @@ def lookup_benchmark_card(metadata_lookup: dict[str, dict], *values: Any) -> dic
     return None
 
 
+def iter_matching_benchmark_cards(metadata_lookup: dict[str, dict], *values: Any) -> list[dict]:
+    matches: list[dict] = []
+    seen: set[str] = set()
+    for key in candidate_benchmark_keys(*values):
+        card = metadata_lookup.get(key)
+        if not card:
+            continue
+        details = card.get("benchmark_details") if isinstance(card, dict) else {}
+        card_id = normalize_benchmark_key((details or {}).get("name")) or key
+        if card_id in seen:
+            continue
+        seen.add(card_id)
+        matches.append(card)
+    return matches
+
+
+def lookup_benchmark_card_for_parent(metadata_lookup: dict[str, dict], *values: Any, parent_values: tuple[Any, ...] = ()) -> dict | None:
+    candidates = iter_matching_benchmark_cards(metadata_lookup, *values)
+    if not candidates:
+        return None
+
+    parent_keys = set(candidate_benchmark_keys(*parent_values))
+    if not parent_keys:
+        return candidates[0]
+
+    compatible: list[dict] = []
+    unconstrained: list[dict] = []
+    for card in candidates:
+        details = card.get("benchmark_details") if isinstance(card, dict) else {}
+        appears_in = as_string_list((details or {}).get("appears_in"))
+        if not appears_in:
+            unconstrained.append(card)
+            continue
+        appears_in_keys = set(candidate_benchmark_keys(*appears_in))
+        if parent_keys & appears_in_keys:
+            compatible.append(card)
+
+    if compatible:
+        return compatible[0]
+    if unconstrained:
+        return unconstrained[0]
+    return None
+
+
+def as_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [as_string(item) for item in value if as_string(item)]
+    text = as_string(value)
+    return [text] if text else []
+
+
 def extract_benchmark_tags(benchmark_card: dict | None) -> dict:
     """Extract structured tags from a benchmark card for frontend filtering."""
     if not benchmark_card:
@@ -253,9 +377,9 @@ def extract_benchmark_tags(benchmark_card: dict | None) -> dict:
     details = benchmark_card.get("benchmark_details") or {}
     purpose = benchmark_card.get("purpose_and_intended_users") or {}
     return {
-        "domains": details.get("domains") or [],
-        "languages": details.get("languages") or [],
-        "tasks": purpose.get("tasks") or [],
+        "domains": as_string_list(details.get("domains")),
+        "languages": as_string_list(details.get("languages")),
+        "tasks": as_string_list(purpose.get("tasks")),
     }
 
 
@@ -559,6 +683,56 @@ def infer_top_level_benchmark_name(benchmark: Any, benchmark_family_name: str) -
     return humanize_token_key(benchmark or benchmark_family_name)
 
 
+def infer_subset_slice_from_name(name: Any, benchmark: Any) -> tuple[str | None, str | None]:
+    text = as_string(name).strip()
+    benchmark_key = normalize_benchmark_key(benchmark)
+    if not text or not benchmark_key or "/" not in text:
+        return None, None
+
+    # Only treat direct benchmark/subset pairs as subtasks. Deeper paths often
+    # encode run storage layout rather than semantic benchmark subdivisions.
+    if text.count("/") != 1:
+        return None, None
+
+    prefix_raw, suffix_raw = text.split("/", 1)
+    if normalize_benchmark_key(prefix_raw) != benchmark_key:
+        return None, None
+
+    suffix_text = suffix_raw.strip(" /")
+    if not suffix_text:
+        return None, None
+
+    return normalize_benchmark_key(suffix_text), humanize_token_key(suffix_text)
+
+
+def benchmark_card_language_keys(benchmark_card: dict | None) -> set[str]:
+    if not benchmark_card:
+        return set()
+
+    details = benchmark_card.get("benchmark_details") if isinstance(benchmark_card, dict) else {}
+    languages = as_string_list((details or {}).get("languages"))
+    keys = set()
+    for language in languages:
+        keys.update(candidate_benchmark_keys(language))
+        keys.add(compact_benchmark_key(language))
+    return {key for key in keys if key}
+
+
+def is_language_subset_name(name: Any, benchmark_card: dict | None) -> bool:
+    if not benchmark_card:
+        return False
+
+    normalized = normalize_benchmark_key(name)
+    compact = compact_benchmark_key(name)
+    if not normalized and not compact:
+        return False
+
+    language_keys = benchmark_card_language_keys(benchmark_card)
+    if normalized in language_keys or compact in language_keys:
+        return True
+    return normalized in COMMON_LANGUAGE_SUBSET_KEYS or compact in COMMON_LANGUAGE_SUBSET_KEYS
+
+
 def top_level_benchmark_owns_slices(benchmark: Any, benchmark_card: dict | None) -> bool:
     benchmark_key = normalize_benchmark_key(benchmark)
     if benchmark_card:
@@ -588,11 +762,17 @@ def infer_benchmark_leaf_and_slice(
     top_level_key = normalize_benchmark_key(benchmark or dataset_name)
     top_level_name = infer_top_level_benchmark_name(benchmark or dataset_name, benchmark_family_name)
 
+    subset_key, subset_name = infer_subset_slice_from_name(dataset_name or raw_name, benchmark or dataset_name)
+    if subset_key and subset_name:
+        return top_level_key, top_level_name, subset_key, subset_name
+
     if raw_name and raw_name_key and dataset_key and raw_name_key == dataset_key:
+        if is_language_subset_name(raw_name, benchmark_card) and raw_name_key != top_level_key:
+            return top_level_key, top_level_name, raw_name_key, raw_name
         return raw_name_key, raw_name, None, None
 
     if component_name:
-        if top_level_benchmark_owns_slices(benchmark or dataset_name, benchmark_card):
+        if top_level_benchmark_owns_slices(benchmark or dataset_name, benchmark_card) or is_language_subset_name(component_name, benchmark_card):
             if component_key == top_level_key or normalize_benchmark_key(component_name) == top_level_key:
                 return top_level_key, top_level_name, None, None
             return top_level_key, top_level_name, component_key, component_name
@@ -2311,13 +2491,19 @@ def main() -> int:
 
             # Set benchmark card and tags on first encounter
             if group["benchmark_card"] is None:
-                _card = lookup_benchmark_card(
+                _card = lookup_benchmark_card_for_parent(
                     metadata_lookup,
                     normalized.get("benchmark_leaf_name"),
                     normalized.get("benchmark_leaf_key"),
                     evaluation.get("benchmark"),
                     normalized.get("benchmark_family_key"),
                     (result.get("source_data") or {}).get("dataset_name"),
+                    parent_values=(
+                        normalized.get("benchmark_parent_key"),
+                        normalized.get("benchmark_parent_name"),
+                        evaluation.get("benchmark"),
+                        normalized.get("benchmark_family_key"),
+                    ),
                 )
                 if _card:
                     group["benchmark_card"] = _card

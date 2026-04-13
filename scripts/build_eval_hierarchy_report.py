@@ -60,6 +60,42 @@ def _merge_tags(parent_tags: dict, child_tags: dict) -> dict:
     return merged
 
 
+def _merge_metric_lists(*metric_lists: list[dict]) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for metric_list in metric_lists:
+        for metric in metric_list:
+            existing = merged.get(metric["key"])
+            if existing is None:
+                merged[metric["key"]] = {
+                    "key": metric["key"],
+                    "display_name": metric["display_name"],
+                    "sources": list(metric.get("sources", [])),
+                }
+                continue
+            existing_sources = set(existing.get("sources", []))
+            for source in metric.get("sources", []):
+                if source not in existing_sources:
+                    existing_sources.add(source)
+                    existing["sources"].append(source)
+    return sorted(merged.values(), key=lambda item: item["display_name"].lower())
+
+
+def _merge_slice_lists(*slice_lists: list[dict]) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for slice_list in slice_lists:
+        for slice_info in slice_list:
+            existing = merged.get(slice_info["key"])
+            if existing is None:
+                merged[slice_info["key"]] = {
+                    "key": slice_info["key"],
+                    "display_name": slice_info["display_name"],
+                    "metrics": _merge_metric_lists(slice_info.get("metrics", [])),
+                }
+                continue
+            existing["metrics"] = _merge_metric_lists(existing.get("metrics", []), slice_info.get("metrics", []))
+    return sorted(merged.values(), key=lambda item: item["display_name"].lower())
+
+
 def markdown_tree(report: dict) -> str:
     lines: list[str] = []
     lines.append("# EEE Eval Hierarchy")
@@ -247,8 +283,11 @@ def main() -> int:
                     benchmark_node["is_summary_score"] = True
                 # Check for a card matching this leaf benchmark
                 if not benchmark_node["has_card"]:
-                    leaf_card = pipeline.lookup_benchmark_card(
-                        metadata_lookup, benchmark_key, benchmark_display_name,
+                    leaf_card = pipeline.lookup_benchmark_card_for_parent(
+                        metadata_lookup,
+                        benchmark_key,
+                        benchmark_display_name,
+                        parent_values=(composite_key, composite_display_name, family_key, family_display_name),
                     )
                     if leaf_card:
                         benchmark_node["has_card"] = True
@@ -292,7 +331,6 @@ def main() -> int:
             benchmarks = []
             summary_benchmark_nodes = []
             for single in sorted(composite["benchmarks"].values(), key=lambda item: item["display_name"].lower()):
-                single_benchmark_count += 1
                 metrics = sorted(single["metrics"].values(), key=lambda item: item["display_name"].lower())
                 slices = []
                 for slice_info in sorted(single["slices"].values(), key=lambda item: item["display_name"].lower()):
@@ -316,7 +354,14 @@ def main() -> int:
                 metric_count += len(metrics)
                 metric_names = [metric["display_name"] for metric in metrics]
                 metric_like_key = pipeline.strict_metric_alias_lookup(single["display_name"])
-                if metric_like_key:
+                single_key = pipeline.normalize_benchmark_key(single["key"])
+                single_name_key = pipeline.normalize_benchmark_key(single["display_name"])
+                is_summary_score = (
+                    single.get("is_summary_score", False)
+                    or single_key in pipeline.SUMMARY_SCORE_LEAF_KEYS
+                    or single_name_key in pipeline.SUMMARY_SCORE_LEAF_KEYS
+                )
+                if metric_like_key and not is_summary_score:
                     metric_like_single_benchmarks.append(
                         {
                             "composite_benchmark": composite["key"],
@@ -324,7 +369,7 @@ def main() -> int:
                             "metrics": metric_names,
                         }
                     )
-                if len(metrics) == 1 and pipeline.normalize_benchmark_key(single["display_name"]) == metrics[0]["key"]:
+                if not is_summary_score and len(metrics) == 1 and pipeline.normalize_benchmark_key(single["display_name"]) == metrics[0]["key"]:
                     single_equals_only_metric.append(
                         {
                             "composite_benchmark": composite["key"],
@@ -347,18 +392,18 @@ def main() -> int:
                         for metric in metrics
                     ],
                 }
-                if single.get("is_summary_score"):
+                if is_summary_score:
                     summary_benchmark_nodes.append(bm_node)
                 else:
                     benchmarks.append(bm_node)
 
             # If there are real sub-benchmarks alongside summary nodes, keep only
             # the real benchmarks in the list and surface the summary eval IDs.
-            # If ALL nodes are summaries (e.g. sciarena where every metric is
-            # "overall_*"), treat them as regular benchmarks so the hierarchy
-            # is not left empty.
-            if benchmarks and summary_benchmark_nodes:
-                # Compute the eval_summary_id each summary benchmark maps to.
+            # If ALL nodes are summaries, flatten their metrics/slices onto the
+            # composite instead of exposing "overall" as a benchmark level.
+            composite_summary_slices = []
+            composite_summary_metrics = []
+            if summary_benchmark_nodes:
                 comp_norm_key = pipeline.normalize_benchmark_key(composite["key"])
                 summary_eval_ids = [
                     pipeline.slugify(f"{comp_norm_key}__{s['key']}")
@@ -367,15 +412,35 @@ def main() -> int:
                     for s in summary_benchmark_nodes
                 ]
             else:
-                # Either no summaries, or ONLY summaries — keep everything as normal benchmarks.
-                benchmarks = benchmarks + summary_benchmark_nodes
                 summary_eval_ids = []
+
+            if not benchmarks and summary_benchmark_nodes:
+                composite_summary_slices = _merge_slice_lists(*(s.get("slices", []) for s in summary_benchmark_nodes))
+                composite_summary_metrics = _merge_metric_lists(*(s.get("metrics", []) for s in summary_benchmark_nodes))
+            else:
+                composite_summary_slices = []
+                composite_summary_metrics = []
             has_card = composite.get("has_card", False) or any(b.get("has_card") for b in benchmarks)
             comp_category = composite.get("category", "other")
             # Bubble tags up: merge all benchmark tags into composite-level tags
             composite_tags = _empty_tags()
             for bm in benchmarks:
                 composite_tags = _merge_tags(composite_tags, bm.get("tags", _empty_tags()))
+            if not benchmarks and summary_benchmark_nodes:
+                composite_count += 1
+                composites.append(
+                    {
+                        "key": composite["key"],
+                        "display_name": composite["display_name"],
+                        "has_card": has_card,
+                        "tags": composite_tags,
+                        "category": comp_category,
+                        "slices": composite_summary_slices,
+                        "metrics": composite_summary_metrics,
+                        "summary_eval_ids": summary_eval_ids,
+                    }
+                )
+                continue
             if len(benchmarks) == 1:
                 # Single benchmark inside a composite is redundant — promote
                 # the benchmark's content into the composite (or standalone).
@@ -408,6 +473,7 @@ def main() -> int:
                     )
                 continue
             composite_count += 1
+            single_benchmark_count += len(benchmarks)
             composites.append(
                 {
                     "key": composite["key"],
