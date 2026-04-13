@@ -820,6 +820,9 @@ def infer_benchmark_leaf_and_slice(
         return raw_name_key, canonical_raw_name, None, None
 
     if component_name:
+        component_summary_key = normalize_benchmark_key(component_name)
+        if component_summary_key in SUMMARY_SCORE_LEAF_KEYS:
+            return top_level_key, top_level_name, None, None
         if top_level_benchmark_owns_slices(benchmark or dataset_name, benchmark_card) or is_language_subset_name(component_name, benchmark_card):
             if component_key == top_level_key or normalize_benchmark_key(component_name) == top_level_key:
                 return top_level_key, top_level_name, None, None
@@ -2015,6 +2018,10 @@ Treat these fields as compatibility/fallback only:
     If `is_summary_score` is `true`, render the node as an overall/aggregate score for
     `summary_score_for`. If `summary_eval_ids` is present on a non-summary benchmark or
     composite, use those ids to surface the related overall score in the same section.
+    Do not represent `overall` as a slice, subtask, tab, or child benchmark. It is a
+    rollup metric layer attached to the parent suite/benchmark. In the current
+    generated artifacts, many of these rollups are already flattened into the parent
+    `metrics[]`, so there may be no separate `*_overall` eval to load.
 
 4. Use `hierarchy_by_category` for model detail pages.
     This structure is already aligned to the backend hierarchy and includes
@@ -2041,17 +2048,25 @@ Treat these fields as compatibility/fallback only:
 2. Model detail page:
     Render `hierarchy_by_category` directly. Each rendered benchmark section should use:
     `eval_summary_id`, `display_name`, `is_summary_score`, `summary_eval_ids`,
-    `metrics[]`, and `subtasks[]`.
+    `metrics[]`, and `subtasks[]`. Only render `subtasks[]` as actual benchmark
+    subdivisions; never synthesize an `Overall` subtask from summary-score data.
+    Render root-level `metrics[]` before or alongside `subtasks[]`; for suites like
+    `ACE` and `APEX Agents`, those root metrics are where the rolled-up overall values live.
 
 3. Benchmark detail page:
     Use `evals/{{eval_summary_id}}.json` for model comparisons and use
     `model_results[].detailed_evaluation_results` for samples. Match sample rows via
-    `row.hierarchy.eval_summary_id` and `row.hierarchy.metric_summary_id`.
+    `row.hierarchy.eval_summary_id` and `row.hierarchy.metric_summary_id`. Do not
+    assume there is a distinct `*_overall` eval file; for many benchmarks the overall
+    rollup is represented by the parent eval's root `metrics[]`.
 
 4. Summary-score UI:
     Render overall/aggregate scores in a visually distinct area. They should appear as
     rollups attached to their parent suite, not as sibling leaf benchmarks alongside
-    real tasks like `Corporate Lawyer` or `DIY`.
+    real tasks like `Corporate Lawyer` or `DIY`. If the API exposes an eval like
+    `*_overall`, treat it as the source of parent-level rollup metrics, not as a
+    navigable child node in the hierarchy. If there is no such eval, use the parent
+    benchmark's root `metrics[]` as the rollup source.
 
 5. Cleanup pass:
     After the refactor is stable, remove frontend code paths that reconstruct hierarchy
@@ -2067,6 +2082,9 @@ Treat these fields as compatibility/fallback only:
 - Use backend keys for equality/grouping and backend names for labels.
 - If `summary_eval_ids` exists, render the linked summary evals near the relevant
   parent suite or benchmark.
+- `subtasks[]` should map only to true `slice_key`-backed subdivisions. A rollup
+  score such as `overall` belongs in the parent benchmark's metric area, not in
+  `subtasks[]`.
 - If `is_summary_score` is `true`, do not count the node as a standalone benchmark in
   breadcrumb logic, hierarchy trees, or benchmark totals.
 - For samples, prefer `row.hierarchy.metric_summary_id` when available; fall back to

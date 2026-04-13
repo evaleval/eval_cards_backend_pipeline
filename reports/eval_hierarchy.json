@@ -1,10 +1,10 @@
 {
   "stats": {
     "family_count": 20,
-    "composite_count": 16,
-    "standalone_benchmark_count": 14,
-    "single_benchmark_count": 67,
-    "slice_count": 82,
+    "composite_count": 12,
+    "standalone_benchmark_count": 18,
+    "single_benchmark_count": 68,
+    "slice_count": 79,
     "metric_count": 208,
     "metric_rows_scanned": 41616
   },
@@ -270,7 +270,7 @@
   "families": [
     {
       "key": "ace",
-      "display_name": "ace",
+      "display_name": "ACE",
       "has_card": true,
       "tags": {
         "domains": [
@@ -330,19 +330,6 @@
           ]
         },
         {
-          "key": "overall",
-          "display_name": "Overall",
-          "metrics": [
-            {
-              "key": "score",
-              "display_name": "Score",
-              "sources": [
-                "evaluation_name_suffix"
-              ]
-            }
-          ]
-        },
-        {
           "key": "shopping",
           "display_name": "Shopping",
           "metrics": [
@@ -356,7 +343,15 @@
           ]
         }
       ],
-      "metrics": [],
+      "metrics": [
+        {
+          "key": "score",
+          "display_name": "Score",
+          "sources": [
+            "evaluation_name_suffix"
+          ]
+        }
+      ],
       "summary_eval_ids": []
     },
     {
@@ -383,12 +378,11 @@
           "Question answering"
         ]
       },
-      "category": "knowledge",
-      "standalone_benchmarks": [],
-      "composites": [
+      "category": "agentic",
+      "standalone_benchmarks": [
         {
-          "key": "apex-agents",
-          "display_name": "Apex Agents",
+          "key": "apex_agents",
+          "display_name": "APEX Agents",
           "has_card": true,
           "tags": {
             "domains": [
@@ -404,7 +398,6 @@
               "Producing deliverables in investment banking, management consulting, and corporate law domains"
             ]
           },
-          "category": "agentic",
           "slices": [
             {
               "key": "corporate_law",
@@ -457,41 +450,37 @@
                   ]
                 }
               ]
+            }
+          ],
+          "metrics": [
+            {
+              "key": "mean_score",
+              "display_name": "Mean Score",
+              "sources": [
+                "evaluation_name_suffix"
+              ]
             },
             {
-              "key": "overall",
-              "display_name": "Overall",
-              "metrics": [
-                {
-                  "key": "mean_score",
-                  "display_name": "Mean Score",
-                  "sources": [
-                    "evaluation_name_suffix"
-                  ]
-                },
-                {
-                  "key": "pass_at_1",
-                  "display_name": "Pass@1",
-                  "sources": [
-                    "evaluation_name_suffix"
-                  ]
-                },
-                {
-                  "key": "pass_at_8",
-                  "display_name": "Pass@8",
-                  "sources": [
-                    "evaluation_name_suffix"
-                  ]
-                }
+              "key": "pass_at_1",
+              "display_name": "Pass@1",
+              "sources": [
+                "evaluation_name_suffix"
+              ]
+            },
+            {
+              "key": "pass_at_8",
+              "display_name": "Pass@8",
+              "sources": [
+                "evaluation_name_suffix"
               ]
             }
           ],
-          "metrics": [],
+          "category": "agentic",
           "summary_eval_ids": []
         },
         {
-          "key": "apex-v1",
-          "display_name": "Apex V1",
+          "key": "apex_v1",
+          "display_name": "APEX v1",
           "has_card": true,
           "tags": {
             "domains": [
@@ -508,7 +497,6 @@
               "Question answering"
             ]
           },
-          "category": "knowledge",
           "slices": [
             {
               "key": "big_law",
@@ -561,25 +549,22 @@
                   ]
                 }
               ]
-            },
+            }
+          ],
+          "metrics": [
             {
-              "key": "overall",
-              "display_name": "Overall",
-              "metrics": [
-                {
-                  "key": "score",
-                  "display_name": "Score",
-                  "sources": [
-                    "evaluation_name_suffix"
-                  ]
-                }
+              "key": "score",
+              "display_name": "Score",
+              "sources": [
+                "evaluation_name_suffix"
               ]
             }
           ],
-          "metrics": [],
+          "category": "knowledge",
           "summary_eval_ids": []
         }
-      ]
+      ],
+      "composites": []
     },
     {
       "key": "appworld",
@@ -801,10 +786,63 @@
       "category": "other",
       "standalone_benchmarks": [],
       "composites": [],
-      "summary_eval_ids": [
-        "bfcl_overall"
-      ],
+      "summary_eval_ids": [],
       "benchmarks": [
+        {
+          "key": "bfcl",
+          "display_name": "Bfcl",
+          "has_card": false,
+          "tags": {
+            "domains": [],
+            "languages": [],
+            "tasks": []
+          },
+          "slices": [],
+          "metrics": [
+            {
+              "key": "latency_p95",
+              "display_name": "Latency 95th Percentile",
+              "sources": [
+                "metric_config"
+              ]
+            },
+            {
+              "key": "latency_mean",
+              "display_name": "Latency Mean",
+              "sources": [
+                "metric_config"
+              ]
+            },
+            {
+              "key": "latency_std",
+              "display_name": "Latency Standard Deviation",
+              "sources": [
+                "metric_config"
+              ]
+            },
+            {
+              "key": "overall_accuracy",
+              "display_name": "Overall Accuracy",
+              "sources": [
+                "metric_config"
+              ]
+            },
+            {
+              "key": "rank",
+              "display_name": "Rank",
+              "sources": [
+                "metric_config"
+              ]
+            },
+            {
+              "key": "total_cost",
+              "display_name": "Total Cost",
+              "sources": [
+                "metric_config"
+              ]
+            }
+          ]
+        },
         {
           "key": "format_sensitivity",
           "display_name": "Format sensitivity",
@@ -1082,7 +1120,7 @@
     },
     {
       "key": "browsecompplus",
-      "display_name": "browsecompplus",
+      "display_name": "Browsecompplus",
       "has_card": true,
       "tags": {
         "domains": [
@@ -1102,6 +1140,7 @@
       "category": "knowledge",
       "standalone_benchmarks": [],
       "composites": [],
+      "summary_eval_ids": [],
       "slices": [],
       "metrics": [
         {
@@ -1111,8 +1150,7 @@
             "benchmark_card"
           ]
         }
-      ],
-      "summary_eval_ids": []
+      ]
     },
     {
       "key": "fibble",
@@ -3633,7 +3671,7 @@
           "Solving team allocation problems"
         ]
       },
-      "category": "reasoning",
+      "category": "general",
       "standalone_benchmarks": [],
       "composites": [],
       "summary_eval_ids": [],
@@ -4133,7 +4171,7 @@
         },
         {
           "key": "reward_bench_2",
-          "display_name": "Reward bench 2",
+          "display_name": "Reward Bench 2",
           "has_card": false,
           "tags": {
             "domains": [],
@@ -4205,9 +4243,6 @@
       "category": "other",
       "standalone_benchmarks": [],
       "composites": [],
-      "summary_eval_ids": [
-        "sciarena_overall"
-      ],
       "slices": [],
       "metrics": [
         {
@@ -4231,11 +4266,12 @@
             "metric_config"
           ]
         }
-      ]
+      ],
+      "summary_eval_ids": []
     },
     {
-      "key": "swe-bench",
-      "display_name": "Swe Bench",
+      "key": "swe_bench",
+      "display_name": "Swe bench",
       "has_card": true,
       "tags": {
         "domains": [
@@ -4253,7 +4289,6 @@
       "category": "coding",
       "standalone_benchmarks": [],
       "composites": [],
-      "summary_eval_ids": [],
       "slices": [],
       "metrics": [
         {
@@ -4263,7 +4298,8 @@
             "benchmark_card"
           ]
         }
-      ]
+      ],
+      "summary_eval_ids": []
     },
     {
       "key": "tau_bench_2",
@@ -4322,8 +4358,8 @@
       "summary_eval_ids": []
     },
     {
-      "key": "terminal-bench-2.0",
-      "display_name": "Terminal Bench 2 0",
+      "key": "terminal_bench_2_0",
+      "display_name": "Terminal bench 2 0",
       "has_card": true,
       "tags": {
         "domains": [
@@ -4347,7 +4383,6 @@
       "category": "agentic",
       "standalone_benchmarks": [],
       "composites": [],
-      "summary_eval_ids": [],
       "slices": [],
       "metrics": [
         {
@@ -4357,7 +4392,8 @@
             "benchmark_card"
           ]
         }
-      ]
+      ],
+      "summary_eval_ids": []
     },
     {
       "key": "theory_of_mind",

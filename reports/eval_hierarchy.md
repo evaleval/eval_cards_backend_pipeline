@@ -2,10 +2,10 @@
 
 ## QA Summary
 - Families: `20`
-- Composite benchmarks: `16`
-- Standalone benchmarks: `14`
-- Benchmarks: `67`
-- Slices: `82`
+- Composite benchmarks: `12`
+- Standalone benchmarks: `18`
+- Benchmarks: `68`
+- Slices: `79`
 - Unique metrics: `208`
 - Metric rows scanned: `41616`
 - Fallback metrics: `1248`
@@ -66,19 +66,18 @@
 
 ## Hierarchy
 
-- [x] ace
+- [x] ACE
   - DIY
     - Score
   - Food
     - Score
   - Gaming
     - Score
-  - Overall
-    - Score
   - Shopping
     - Score
+  - Score
 - [x] Apex
-  - [x] Apex Agents
+  - [x] APEX Agents
     - Corporate Law
       - Pass@1
     - Corporate Lawyer
@@ -87,11 +86,10 @@
       - Pass@1
     - Management Consulting
       - Pass@1
-    - Overall
-      - Mean Score
-      - Pass@1
-      - Pass@8
-  - [x] Apex V1
+    - Mean Score
+    - Pass@1
+    - Pass@8
+  - [x] APEX v1
     - Big Law
       - Score
     - Consulting
@@ -100,8 +98,7 @@
       - Score
     - Medicine (MD)
       - Score
-    - Overall
-      - Score
+    - Score
 - [ ] Appworld
   - Test normal
     - Score
@@ -125,6 +122,13 @@
     - Cost
     - Score
 - [ ] Bfcl
+  - [ ] Bfcl
+    - Latency 95th Percentile
+    - Latency Mean
+    - Latency Standard Deviation
+    - Overall Accuracy
+    - Rank
+    - Total Cost
   - [ ] Format sensitivity
     - Format Sensitivity Max Delta
     - Format Sensitivity Standard Deviation
@@ -158,7 +162,7 @@
     - Accuracy
     - Multi-turn base accuracy
     - Web-search no-snippet accuracy
-- [x] browsecompplus
+- [x] Browsecompplus
   - Accuracy
 - [ ] Fibble
   - [ ] Fibble arena
@@ -423,7 +427,7 @@
     - Score
   - [ ] Precise IF
     - Score
-  - [ ] Reward bench 2
+  - [ ] Reward Bench 2
     - Score
   - [ ] Safety
     - Score
@@ -433,7 +437,7 @@
   - Cost per 100 Calls
   - Elo Rating
   - Rank
-- [x] Swe Bench
+- [x] Swe bench
   - SWE-bench benchmark evaluation
 - [ ] Tau bench 2
   - Airline
@@ -442,7 +446,7 @@
     - Score
   - Telecom
     - Score
-- [x] Terminal Bench 2 0
+- [x] Terminal bench 2 0
   - Task resolution accuracy across 87 terminal tasks with 5 trials each
 - [ ] Theory of mind
   - Score
