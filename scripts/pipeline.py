@@ -1476,6 +1476,57 @@ def canonical_model_identity(model_info: dict) -> dict:
     }
 
 
+def is_setup_alias_mode(model_info: dict) -> bool:
+    additional_details = model_info.get("additional_details") or {}
+    raw_mode = as_string(additional_details.get("mode")).strip()
+    if not raw_mode:
+        return False
+
+    mode_slug = slugify_model_segment(raw_mode)
+    return bool(
+        mode_slug in {"prompt", "fc", "function-calling"}
+        or mode_slug.startswith("thinking")
+    )
+
+
+def aggregated_display_identity(model_info: dict) -> dict:
+    identity = canonical_model_identity(model_info)
+    if not is_setup_alias_mode(model_info):
+        return {
+            **identity,
+            "merged_setup_alias": False,
+        }
+
+    normalized = normalize_model_info(model_info)
+    family_slug = normalized["family_slug"]
+    if not normalized["version_date"]:
+        raw_mode = as_string(((model_info.get("additional_details") or {}).get("mode"))).strip()
+        mode_slug = slugify_model_segment(raw_mode)
+        suffix = f"-{mode_slug}"
+        if mode_slug and family_slug.endswith(suffix):
+            family_slug = family_slug[: -len(suffix)]
+
+    family_id = f"{normalized['developer_slug']}/{family_slug}"
+    family_name = humanize_slug(family_slug)
+    if normalized["version_date"]:
+        variant_key = normalized["version_date"]
+        variant_label = normalized["version_date"]
+    else:
+        variant_key = "default"
+        variant_label = "Default"
+
+    return {
+        **identity,
+        "family_id": family_id,
+        "family_slug": family_slug,
+        "family_name": family_name,
+        "model_route_id": family_id.replace("/", "__"),
+        "variant_key": variant_key,
+        "variant_label": variant_label,
+        "merged_setup_alias": True,
+    }
+
+
 # Domain keywords → high-level category mapping
 _DOMAIN_CATEGORY_MAP = {
     "safety": "safety",
@@ -3528,15 +3579,22 @@ def main() -> int:
                 metric.pop("_ranks", None)
                 metric.pop("_total", None)
 
+    aggregated_model_family_groups: dict[str, list[dict]] = defaultdict(list)
+    for family_evals in model_family_groups.values():
+        for evaluation in family_evals:
+            display_identity = aggregated_display_identity(evaluation.get("model_info") or {})
+            aggregated_model_family_groups[display_identity["family_id"]].append(evaluation)
+
     model_summaries: list[dict] = []
     model_cards: list[dict] = []
 
-    for family_id, family_evals in model_family_groups.items():
+    for family_id, family_evals in aggregated_model_family_groups.items():
         family_evals_sorted = sorted(family_evals, key=lambda e: as_string(e.get("retrieved_timestamp")))
         latest = family_evals_sorted[-1]
         model_info = latest.get("model_info") or {}
-        route_id = as_string(model_info.get("model_route_id"))
-        family_name = as_string(model_info.get("family_name") or model_info.get("name") or family_id.split("/")[-1])
+        display_identity = aggregated_display_identity(model_info)
+        route_id = as_string(display_identity.get("model_route_id") or family_id.replace("/", "__"))
+        family_name = as_string(display_identity.get("family_name") or model_info.get("family_name") or model_info.get("name") or family_id.split("/")[-1])
         params_billions: float | None = None
 
         by_category: dict[str, list[dict]] = defaultdict(list)
@@ -3559,12 +3617,13 @@ def main() -> int:
             if params_billions is None:
                 params_billions = derive_model_params_billions(evaluation.get("model_info") or {})
 
-            model_variant_key = as_string((evaluation.get("model_info") or {}).get("variant_key") or "default")
+            evaluation_display_identity = aggregated_display_identity(evaluation.get("model_info") or {})
+            model_variant_key = as_string(evaluation_display_identity.get("variant_key") or "default")
             variant = variants_map.setdefault(
                 model_variant_key,
                 {
                     "variant_key": model_variant_key,
-                    "variant_label": as_string((evaluation.get("model_info") or {}).get("variant_label") or "Default"),
+                    "variant_label": as_string(evaluation_display_identity.get("variant_label") or "Default"),
                     "evaluation_count": 0,
                     "raw_model_ids": set(),
                     "last_updated": None,
@@ -3628,8 +3687,22 @@ def main() -> int:
             if entry.get("unit") is None:
                 del entry["unit"]
 
+        summary_model_info = dict(model_info)
+        summary_model_info.update(
+            {
+                "id": family_id,
+                "name": family_name,
+                "family_id": family_id,
+                "family_name": family_name,
+                "model_route_id": route_id,
+                "variant_key": "default",
+                "variant_label": "Default",
+                "model_version": None,
+            }
+        )
+
         summary = {
-            "model_info": model_info,
+            "model_info": summary_model_info,
             "model_family_id": family_id,
             "model_route_id": route_id,
             "model_family_name": family_name,
