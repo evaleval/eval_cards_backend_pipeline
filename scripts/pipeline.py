@@ -183,6 +183,125 @@ def parse_positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def parse_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = as_string(value).strip()
+    if not text:
+        return None
+
+    text = text.replace(",", "")
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except Exception:
+        return None
+
+
+def parse_params_billions_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric if numeric > 0 else None
+
+    text = as_string(value).strip().lower()
+    if not text:
+        return None
+
+    text = text.replace(",", "")
+    scale = 1.0
+    if "trillion" in text or re.search(r"\bt\b", text):
+        scale = 1000.0
+    elif "million" in text or re.search(r"\bm\b", text):
+        scale = 0.001
+    elif "thousand" in text or re.search(r"\bk\b", text):
+        scale = 0.000001
+    elif "billion" in text or re.search(r"\bb\b", text):
+        scale = 1.0
+
+    number_match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not number_match:
+        return None
+    try:
+        numeric = float(number_match.group(0)) * scale
+    except Exception:
+        return None
+    return numeric if numeric > 0 else None
+
+
+def infer_params_billions_from_name(*values: Any) -> float | None:
+    patterns = [
+        re.compile(r"(\d+(?:\.\d+)?)\s*[x*]\s*(\d+(?:\.\d+)?)\s*b", flags=re.IGNORECASE),
+        re.compile(r"(\d+(?:\.\d+)?)\s*b", flags=re.IGNORECASE),
+        re.compile(r"(\d+(?:\.\d+)?)\s*m(?:\b|illion)", flags=re.IGNORECASE),
+    ]
+
+    for value in values:
+        text = as_string(value)
+        if not text:
+            continue
+
+        mo = patterns[0].search(text)
+        if mo:
+            left = parse_float(mo.group(1))
+            right = parse_float(mo.group(2))
+            if left and right:
+                inferred = left * right
+                if inferred > 0:
+                    return inferred
+
+        mo = patterns[1].search(text)
+        if mo:
+            inferred = parse_float(mo.group(1))
+            if inferred and inferred > 0:
+                return inferred
+
+        mo = patterns[2].search(text)
+        if mo:
+            inferred_m = parse_float(mo.group(1))
+            if inferred_m and inferred_m > 0:
+                return inferred_m / 1000.0
+
+    return None
+
+
+def derive_model_params_billions(model_info: dict) -> float | None:
+    additional = model_info.get("additional_details")
+    additional_details = additional if isinstance(additional, dict) else {}
+
+    candidate_paths = [
+        model_info.get("params_billions"),
+        model_info.get("parameters_billions"),
+        model_info.get("parameter_count_billions"),
+        model_info.get("parameter_count"),
+        model_info.get("num_parameters"),
+        additional_details.get("params_billions"),
+        additional_details.get("parameters_billions"),
+        additional_details.get("parameter_count_billions"),
+        additional_details.get("parameter_count"),
+        additional_details.get("num_parameters"),
+        additional_details.get("parameters"),
+        additional_details.get("model_size"),
+    ]
+
+    for candidate in candidate_paths:
+        parsed = parse_params_billions_value(candidate)
+        if parsed is not None:
+            return parsed
+
+    return infer_params_billions_from_name(model_info.get("name"), model_info.get("id"))
+
+
 def iso_from_epoch_string(value: Any) -> str | None:
     try:
         numeric = float(value)
@@ -1415,9 +1534,11 @@ def infer_category_from_benchmark(benchmark_name: str, benchmark_card: dict | No
         return "other"
     if re.search(r"(appworld|swe_bench|tau_bench|browsecomp|agent|livecodebench|terminal_bench)", key):
         return "agentic"
+    if re.search(r"(global_mmlu_lite|boolq|medqa|legalbench|quac|cnn_dailymail)", key):
+        return "knowledge"
     if re.search(r"(reward_bench)", key):
-        return "safety"
-    if re.search(r"(math|gsm|gpqa|mmlu|medqa|legalbench|boolq|hellaswag|quac|cnn_dailymail|musr)", key):
+        return "general"
+    if re.search(r"(math|gsm|gpqa|mmlu|hellaswag|musr)", key):
         return "reasoning"
     if re.search(r"(ifeval)", key):
         return "instruction_following"
@@ -1495,6 +1616,100 @@ def iter_output_relative_files(root_dir: Path = OUTPUT_DIR) -> list[str]:
         for path in root_dir.rglob("*")
         if path.is_file()
     )
+
+
+def build_lightweight_model_cards(model_cards: list[dict]) -> list[dict]:
+    lite_cards: list[dict] = []
+
+    for card in model_cards:
+        lite_cards.append(
+            {
+                "model_family_id": card.get("model_family_id"),
+                "model_route_id": card.get("model_route_id"),
+                "model_family_name": card.get("model_family_name"),
+                "developer": card.get("developer"),
+                "params_billions": card.get("params_billions"),
+                "total_evaluations": card.get("total_evaluations"),
+                "benchmark_count": card.get("benchmark_count"),
+                "benchmark_family_count": card.get("benchmark_family_count"),
+                "categories_covered": card.get("categories_covered") or [],
+                "last_updated": card.get("last_updated"),
+                "variants": [
+                    {
+                        "variant_key": variant.get("variant_key"),
+                        "variant_label": variant.get("variant_label"),
+                        "evaluation_count": variant.get("evaluation_count"),
+                        "raw_model_ids": [],
+                        "last_updated": variant.get("last_updated"),
+                    }
+                    for variant in (card.get("variants") or [])
+                ],
+                "score_summary": card.get("score_summary") or {},
+                "benchmark_names": (card.get("benchmark_names") or [])[:8],
+                "top_benchmark_scores": (card.get("top_benchmark_scores") or [])[:6],
+            }
+        )
+
+    return lite_cards
+
+
+def build_lightweight_eval_list(eval_list: dict) -> dict:
+    lite_evals: list[dict] = []
+
+    for summary in eval_list.get("evals") or []:
+        instance_data = summary.get("instance_data") or {}
+        lite_evals.append(
+            {
+                "eval_summary_id": summary.get("eval_summary_id"),
+                "benchmark": summary.get("benchmark"),
+                "benchmark_family_key": summary.get("benchmark_family_key"),
+                "benchmark_family_name": summary.get("benchmark_family_name"),
+                "benchmark_parent_key": summary.get("benchmark_parent_key"),
+                "benchmark_parent_name": summary.get("benchmark_parent_name"),
+                "benchmark_leaf_key": summary.get("benchmark_leaf_key"),
+                "benchmark_leaf_name": summary.get("benchmark_leaf_name"),
+                "benchmark_component_key": summary.get("benchmark_component_key"),
+                "benchmark_component_name": summary.get("benchmark_component_name"),
+                "evaluation_name": summary.get("evaluation_name"),
+                "display_name": summary.get("display_name"),
+                "canonical_display_name": summary.get("canonical_display_name"),
+                "is_summary_score": summary.get("is_summary_score", False),
+                "summary_score_for": summary.get("summary_score_for"),
+                "summary_score_for_name": summary.get("summary_score_for_name"),
+                "summary_eval_ids": summary.get("summary_eval_ids") or [],
+                "category": summary.get("category", "other"),
+                "models_count": summary.get("models_count", 0),
+                "metrics_count": summary.get("metrics_count"),
+                "subtasks_count": summary.get("subtasks_count"),
+                "metric_names": summary.get("metric_names") or [],
+                "primary_metric_name": summary.get("primary_metric_name"),
+                "tags": summary.get("tags") or {"domains": [], "languages": [], "tasks": []},
+                "source_data": summary.get("source_data"),
+                "metrics": summary.get("metrics") or [],
+                "top_score": summary.get("top_score"),
+                "instance_data": {
+                    "available": bool(instance_data.get("available", False)),
+                    "url_count": instance_data.get("url_count", 0),
+                    "sample_urls": (instance_data.get("sample_urls") or [])[:1],
+                    "models_with_loaded_instances": instance_data.get("models_with_loaded_instances", 0),
+                },
+            }
+        )
+
+    return {"evals": lite_evals}
+
+
+def collect_artifact_sizes(root_dir: Path = OUTPUT_DIR) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    for relative_path in iter_output_relative_files(root_dir):
+        file_path = root_dir / relative_path
+        artifacts.append(
+            {
+                "path": relative_path,
+                "bytes": file_path.stat().st_size,
+            }
+        )
+    return artifacts
 
 
 # Uniform grouping for every metric the pipeline emits. The group label is
@@ -3322,6 +3537,7 @@ def main() -> int:
         model_info = latest.get("model_info") or {}
         route_id = as_string(model_info.get("model_route_id"))
         family_name = as_string(model_info.get("family_name") or model_info.get("name") or family_id.split("/")[-1])
+        params_billions: float | None = None
 
         by_category: dict[str, list[dict]] = defaultdict(list)
         raw_model_ids = sorted({as_string((e.get("model_info") or {}).get("id")) for e in family_evals if as_string((e.get("model_info") or {}).get("id"))})
@@ -3339,6 +3555,9 @@ def main() -> int:
             by_category[category].append(evaluation)
             iso = iso_from_epoch_string(evaluation.get("retrieved_timestamp"))
             last_updated = max_iso(last_updated, iso)
+
+            if params_billions is None:
+                params_billions = derive_model_params_billions(evaluation.get("model_info") or {})
 
             model_variant_key = as_string((evaluation.get("model_info") or {}).get("variant_key") or "default")
             variant = variants_map.setdefault(
@@ -3475,6 +3694,7 @@ def main() -> int:
                 "model_route_id": route_id,
                 "model_family_name": family_name,
                 "developer": as_string(model_info.get("developer")),
+                "params_billions": params_billions,
                 "total_evaluations": len(family_evals),
                 "benchmark_count": len({as_string(e.get("benchmark")) for e in family_evals if as_string(e.get("benchmark"))}),
                 "benchmark_family_count": len(
@@ -3498,6 +3718,8 @@ def main() -> int:
 
     model_cards.sort(key=lambda m: (-m["total_evaluations"], as_string(m["model_route_id"])))
     model_summaries.sort(key=lambda m: as_string(m.get("model_route_id")))
+
+    lite_model_cards = build_lightweight_model_cards(model_cards)
 
     eval_list = {
         "evals": [
@@ -3575,6 +3797,8 @@ def main() -> int:
         "totalModels": len(model_cards),
     }
 
+    lite_eval_list = build_lightweight_eval_list(eval_list)
+
     # ---- FIX 3: group developers by slug to merge case variants ----
     # e.g. "anthropic" and "Anthropic" both slugify to "anthropic"
     dev_group_by_slug: dict[str, list[dict]] = defaultdict(list)
@@ -3612,15 +3836,23 @@ def main() -> int:
         "skipped_config_count": len(skipped_configs),
         "skipped_configs": skipped_configs,
         "source_config_count": len(all_configs),
+        "summary_artifacts": {
+            "model_cards": "model-cards.json",
+            "model_cards_lite": "model-cards-lite.json",
+            "eval_list": "eval-list.json",
+            "eval_list_lite": "eval-list-lite.json",
+            "comparison_index": "comparison-index.json",
+        },
     }
 
     write_json(OUTPUT_DIR / "model-cards.json", model_cards)
+    write_json(OUTPUT_DIR / "model-cards-lite.json", lite_model_cards)
     write_json(OUTPUT_DIR / "eval-list.json", eval_list)
+    write_json(OUTPUT_DIR / "eval-list-lite.json", lite_eval_list)
     write_json(OUTPUT_DIR / "peer-ranks.json", peer_ranks)
     write_json(OUTPUT_DIR / "comparison-index.json", comparison_index)
     write_json(OUTPUT_DIR / "benchmark-metadata.json", benchmark_metadata)
     write_json(OUTPUT_DIR / "developers.json", developers)
-    write_json(OUTPUT_DIR / "manifest.json", manifest)
 
     # Copy eval hierarchy into output if available; generate README
     hierarchy_path = Path("reports/eval_hierarchy.json")
@@ -3635,6 +3867,9 @@ def main() -> int:
         write_json(OUTPUT_DIR / "evals" / f"{summary['eval_summary_id']}.json", summary)
     for summary in dev_summaries:
         write_json(OUTPUT_DIR / "developers" / f"{summary['slug']}.json", {"developer": summary["developer"], "models": summary["models"]})
+
+    manifest["artifact_sizes"] = collect_artifact_sizes(OUTPUT_DIR)
+    write_json(OUTPUT_DIR / "manifest.json", manifest)
 
     validate_output_contract(OUTPUT_DIR)
 
