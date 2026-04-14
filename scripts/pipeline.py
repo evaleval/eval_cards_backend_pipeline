@@ -3211,17 +3211,19 @@ def main() -> int:
         print(f"[pipeline] {json.dumps({'event': 'instance.load.summary', 'total': len(evaluations), 'with_instance_data': with_instance, 'missing_instance_data': missing_instance})}")
 
     for evaluation in evaluations:
-        identity = canonical_model_identity(evaluation.get("model_info") or {})
+        raw_model_info = evaluation.get("model_info") or {}
+        identity = canonical_model_identity(raw_model_info)
+        display_identity = aggregated_display_identity(raw_model_info)
         model_info = dict(evaluation.get("model_info") or {})
         model_info.update(
             {
                 "normalized_id": identity["normalized_id"],
-                "family_id": identity["family_id"],
-                "family_slug": identity["family_slug"],
-                "family_name": identity["family_name"],
-                "variant_key": identity["variant_key"],
-                "variant_label": identity["variant_label"],
-                "model_route_id": identity["model_route_id"],
+                "family_id": display_identity["family_id"],
+                "family_slug": display_identity["family_slug"],
+                "family_name": display_identity["family_name"],
+                "variant_key": display_identity["variant_key"],
+                "variant_label": display_identity["variant_label"],
+                "model_route_id": display_identity["model_route_id"],
             }
         )
         evaluation["model_info"] = model_info
