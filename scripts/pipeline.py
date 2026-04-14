@@ -30,6 +30,9 @@ BENCHMARK_FAMILY_REGEXES = [
     re.compile(r"^(.*?)(\d+)(_arena)$"),
     re.compile(r"^(.*?)[_-]v(\d+)$"),
 ]
+STANDALONE_VERSIONED_BENCHMARK_KEYS = {
+    "apex_v1",
+}
 PASS_AT_REGEX = re.compile(r"pass\s*@?\s*(\d+)", flags=re.IGNORECASE)
 PASS_AT_EXACT_REGEX = re.compile(r"^\s*pass\s*@?\s*(\d+)\s*$", flags=re.IGNORECASE)
 EVAL_DESCRIPTION_METRIC_REGEX = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 @%+./_-]*?)\s+on\s+(.+?)\s*$")
@@ -365,6 +368,8 @@ def canonical_benchmark_family_key(value: Any) -> str:
     key = normalize_benchmark_key(value)
     if not key:
         return ""
+    if key in STANDALONE_VERSIONED_BENCHMARK_KEYS:
+        return key
     for regex in BENCHMARK_FAMILY_REGEXES:
         match = regex.match(key)
         if not match:
