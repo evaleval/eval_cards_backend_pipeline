@@ -25,7 +25,7 @@ DEFAULT_LOCAL_BENCHMARK_METADATA_DIR = ".cache/auto_benchmarkcards"
 DEFAULT_METRIC_REGISTRY_PATH = Path("registry/metric_looking_strings.json")
 FILE_READ_MAX_RETRIES = 5
 FILE_READ_RETRY_DELAY_SEC = 1.5
-VERSION_SUFFIX_REGEX = re.compile(r"^(.*?)-((?:19|20)\d{6})(?:-(.+))?$")
+VERSION_SUFFIX_REGEX = re.compile(r"^(.*?)-((?:19|20)\d{6}|(?:19|20)\d{2}-\d{2}-\d{2})(?:-(.+))?$")
 BENCHMARK_FAMILY_REGEXES = [
     re.compile(r"^(.*?)(\d+)(_arena)$"),
     re.compile(r"^(.*?)[_-]v(\d+)$"),
@@ -173,6 +173,45 @@ def humanize_slug(value: Any) -> str:
         else:
             out.append(part[:1].upper() + part[1:])
     return " ".join(out)
+
+
+def normalize_setup_alias_qualifier(value: Any) -> str:
+    return as_string(value).strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def is_setup_alias_qualifier(value: Any) -> bool:
+    normalized = normalize_setup_alias_qualifier(value)
+    return bool(
+        normalized in {
+            "prompt",
+            "fc",
+            "function-calling",
+            "prompt-thinking",
+            "fc-thinking",
+            "function-calling-thinking",
+            "thinking",
+        }
+        or normalized.startswith("thinking-")
+        or normalized.startswith("prompt-thinking-")
+        or normalized.startswith("fc-thinking-")
+        or normalized.startswith("function-calling-thinking-")
+    )
+
+
+def strip_setup_alias_suffix(value: Any) -> tuple[str, str] | None:
+    normalized = slugify_model_segment(value)
+    patterns = [
+        re.compile(r"^(.*?)-((?:prompt|fc|function-calling)-thinking(?:-[a-z0-9.]+)*)$"),
+        re.compile(r"^(.*?)-(thinking(?:-[a-z0-9.]+)*)$"),
+        re.compile(r"^(.*?)-((?:prompt|fc|function-calling))$"),
+    ]
+
+    for pattern in patterns:
+        match = pattern.match(normalized)
+        if match and match.group(1):
+            return match.group(1), match.group(2)
+
+    return None
 
 
 def parse_positive_int(value: Any, default: int) -> int:
@@ -1482,11 +1521,7 @@ def is_setup_alias_mode(model_info: dict) -> bool:
     if not raw_mode:
         return False
 
-    mode_slug = slugify_model_segment(raw_mode)
-    return bool(
-        mode_slug in {"prompt", "fc", "function-calling"}
-        or mode_slug.startswith("thinking")
-    )
+    return is_setup_alias_qualifier(raw_mode)
 
 
 def aggregated_display_identity(model_info: dict) -> dict:
@@ -1499,12 +1534,9 @@ def aggregated_display_identity(model_info: dict) -> dict:
 
     normalized = normalize_model_info(model_info)
     family_slug = normalized["family_slug"]
-    if not normalized["version_date"]:
-        raw_mode = as_string(((model_info.get("additional_details") or {}).get("mode"))).strip()
-        mode_slug = slugify_model_segment(raw_mode)
-        suffix = f"-{mode_slug}"
-        if mode_slug and family_slug.endswith(suffix):
-            family_slug = family_slug[: -len(suffix)]
+    stripped_alias = strip_setup_alias_suffix(family_slug)
+    if stripped_alias:
+        family_slug = stripped_alias[0]
 
     family_id = f"{normalized['developer_slug']}/{family_slug}"
     family_name = humanize_slug(family_slug)
