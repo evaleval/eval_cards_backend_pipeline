@@ -3456,6 +3456,13 @@ def main() -> int:
                     "score": score,
                     "evaluation_id": evaluation.get("evaluation_id"),
                     "retrieved_timestamp": evaluation.get("retrieved_timestamp"),
+                    # Carry provenance straight onto each per-model row so
+                    # downstream consumers don't have to re-join against the
+                    # parent evaluation record. Without this, the hierarchy
+                    # view loses the evaluator_relationship / source_organization
+                    # context and all 1st/3rd-party badges collapse to "other".
+                    "source_metadata": evaluation.get("source_metadata"),
+                    "source_data": evaluation.get("source_data"),
                     "source_record_url": evaluation.get("source_record_url"),
                     "detailed_evaluation_results": evaluation.get("detailed_evaluation_results"),
                     "detailed_evaluation_results_meta": evaluation.get("detailed_evaluation_results_meta"),
