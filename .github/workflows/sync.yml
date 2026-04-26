@@ -26,14 +26,17 @@ jobs:
           python-version: "3.11"
 
       - name: Install python dependencies
-        run: python -m pip install --upgrade pip huggingface_hub
+        run: python -m pip install --upgrade pip huggingface_hub pytest
+
+      - name: Run tests
+        run: python -m pytest tests/
 
       - name: Run pipeline
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           CONFIG_BATCH_SIZE: "3"
           EEE_LOCAL_DATASET_DIR: .cache/eee_datastore
-        run: python scripts/pipeline.py
+        run: python -m scripts.pipeline
 
       - name: Upload manifest as artifact
         uses: actions/upload-artifact@v5

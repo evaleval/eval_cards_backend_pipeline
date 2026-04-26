@@ -176,13 +176,31 @@ def main() -> int:
 
                 if isinstance(metric_id, str) and metric_id.strip():
                     canonical_from_metric_id = canonical_metric_key(metric_id)
-                    add_entry(registry, source_counters, "metric_id", metric_id, canonical_from_metric_id)
+                    add_entry(
+                        registry,
+                        source_counters,
+                        "metric_id",
+                        metric_id,
+                        canonical_from_metric_id,
+                    )
                 if isinstance(metric_name, str) and metric_name.strip():
-                    add_entry(registry, source_counters, "metric_name", metric_name, canonical_from_metric_id)
+                    add_entry(
+                        registry,
+                        source_counters,
+                        "metric_name",
+                        metric_name,
+                        canonical_from_metric_id,
+                    )
                 if isinstance(description, str):
                     match = DESCRIPTION_PREFIX_REGEX.match(description)
                     if match:
-                        add_entry(registry, source_counters, "evaluation_description_prefix", match.group(1), canonical_from_metric_id)
+                        add_entry(
+                            registry,
+                            source_counters,
+                            "evaluation_description_prefix",
+                            match.group(1),
+                            canonical_from_metric_id,
+                        )
 
             details = (result.get("score_details") or {}).get("details") or {}
             if isinstance(details, dict):
@@ -196,7 +214,12 @@ def main() -> int:
                 for pattern in EVALUATION_NAME_SUFFIX_PATTERNS:
                     match = pattern.match(stripped)
                     if match:
-                        add_entry(registry, source_counters, "evaluation_name_suffix", match.group("metric"))
+                        add_entry(
+                            registry,
+                            source_counters,
+                            "evaluation_name_suffix",
+                            match.group("metric"),
+                        )
                         break
 
     serializable_entries = []
@@ -207,31 +230,45 @@ def main() -> int:
         for value, _count in examples.items():
             alias_to_normalized[value] = entry["normalized"]
             alias_to_normalized[normalize_key(value)] = entry["normalized"]
-            alias_to_normalized[normalize_key(value.split(".")[-1])] = entry["normalized"]
+            alias_to_normalized[normalize_key(value.split(".")[-1])] = entry[
+                "normalized"
+            ]
         serializable_entries.append(
             {
                 **entry,
                 "display_name": choose_display_name(entry["normalized"], examples),
                 "sources": sorted(sources),
-                "examples": [{"value": value, "count": count} for value, count in examples.most_common(10)],
+                "examples": [
+                    {"value": value, "count": count}
+                    for value, count in examples.most_common(10)
+                ],
             }
         )
 
-    serializable_entries.sort(key=lambda item: (-item["total_count"], item["normalized"]))
+    serializable_entries.sort(
+        key=lambda item: (-item["total_count"], item["normalized"])
+    )
     output = {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source_dataset": "evaleval/EEE_datastore",
         "local_data_root": str(DATA_ROOT),
         "record_file_count": file_count,
         "registry_entry_count": len(serializable_entries),
-        "source_totals": {source: sum(counter.values()) for source, counter in sorted(source_counters.items())},
-        "alias_to_normalized": dict(sorted((key, value) for key, value in alias_to_normalized.items() if key)),
+        "source_totals": {
+            source: sum(counter.values())
+            for source, counter in sorted(source_counters.items())
+        },
+        "alias_to_normalized": dict(
+            sorted((key, value) for key, value in alias_to_normalized.items() if key)
+        ),
         "entries": serializable_entries,
     }
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(output, indent=2), encoding="utf-8")
-    print(f"Wrote {OUTPUT_PATH} with {len(serializable_entries)} entries from {file_count} files.")
+    print(
+        f"Wrote {OUTPUT_PATH} with {len(serializable_entries)} entries from {file_count} files."
+    )
     return 0
 
 
