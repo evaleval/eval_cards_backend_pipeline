@@ -31,19 +31,19 @@ python -m pip install --upgrade pip huggingface_hub
 Dry run:
 
 ```bash
-python scripts/pipeline.py --dry-run
+python -m scripts.pipeline --dry-run
 ```
 
 Generate the metric-looking string registry from the local EEE snapshot:
 
 ```bash
-python scripts/build_metric_looking_registry.py
+python -m scripts.build_metric_looking_registry
 ```
 
 Upload to Hugging Face:
 
 ```bash
-HF_TOKEN=hf_xxx python scripts/pipeline.py
+HF_TOKEN=hf_xxx python -m scripts.pipeline
 ```
 
 ## Environment variables
@@ -61,6 +61,6 @@ Lower values reduce peak disk and memory pressure on GitHub Actions runners as t
 
 - The pipeline cleans and recreates `output/` on each run.
 - Benchmark metadata is sourced only from the Hugging Face dataset `evaleval/auto-benchmarkcards`.
-- `registry/metric_looking_strings.json` is generated from the local EEE snapshot, can be refreshed with `scripts/build_metric_looking_registry.py`, and is used by the pipeline to canonicalize metric aliases.
+- `registry/metric_looking_strings.json` is generated from the local EEE snapshot, can be refreshed with `python -m scripts.build_metric_looking_registry`, and is used by the pipeline to canonicalize metric aliases.
 - Config load failures are logged and skipped; the skipped config list is recorded in `output/manifest.json`.
 - The workflow uses `npm ci --omit=optional` and a bounded `CONFIG_BATCH_SIZE` to reduce runner space usage.

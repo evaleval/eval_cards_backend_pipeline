@@ -9,6 +9,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import scripts.pipeline as pipeline
+from scripts.helpers.benchmark_identity import canonical_benchmark_family_key
 
 
 OUTPUT_JSON = Path("reports/eval_hierarchy.json")
@@ -92,7 +93,9 @@ def _merge_slice_lists(*slice_lists: list[dict]) -> list[dict]:
                     "metrics": _merge_metric_lists(slice_info.get("metrics", [])),
                 }
                 continue
-            existing["metrics"] = _merge_metric_lists(existing.get("metrics", []), slice_info.get("metrics", []))
+            existing["metrics"] = _merge_metric_lists(
+                existing.get("metrics", []), slice_info.get("metrics", [])
+            )
     return sorted(merged.values(), key=lambda item: item["display_name"].lower())
 
 
@@ -111,14 +114,20 @@ def markdown_tree(report: dict) -> str:
     lines.append(f"- Unique metrics: `{stats['metric_count']}`")
     lines.append(f"- Metric rows scanned: `{stats['metric_rows_scanned']}`")
     lines.append(f"- Fallback metrics: `{qa['fallback_metric_count']}`")
-    lines.append(f"- Benchmarks that still look metric-like: `{qa['metric_like_single_benchmark_count']}`")
-    lines.append(f"- Benchmarks where name matches the only metric: `{qa['single_equals_only_metric_count']}`")
+    lines.append(
+        f"- Benchmarks that still look metric-like: `{qa['metric_like_single_benchmark_count']}`"
+    )
+    lines.append(
+        f"- Benchmarks where name matches the only metric: `{qa['single_equals_only_metric_count']}`"
+    )
     lines.append("")
 
     if qa["fallback_metrics"]:
         lines.append("### Fallback Metrics")
         for item in qa["fallback_metrics"]:
-            lines.append(f"- `{item['composite_benchmark']}` -> `{item['single_benchmark']}` -> `{item['metric_name']}`")
+            lines.append(
+                f"- `{item['composite_benchmark']}` -> `{item['single_benchmark']}` -> `{item['metric_name']}`"
+            )
         lines.append("")
 
     if qa["metric_like_single_benchmarks"]:
@@ -132,11 +141,14 @@ def markdown_tree(report: dict) -> str:
     if qa["single_equals_only_metric"]:
         lines.append("### Single Benchmark Equals Its Only Metric")
         for item in qa["single_equals_only_metric"]:
-            lines.append(f"- `{item['composite_benchmark']}` -> `{item['single_benchmark']}`")
+            lines.append(
+                f"- `{item['composite_benchmark']}` -> `{item['single_benchmark']}`"
+            )
         lines.append("")
 
     lines.append("## Hierarchy")
     lines.append("")
+
     def _card_mark(node):
         return " [x]" if node.get("has_card") else " [ ]"
 
@@ -175,7 +187,9 @@ def markdown_tree(report: dict) -> str:
             for metric in composite.get("metrics", []):
                 lines.append(f"    - {metric['display_name']}")
             for benchmark in composite.get("benchmarks", []):
-                lines.append(f"    -{_card_mark(benchmark)} {benchmark['display_name']}")
+                lines.append(
+                    f"    -{_card_mark(benchmark)} {benchmark['display_name']}"
+                )
                 for slice_info in benchmark.get("slices", []):
                     lines.append(f"      - {slice_info['display_name']}")
                     for metric in slice_info["metrics"]:
@@ -189,12 +203,20 @@ def markdown_tree(report: dict) -> str:
 def main() -> int:
     pipeline.load_metric_registry()
 
-    local_dataset_dir = pipeline.ensure_local_dataset_snapshot(pipeline.DEFAULT_LOCAL_DATASET_DIR, None, False)
-    local_metadata_dir = pipeline.ensure_local_benchmark_metadata_snapshot(pipeline.DEFAULT_LOCAL_BENCHMARK_METADATA_DIR, None, False)
+    local_dataset_dir = pipeline.ensure_local_dataset_snapshot(
+        pipeline.DEFAULT_LOCAL_DATASET_DIR, None, False
+    )
+    local_metadata_dir = pipeline.ensure_local_benchmark_metadata_snapshot(
+        pipeline.DEFAULT_LOCAL_BENCHMARK_METADATA_DIR, None, False
+    )
     if not local_metadata_dir:
-        raise RuntimeError("Benchmark metadata cache is missing; run the pipeline once to populate it.")
+        raise RuntimeError(
+            "Benchmark metadata cache is missing; run the pipeline once to populate it."
+        )
 
-    _cards, metadata_lookup, _benchmark_metadata = pipeline.load_benchmark_metadata(local_metadata_dir)
+    _cards, metadata_lookup, _benchmark_metadata = pipeline.load_benchmark_metadata(
+        local_metadata_dir
+    )
 
     family_tree: dict[str, dict] = {}
     fallback_metrics: list[dict] = []
@@ -209,20 +231,27 @@ def main() -> int:
             record = pipeline.read_dataset_json(dataset_path, local_dataset_dir, None)
             evaluation_id = pipeline.as_string(record.get("evaluation_id"))
             benchmark = evaluation_id.split("/")[0] if evaluation_id else config
-            eval_results = record.get("evaluation_results") if isinstance(record.get("evaluation_results"), list) else []
+            eval_results = (
+                record.get("evaluation_results")
+                if isinstance(record.get("evaluation_results"), list)
+                else []
+            )
             first_result = eval_results[0] if eval_results else {}
             evaluation = {
                 "benchmark": benchmark,
                 "source_data": (first_result or {}).get("source_data"),
             }
+            benchmark_family_key = canonical_benchmark_family_key(benchmark)
             benchmark_card = pipeline.lookup_benchmark_card(
                 metadata_lookup,
                 benchmark,
-                pipeline.canonical_benchmark_family_key(benchmark),
+                benchmark_family_key,
                 ((first_result or {}).get("source_data") or {}).get("dataset_name"),
             )
 
-            family_key, family_display_name = infer_eval_family(config, pipeline.canonical_benchmark_family_key(benchmark))
+            family_key, family_display_name = infer_eval_family(
+                config, benchmark_family_key
+            )
             family_node = get_or_create(
                 family_tree,
                 family_key,
@@ -243,7 +272,9 @@ def main() -> int:
                     "display_name": composite_display_name,
                     "benchmarks": {},
                     "has_card": False,
-                    "category": pipeline.infer_category_from_benchmark(benchmark, benchmark_card),
+                    "category": pipeline.infer_category_from_benchmark(
+                        benchmark, benchmark_card
+                    ),
                 },
             )
             if benchmark_card:
@@ -254,9 +285,15 @@ def main() -> int:
                 if score is None:
                     continue
                 metric_rows_scanned += 1
-                normalized = pipeline.classify_evaluation_result(evaluation, result, benchmark_card)
-                benchmark_key = normalized.get("benchmark_leaf_key") or pipeline.normalize_benchmark_key(benchmark)
-                benchmark_display_name = normalized.get("benchmark_leaf_name") or composite_display_name
+                normalized = pipeline.classify_evaluation_result(
+                    evaluation, result, benchmark_card
+                )
+                benchmark_key = normalized.get(
+                    "benchmark_leaf_key"
+                ) or pipeline.normalize_benchmark_key(benchmark)
+                benchmark_display_name = (
+                    normalized.get("benchmark_leaf_name") or composite_display_name
+                )
                 slice_key = normalized.get("slice_key")
                 slice_display_name = normalized.get("slice_name")
                 metric_key = normalized["metric_key"]
@@ -287,11 +324,18 @@ def main() -> int:
                         metadata_lookup,
                         benchmark_key,
                         benchmark_display_name,
-                        parent_values=(composite_key, composite_display_name, family_key, family_display_name),
+                        parent_values=(
+                            composite_key,
+                            composite_display_name,
+                            family_key,
+                            family_display_name,
+                        ),
                     )
                     if leaf_card:
                         benchmark_node["has_card"] = True
-                        benchmark_node["tags"] = pipeline.extract_benchmark_tags(leaf_card)
+                        benchmark_node["tags"] = pipeline.extract_benchmark_tags(
+                            leaf_card
+                        )
                 target_metrics = benchmark_node["metrics"]
                 if slice_key:
                     slice_node = get_or_create(
@@ -304,9 +348,19 @@ def main() -> int:
                         },
                     )
                     target_metrics = slice_node["metrics"]
-                metric_node = get_or_create(target_metrics, metric_key, lambda: {"key": metric_key, "display_name": metric_display_name, "sources": set()})
+                metric_node = get_or_create(
+                    target_metrics,
+                    metric_key,
+                    lambda: {
+                        "key": metric_key,
+                        "display_name": metric_display_name,
+                        "sources": set(),
+                    },
+                )
                 metric_node["sources"].add(normalized.get("metric_source") or "unknown")
-                benchmark_node["metric_sources"][normalized.get("metric_source") or "unknown"] += 1
+                benchmark_node["metric_sources"][
+                    normalized.get("metric_source") or "unknown"
+                ] += 1
 
                 if normalized.get("metric_source") == "fallback":
                     fallback_metrics.append(
@@ -324,17 +378,33 @@ def main() -> int:
     slice_count = 0
     metric_count = 0
 
-    for family in sorted(family_tree.values(), key=lambda item: item["display_name"].lower()):
+    for family in sorted(
+        family_tree.values(), key=lambda item: item["display_name"].lower()
+    ):
         composites = []
         standalone_benchmarks = []
-        for composite in sorted(family["composites"].values(), key=lambda item: item["display_name"].lower()):
+        for composite in sorted(
+            family["composites"].values(), key=lambda item: item["display_name"].lower()
+        ):
             benchmarks = []
             summary_benchmark_nodes = []
-            for single in sorted(composite["benchmarks"].values(), key=lambda item: item["display_name"].lower()):
-                metrics = sorted(single["metrics"].values(), key=lambda item: item["display_name"].lower())
+            for single in sorted(
+                composite["benchmarks"].values(),
+                key=lambda item: item["display_name"].lower(),
+            ):
+                metrics = sorted(
+                    single["metrics"].values(),
+                    key=lambda item: item["display_name"].lower(),
+                )
                 slices = []
-                for slice_info in sorted(single["slices"].values(), key=lambda item: item["display_name"].lower()):
-                    slice_metrics = sorted(slice_info["metrics"].values(), key=lambda item: item["display_name"].lower())
+                for slice_info in sorted(
+                    single["slices"].values(),
+                    key=lambda item: item["display_name"].lower(),
+                ):
+                    slice_metrics = sorted(
+                        slice_info["metrics"].values(),
+                        key=lambda item: item["display_name"].lower(),
+                    )
                     slice_count += 1
                     metric_count += len(slice_metrics)
                     slices.append(
@@ -353,9 +423,13 @@ def main() -> int:
                     )
                 metric_count += len(metrics)
                 metric_names = [metric["display_name"] for metric in metrics]
-                metric_like_key = pipeline.strict_metric_alias_lookup(single["display_name"])
+                metric_like_key = pipeline.strict_metric_alias_lookup(
+                    single["display_name"]
+                )
                 single_key = pipeline.normalize_benchmark_key(single["key"])
-                single_name_key = pipeline.normalize_benchmark_key(single["display_name"])
+                single_name_key = pipeline.normalize_benchmark_key(
+                    single["display_name"]
+                )
                 is_summary_score = (
                     single.get("is_summary_score", False)
                     or single_key in pipeline.SUMMARY_SCORE_LEAF_KEYS
@@ -369,7 +443,12 @@ def main() -> int:
                             "metrics": metric_names,
                         }
                     )
-                if not is_summary_score and len(metrics) == 1 and pipeline.normalize_benchmark_key(single["display_name"]) == metrics[0]["key"]:
+                if (
+                    not is_summary_score
+                    and len(metrics) == 1
+                    and pipeline.normalize_benchmark_key(single["display_name"])
+                    == metrics[0]["key"]
+                ):
                     single_equals_only_metric.append(
                         {
                             "composite_benchmark": composite["key"],
@@ -415,17 +494,25 @@ def main() -> int:
                 summary_eval_ids = []
 
             if not benchmarks and summary_benchmark_nodes:
-                composite_summary_slices = _merge_slice_lists(*(s.get("slices", []) for s in summary_benchmark_nodes))
-                composite_summary_metrics = _merge_metric_lists(*(s.get("metrics", []) for s in summary_benchmark_nodes))
+                composite_summary_slices = _merge_slice_lists(
+                    *(s.get("slices", []) for s in summary_benchmark_nodes)
+                )
+                composite_summary_metrics = _merge_metric_lists(
+                    *(s.get("metrics", []) for s in summary_benchmark_nodes)
+                )
             else:
                 composite_summary_slices = []
                 composite_summary_metrics = []
-            has_card = composite.get("has_card", False) or any(b.get("has_card") for b in benchmarks)
+            has_card = composite.get("has_card", False) or any(
+                b.get("has_card") for b in benchmarks
+            )
             comp_category = composite.get("category", "other")
             # Bubble tags up: merge all benchmark tags into composite-level tags
             composite_tags = _empty_tags()
             for bm in benchmarks:
-                composite_tags = _merge_tags(composite_tags, bm.get("tags", _empty_tags()))
+                composite_tags = _merge_tags(
+                    composite_tags, bm.get("tags", _empty_tags())
+                )
             if not benchmarks and summary_benchmark_nodes:
                 composite_count += 1
                 composites.append(
@@ -447,7 +534,10 @@ def main() -> int:
                 bm = benchmarks[0]
                 norm_comp = pipeline.normalize_benchmark_key(composite["key"])
                 norm_bm = pipeline.normalize_benchmark_key(bm["key"])
-                if norm_comp == norm_bm and bm["display_name"].lower() == composite["display_name"].lower():
+                if (
+                    norm_comp == norm_bm
+                    and bm["display_name"].lower() == composite["display_name"].lower()
+                ):
                     # Names match — treat as standalone benchmark.
                     standalone_benchmark_count += 1
                     bm["has_card"] = has_card
@@ -496,8 +586,12 @@ def main() -> int:
             family_tags = _merge_tags(family_tags, comp.get("tags", _empty_tags()))
 
         # Derive family category from children (most common, or first found)
-        child_cats = [sb.get("category", "other") for sb in standalone_benchmarks] + [c.get("category", "other") for c in composites]
-        family_category = max(set(child_cats), key=child_cats.count) if child_cats else "other"
+        child_cats = [sb.get("category", "other") for sb in standalone_benchmarks] + [
+            c.get("category", "other") for c in composites
+        ]
+        family_category = (
+            max(set(child_cats), key=child_cats.count) if child_cats else "other"
+        )
 
         if len(standalone_benchmarks) == 1 and not composites:
             sb = standalone_benchmarks[0]
@@ -534,9 +628,8 @@ def main() -> int:
                 promoted["metrics"] = comp.get("metrics", [])
             families.append(promoted)
         else:
-            any_card = (
-                any(sb.get("has_card") for sb in standalone_benchmarks)
-                or any(c.get("has_card") for c in composites)
+            any_card = any(sb.get("has_card") for sb in standalone_benchmarks) or any(
+                c.get("has_card") for c in composites
             )
             families.append(
                 {

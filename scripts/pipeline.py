@@ -12,6 +12,13 @@ from typing import Any
 
 from huggingface_hub import HfApi, HfFileSystem, hf_hub_download, snapshot_download
 
+from scripts import signals
+from scripts.helpers.benchmark_identity import (
+    canonical_benchmark_family_key,
+    is_agentic_benchmark_name,
+    normalize_benchmark_key as shared_normalize_benchmark_key,
+)
+
 
 DATASET_REPO = "evaleval/card_backend"
 EEE_DATASET_REPO = "evaleval/EEE_datastore"
@@ -25,17 +32,14 @@ DEFAULT_LOCAL_BENCHMARK_METADATA_DIR = ".cache/auto_benchmarkcards"
 DEFAULT_METRIC_REGISTRY_PATH = Path("registry/metric_looking_strings.json")
 FILE_READ_MAX_RETRIES = 5
 FILE_READ_RETRY_DELAY_SEC = 1.5
-VERSION_SUFFIX_REGEX = re.compile(r"^(.*?)-((?:19|20)\d{6}|(?:19|20)\d{2}-\d{2}-\d{2})(?:-(.+))?$")
-BENCHMARK_FAMILY_REGEXES = [
-    re.compile(r"^(.*?)(\d+)(_arena)$"),
-    re.compile(r"^(.*?)[_-]v(\d+)$"),
-]
-STANDALONE_VERSIONED_BENCHMARK_KEYS = {
-    "apex_v1",
-}
+VERSION_SUFFIX_REGEX = re.compile(
+    r"^(.*?)-((?:19|20)\d{6}|(?:19|20)\d{2}-\d{2}-\d{2})(?:-(.+))?$"
+)
 PASS_AT_REGEX = re.compile(r"pass\s*@?\s*(\d+)", flags=re.IGNORECASE)
 PASS_AT_EXACT_REGEX = re.compile(r"^\s*pass\s*@?\s*(\d+)\s*$", flags=re.IGNORECASE)
-EVAL_DESCRIPTION_METRIC_REGEX = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 @%+./_-]*?)\s+on\s+(.+?)\s*$")
+EVAL_DESCRIPTION_METRIC_REGEX = re.compile(
+    r"^\s*([A-Za-z][A-Za-z0-9 @%+./_-]*?)\s+on\s+(.+?)\s*$"
+)
 BENCHMARK_DEFAULT_METRICS = {
     "global_mmlu_lite": ("Accuracy", "accuracy"),
 }
@@ -130,7 +134,7 @@ def as_string(value: Any) -> str:
 
 
 def normalize_benchmark_key(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", as_string(value).lower()).strip("_")
+    return shared_normalize_benchmark_key(value)
 
 
 def slugify(value: Any) -> str:
@@ -185,7 +189,8 @@ def normalize_setup_alias_qualifier(value: Any) -> str:
 def is_setup_alias_qualifier(value: Any) -> bool:
     normalized = normalize_setup_alias_qualifier(value)
     return bool(
-        normalized in {
+        normalized
+        in {
             "prompt",
             "fc",
             "function-calling",
@@ -204,7 +209,9 @@ def is_setup_alias_qualifier(value: Any) -> bool:
 def strip_setup_alias_suffix(value: Any) -> tuple[str, str] | None:
     normalized = slugify_model_segment(value)
     patterns = [
-        re.compile(r"^(.*?)-((?:prompt|fc|function-calling)-thinking(?:-[a-z0-9.]+)*)$"),
+        re.compile(
+            r"^(.*?)-((?:prompt|fc|function-calling)-thinking(?:-[a-z0-9.]+)*)$"
+        ),
         re.compile(r"^(.*?)-(thinking(?:-[a-z0-9.]+)*)$"),
         re.compile(r"^(.*?)-((?:prompt|fc|function-calling))$"),
     ]
@@ -283,7 +290,9 @@ def parse_params_billions_value(value: Any) -> float | None:
 
 def infer_params_billions_from_name(*values: Any) -> float | None:
     patterns = [
-        re.compile(r"(\d+(?:\.\d+)?)\s*[x*]\s*(\d+(?:\.\d+)?)\s*b", flags=re.IGNORECASE),
+        re.compile(
+            r"(\d+(?:\.\d+)?)\s*[x*]\s*(\d+(?:\.\d+)?)\s*b", flags=re.IGNORECASE
+        ),
         re.compile(r"(\d+(?:\.\d+)?)\s*b", flags=re.IGNORECASE),
         re.compile(r"(\d+(?:\.\d+)?)\s*m(?:\b|illion)", flags=re.IGNORECASE),
     ]
@@ -349,7 +358,11 @@ def iso_from_epoch_string(value: Any) -> str | None:
         numeric = float(value)
     except Exception:
         return None
-    return datetime.fromtimestamp(numeric, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.fromtimestamp(numeric, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def max_iso(left: str | None, right: str | None) -> str | None:
@@ -360,31 +373,19 @@ def max_iso(left: str | None, right: str | None) -> str | None:
     return left if left > right else right
 
 
-def load_benchmark_metadata(metadata_cache_dir: str) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
+def load_benchmark_metadata(
+    metadata_cache_dir: str,
+) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
     return load_benchmark_metadata_from_dir(Path(metadata_cache_dir))
-
-
-def canonical_benchmark_family_key(value: Any) -> str:
-    key = normalize_benchmark_key(value)
-    if not key:
-        return ""
-    if key in STANDALONE_VERSIONED_BENCHMARK_KEYS:
-        return key
-    for regex in BENCHMARK_FAMILY_REGEXES:
-        match = regex.match(key)
-        if not match:
-            continue
-        candidate = normalize_benchmark_key("".join(part for index, part in enumerate(match.groups(), start=1) if index != 2))
-        if candidate:
-            return candidate
-    return key
 
 
 def compact_benchmark_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", as_string(value).lower())
 
 
-def load_benchmark_metadata_from_dir(root_dir: Path) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
+def load_benchmark_metadata_from_dir(
+    root_dir: Path,
+) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
     cards = []
     lookup: dict[str, dict] = {}
     flat_map: dict[str, dict] = {}
@@ -397,7 +398,9 @@ def load_benchmark_metadata_from_dir(root_dir: Path) -> tuple[list[dict], dict[s
         parsed = json.loads(flat_metadata_path.read_text(encoding="utf-8"))
         if isinstance(parsed, dict):
             for raw_key, raw_card in parsed.items():
-                if not isinstance(raw_card, dict) or not isinstance(raw_card.get("benchmark_details"), dict):
+                if not isinstance(raw_card, dict) or not isinstance(
+                    raw_card.get("benchmark_details"), dict
+                ):
                     continue
                 card_id = normalize_benchmark_key(raw_key)
                 if card_id:
@@ -407,10 +410,14 @@ def load_benchmark_metadata_from_dir(root_dir: Path) -> tuple[list[dict], dict[s
     if cards_dir.exists():
         for file_path in sorted(cards_dir.glob("*.json")):
             parsed = json.loads(file_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict) and isinstance(parsed.get("benchmark_card"), dict):
+            if isinstance(parsed, dict) and isinstance(
+                parsed.get("benchmark_card"), dict
+            ):
                 card = parsed["benchmark_card"]
                 base_name = file_path.stem.replace("benchmark_card_", "")
-            elif isinstance(parsed, dict) and isinstance(parsed.get("benchmark_details"), dict):
+            elif isinstance(parsed, dict) and isinstance(
+                parsed.get("benchmark_details"), dict
+            ):
                 card = parsed
                 base_name = file_path.stem
             else:
@@ -420,8 +427,17 @@ def load_benchmark_metadata_from_dir(root_dir: Path) -> tuple[list[dict], dict[s
                 flat_map[card_id] = card
 
     for card_id, card in sorted(flat_map.items()):
-        keys = candidate_benchmark_keys(card_id, card.get("benchmark_details", {}).get("name"))
-        cards.append({"file_name": f"{card_id}.json", "base_name": card_id, "card": card, "keys": keys})
+        keys = candidate_benchmark_keys(
+            card_id, card.get("benchmark_details", {}).get("name")
+        )
+        cards.append(
+            {
+                "file_name": f"{card_id}.json",
+                "base_name": card_id,
+                "card": card,
+                "keys": keys,
+            }
+        )
         for key in keys:
             lookup[key] = card
 
@@ -429,10 +445,14 @@ def load_benchmark_metadata_from_dir(root_dir: Path) -> tuple[list[dict], dict[s
 
 
 def has_cached_benchmark_metadata(cards_dir: Path, flat_metadata_path: Path) -> bool:
-    return flat_metadata_path.exists() or (cards_dir.exists() and any(cards_dir.glob("*.json")))
+    return flat_metadata_path.exists() or (
+        cards_dir.exists() and any(cards_dir.glob("*.json"))
+    )
 
 
-def ensure_local_benchmark_metadata_snapshot(local_metadata_dir: str, hf_token: str | None, force_refresh: bool) -> str | None:
+def ensure_local_benchmark_metadata_snapshot(
+    local_metadata_dir: str, hf_token: str | None, force_refresh: bool
+) -> str | None:
     target_dir = Path(local_metadata_dir).resolve()
     cards_dir = target_dir / "cards"
     flat_metadata_path = target_dir / "benchmark-metadata.json"
@@ -468,7 +488,9 @@ def candidate_benchmark_keys(*values: Any) -> list[str]:
         if not text:
             continue
         normalized = normalize_benchmark_key(text)
-        stripped = normalize_benchmark_key(re.sub(r"^benchmark_card_", "", text, flags=re.IGNORECASE))
+        stripped = normalize_benchmark_key(
+            re.sub(r"^benchmark_card_", "", text, flags=re.IGNORECASE)
+        )
         separated = normalize_benchmark_key(re.sub(r"[_-]+", " ", text))
         compact = compact_benchmark_key(text)
         keys.add(normalized)
@@ -481,14 +503,18 @@ def candidate_benchmark_keys(*values: Any) -> list[str]:
     return [k for k in keys if k]
 
 
-def lookup_benchmark_card(metadata_lookup: dict[str, dict], *values: Any) -> dict | None:
+def lookup_benchmark_card(
+    metadata_lookup: dict[str, dict], *values: Any
+) -> dict | None:
     for key in candidate_benchmark_keys(*values):
         if key in metadata_lookup:
             return metadata_lookup[key]
     return None
 
 
-def iter_matching_benchmark_cards(metadata_lookup: dict[str, dict], *values: Any) -> list[dict]:
+def iter_matching_benchmark_cards(
+    metadata_lookup: dict[str, dict], *values: Any
+) -> list[dict]:
     matches: list[dict] = []
     seen: set[str] = set()
     for key in candidate_benchmark_keys(*values):
@@ -504,7 +530,9 @@ def iter_matching_benchmark_cards(metadata_lookup: dict[str, dict], *values: Any
     return matches
 
 
-def lookup_benchmark_card_for_parent(metadata_lookup: dict[str, dict], *values: Any, parent_values: tuple[Any, ...] = ()) -> dict | None:
+def lookup_benchmark_card_for_parent(
+    metadata_lookup: dict[str, dict], *values: Any, parent_values: tuple[Any, ...] = ()
+) -> dict | None:
     candidates = iter_matching_benchmark_cards(metadata_lookup, *values)
     if not candidates:
         return None
@@ -561,10 +589,14 @@ def humanize_token_key(value: Any) -> str:
 
 
 def canonical_benchmark_display_name(*values: Any, fallback: Any = None) -> str:
-    candidates = [as_string(value).strip() for value in values if as_string(value).strip()]
+    candidates = [
+        as_string(value).strip() for value in values if as_string(value).strip()
+    ]
 
     for candidate in candidates:
-        preferred = PREFERRED_BENCHMARK_DISPLAY_NAMES.get(normalize_benchmark_key(candidate))
+        preferred = PREFERRED_BENCHMARK_DISPLAY_NAMES.get(
+            normalize_benchmark_key(candidate)
+        )
         if preferred:
             return preferred
 
@@ -574,7 +606,9 @@ def canonical_benchmark_display_name(*values: Any, fallback: Any = None) -> str:
 
     fallback_text = as_string(fallback).strip()
     if fallback_text:
-        preferred = PREFERRED_BENCHMARK_DISPLAY_NAMES.get(normalize_benchmark_key(fallback_text))
+        preferred = PREFERRED_BENCHMARK_DISPLAY_NAMES.get(
+            normalize_benchmark_key(fallback_text)
+        )
         if preferred:
             return preferred
         return humanize_token_key(fallback_text)
@@ -634,7 +668,9 @@ def load_metric_registry(path: Path = DEFAULT_METRIC_REGISTRY_PATH) -> None:
         normalized_alias = normalize_benchmark_key(canonical_key)
         if normalized_alias:
             candidate_set.add(normalized_alias)
-    METRIC_SUFFIX_ALIAS_CANDIDATES = sorted(candidate_set, key=lambda value: (-len(value.split("_")), -len(value), value))
+    METRIC_SUFFIX_ALIAS_CANDIDATES = sorted(
+        candidate_set, key=lambda value: (-len(value.split("_")), -len(value), value)
+    )
 
 
 def humanize_metric_key(value: Any) -> str:
@@ -711,23 +747,33 @@ def strict_metric_alias_lookup(value: Any) -> str:
 
 def preferred_metric_display(metric_key: str, raw_label: Any = None) -> str:
     if metric_key in METRIC_REGISTRY_ENTRIES:
-        display = as_string(METRIC_REGISTRY_ENTRIES[metric_key].get("display_name")).strip()
+        display = as_string(
+            METRIC_REGISTRY_ENTRIES[metric_key].get("display_name")
+        ).strip()
         if display:
             return display
     if metric_key in BUILTIN_METRIC_DISPLAY_MAP:
         return BUILTIN_METRIC_DISPLAY_MAP[metric_key]
-    if raw_label and canonicalize_metric_key(raw_label) == metric_key and normalize_benchmark_key(raw_label) == metric_key:
+    if (
+        raw_label
+        and canonicalize_metric_key(raw_label) == metric_key
+        and normalize_benchmark_key(raw_label) == metric_key
+    ):
         return as_string(raw_label).strip()
     return humanize_metric_key(metric_key)
 
 
-def infer_metric_from_value(metric_name: Any = None, metric_id: Any = None) -> dict | None:
+def infer_metric_from_value(
+    metric_name: Any = None, metric_id: Any = None
+) -> dict | None:
     explicit_id = as_string(metric_id).strip()
     explicit_name = as_string(metric_name).strip()
 
     if explicit_id:
         metric_key = canonicalize_metric_key(explicit_id) or slugify(explicit_id)
-        display = preferred_metric_display(metric_key, explicit_name or explicit_id.split(".")[-1])
+        display = preferred_metric_display(
+            metric_key, explicit_name or explicit_id.split(".")[-1]
+        )
         return {
             "metric_name": display,
             "metric_id": explicit_id,
@@ -748,7 +794,11 @@ def infer_metric_from_value(metric_name: Any = None, metric_id: Any = None) -> d
 
 
 def infer_metric_from_score_details(result: dict) -> dict | None:
-    details = ((result.get("score_details") or {}).get("details") or {}) if isinstance(result, dict) else {}
+    details = (
+        ((result.get("score_details") or {}).get("details") or {})
+        if isinstance(result, dict)
+        else {}
+    )
     if not isinstance(details, dict):
         return None
     tab = as_string(details.get("tab")).strip()
@@ -758,7 +808,11 @@ def infer_metric_from_score_details(result: dict) -> dict | None:
 
 
 def infer_metric_from_benchmark_card(card: dict | None) -> dict | None:
-    metrics = (((card or {}).get("methodology") or {}).get("metrics") or []) if isinstance(card, dict) else []
+    metrics = (
+        (((card or {}).get("methodology") or {}).get("metrics") or [])
+        if isinstance(card, dict)
+        else []
+    )
     if isinstance(metrics, list) and metrics:
         return infer_metric_from_value(metric_name=metrics[0])
     return None
@@ -776,11 +830,15 @@ def infer_metric_from_benchmark_defaults(benchmark_key: str) -> dict | None:
     }
 
 
-def metric_namespace_component(metric_id: str, benchmark_family_key: str) -> tuple[str | None, str | None]:
+def metric_namespace_component(
+    metric_id: str, benchmark_family_key: str
+) -> tuple[str | None, str | None]:
     parts = [part for part in re.split(r"[./]+", as_string(metric_id)) if part]
     if len(parts) < 3:
         return None, None
-    if normalize_benchmark_key(parts[0]) != normalize_benchmark_key(benchmark_family_key):
+    if normalize_benchmark_key(parts[0]) != normalize_benchmark_key(
+        benchmark_family_key
+    ):
         return None, None
     component_parts = parts[1:-1]
     if not component_parts:
@@ -799,7 +857,9 @@ def split_metric_from_evaluation_description(description: Any) -> dict | None:
     return infer_metric_from_value(metric_name=match.group(1))
 
 
-def split_metric_from_evaluation_name(raw_name: Any, benchmark_keys: list[str]) -> dict | None:
+def split_metric_from_evaluation_name(
+    raw_name: Any, benchmark_keys: list[str]
+) -> dict | None:
     name = as_string(raw_name).strip()
     if not name:
         return None
@@ -883,12 +943,19 @@ def infer_top_level_benchmark_name(benchmark: Any, benchmark_family_name: str) -
     if benchmark_key.startswith("helm_"):
         suffix = benchmark_key.split("_", 1)[1]
         return canonical_benchmark_display_name(suffix, fallback=suffix)
-    if benchmark_family_name and normalize_benchmark_key(benchmark_family_name) == benchmark_key:
+    if (
+        benchmark_family_name
+        and normalize_benchmark_key(benchmark_family_name) == benchmark_key
+    ):
         return benchmark_family_name
-    return canonical_benchmark_display_name(benchmark, fallback=benchmark or benchmark_family_name)
+    return canonical_benchmark_display_name(
+        benchmark, fallback=benchmark or benchmark_family_name
+    )
 
 
-def infer_subset_slice_from_name(name: Any, benchmark: Any) -> tuple[str | None, str | None]:
+def infer_subset_slice_from_name(
+    name: Any, benchmark: Any
+) -> tuple[str | None, str | None]:
     text = as_string(name).strip()
     benchmark_key = normalize_benchmark_key(benchmark)
     if not text or not benchmark_key or "/" not in text:
@@ -914,7 +981,11 @@ def benchmark_card_language_keys(benchmark_card: dict | None) -> set[str]:
     if not benchmark_card:
         return set()
 
-    details = benchmark_card.get("benchmark_details") if isinstance(benchmark_card, dict) else {}
+    details = (
+        benchmark_card.get("benchmark_details")
+        if isinstance(benchmark_card, dict)
+        else {}
+    )
     languages = as_string_list((details or {}).get("languages"))
     keys = set()
     for language in languages:
@@ -935,14 +1006,21 @@ def is_language_subset_name(name: Any, benchmark_card: dict | None) -> bool:
     language_keys = benchmark_card_language_keys(benchmark_card)
     if normalized in language_keys or compact in language_keys:
         return True
-    return normalized in COMMON_LANGUAGE_SUBSET_KEYS or compact in COMMON_LANGUAGE_SUBSET_KEYS
+    return (
+        normalized in COMMON_LANGUAGE_SUBSET_KEYS
+        or compact in COMMON_LANGUAGE_SUBSET_KEYS
+    )
 
 
-def top_level_benchmark_owns_slices(benchmark: Any, benchmark_card: dict | None) -> bool:
+def top_level_benchmark_owns_slices(
+    benchmark: Any, benchmark_card: dict | None
+) -> bool:
     benchmark_key = normalize_benchmark_key(benchmark)
     if benchmark_card:
         return True
-    if benchmark_key in {normalize_benchmark_key(key) for key in BENCHMARK_DEFAULT_METRICS}:
+    if benchmark_key in {
+        normalize_benchmark_key(key) for key in BENCHMARK_DEFAULT_METRICS
+    }:
         return True
     if benchmark_key.startswith("helm_"):
         return True
@@ -959,15 +1037,21 @@ def infer_benchmark_leaf_and_slice(
     benchmark_card: dict | None,
 ) -> tuple[str, str, str | None, str | None]:
     benchmark = as_string(evaluation.get("benchmark"))
-    source_data = result.get("source_data") if isinstance(result.get("source_data"), dict) else {}
+    source_data = (
+        result.get("source_data") if isinstance(result.get("source_data"), dict) else {}
+    )
     dataset_name = as_string((source_data or {}).get("dataset_name"))
     raw_name = as_string(result.get("evaluation_name")).strip()
     raw_name_key = normalize_benchmark_key(raw_name)
     dataset_key = normalize_benchmark_key(dataset_name)
     top_level_key = normalize_benchmark_key(benchmark or dataset_name)
-    top_level_name = infer_top_level_benchmark_name(benchmark or dataset_name, benchmark_family_name)
+    top_level_name = infer_top_level_benchmark_name(
+        benchmark or dataset_name, benchmark_family_name
+    )
 
-    subset_key, subset_name = infer_subset_slice_from_name(dataset_name or raw_name, benchmark or dataset_name)
+    subset_key, subset_name = infer_subset_slice_from_name(
+        dataset_name or raw_name, benchmark or dataset_name
+    )
     if subset_key and subset_name:
         return top_level_key, top_level_name, subset_key, subset_name
 
@@ -978,7 +1062,10 @@ def infer_benchmark_leaf_and_slice(
             benchmark_family_name,
             fallback=top_level_name,
         )
-        if is_language_subset_name(raw_name, benchmark_card) and raw_name_key != top_level_key:
+        if (
+            is_language_subset_name(raw_name, benchmark_card)
+            and raw_name_key != top_level_key
+        ):
             return top_level_key, top_level_name, raw_name_key, raw_name
         return raw_name_key, canonical_raw_name, None, None
 
@@ -986,21 +1073,37 @@ def infer_benchmark_leaf_and_slice(
         component_summary_key = normalize_benchmark_key(component_name)
         if component_summary_key in SUMMARY_SCORE_LEAF_KEYS:
             return top_level_key, top_level_name, None, None
-        if top_level_benchmark_owns_slices(benchmark or dataset_name, benchmark_card) or is_language_subset_name(component_name, benchmark_card):
-            if component_key == top_level_key or normalize_benchmark_key(component_name) == top_level_key:
+        if top_level_benchmark_owns_slices(
+            benchmark or dataset_name, benchmark_card
+        ) or is_language_subset_name(component_name, benchmark_card):
+            if (
+                component_key == top_level_key
+                or normalize_benchmark_key(component_name) == top_level_key
+            ):
                 return top_level_key, top_level_name, None, None
             return top_level_key, top_level_name, component_key, component_name
-        return component_key or normalize_benchmark_key(component_name), component_name, None, None
+        return (
+            component_key or normalize_benchmark_key(component_name),
+            component_name,
+            None,
+            None,
+        )
 
     return top_level_key, top_level_name, None, None
 
 
-def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: dict | None) -> dict:
+def classify_evaluation_result(
+    evaluation: dict, result: dict, benchmark_card: dict | None
+) -> dict:
     benchmark = as_string(evaluation.get("benchmark"))
-    source_data = result.get("source_data") if isinstance(result.get("source_data"), dict) else {}
+    source_data = (
+        result.get("source_data") if isinstance(result.get("source_data"), dict) else {}
+    )
     dataset_name = as_string((source_data or {}).get("dataset_name"))
     benchmark_family_key = canonical_benchmark_family_key(benchmark or dataset_name)
-    benchmark_card_name = as_string(((benchmark_card or {}).get("benchmark_details") or {}).get("name"))
+    benchmark_card_name = as_string(
+        ((benchmark_card or {}).get("benchmark_details") or {}).get("name")
+    )
     benchmark_family_name = (
         canonical_benchmark_display_name(
             benchmark_family_key,
@@ -1012,27 +1115,48 @@ def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: d
         or "Unknown Benchmark"
     )
     raw_name = as_string(result.get("evaluation_name")).strip()
-    benchmark_keys = [candidate for candidate in {normalize_benchmark_key(benchmark), normalize_benchmark_key(dataset_name), benchmark_family_key} if candidate]
+    benchmark_keys = [
+        candidate
+        for candidate in {
+            normalize_benchmark_key(benchmark),
+            normalize_benchmark_key(dataset_name),
+            benchmark_family_key,
+        }
+        if candidate
+    ]
 
-    metric_config = result.get("metric_config") if isinstance(result.get("metric_config"), dict) else {}
+    metric_config = (
+        result.get("metric_config")
+        if isinstance(result.get("metric_config"), dict)
+        else {}
+    )
     metric = None
     metric_source = "unknown"
     component_name = None
     component_key = None
     raw_name_consumed_as_metric = False
 
-    explicit_metric = infer_metric_from_value(metric_name=metric_config.get("metric_name"), metric_id=metric_config.get("metric_id"))
+    explicit_metric = infer_metric_from_value(
+        metric_name=metric_config.get("metric_name"),
+        metric_id=metric_config.get("metric_id"),
+    )
     if explicit_metric:
         metric = explicit_metric
         metric_source = "metric_config"
-        component_name, component_key = metric_namespace_component(metric["metric_id"], benchmark_family_key)
+        component_name, component_key = metric_namespace_component(
+            metric["metric_id"], benchmark_family_key
+        )
         split_metric = split_metric_from_evaluation_name(raw_name, benchmark_keys)
-        if split_metric and split_metric["metric"]["metric_key"] == metric["metric_key"]:
+        if (
+            split_metric
+            and split_metric["metric"]["metric_key"] == metric["metric_key"]
+        ):
             if not component_name and not component_key:
                 component_name = split_metric["component_name"]
                 component_key = split_metric["component_key"]
             raw_name_consumed_as_metric = (
-                split_metric["component_name"] is None and split_metric["component_key"] is None
+                split_metric["component_name"] is None
+                and split_metric["component_key"] is None
             )
 
     if metric is None:
@@ -1045,7 +1169,9 @@ def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: d
             raw_name_consumed_as_metric = component_name is None
 
     if metric is None:
-        metric = split_metric_from_evaluation_description(metric_config.get("evaluation_description"))
+        metric = split_metric_from_evaluation_description(
+            metric_config.get("evaluation_description")
+        )
         if metric:
             metric_source = "evaluation_description"
 
@@ -1073,21 +1199,30 @@ def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: d
         metric_source = "fallback"
 
     raw_name_key = normalize_benchmark_key(raw_name)
-    if raw_name and not component_name and not raw_name_consumed_as_metric and raw_name_key and raw_name_key not in benchmark_keys and raw_name_key != metric["metric_key"]:
+    if (
+        raw_name
+        and not component_name
+        and not raw_name_consumed_as_metric
+        and raw_name_key
+        and raw_name_key not in benchmark_keys
+        and raw_name_key != metric["metric_key"]
+    ):
         component_name = raw_name
         component_key = raw_name_key
 
     if component_name and not component_key:
         component_key = normalize_benchmark_key(component_name)
 
-    benchmark_leaf_key, benchmark_leaf_name, slice_key, slice_name = infer_benchmark_leaf_and_slice(
-        evaluation,
-        result,
-        benchmark_family_key or normalize_benchmark_key(benchmark or dataset_name),
-        benchmark_family_name,
-        component_key,
-        component_name,
-        benchmark_card,
+    benchmark_leaf_key, benchmark_leaf_name, slice_key, slice_name = (
+        infer_benchmark_leaf_and_slice(
+            evaluation,
+            result,
+            benchmark_family_key or normalize_benchmark_key(benchmark or dataset_name),
+            benchmark_family_name,
+            component_key,
+            component_name,
+            benchmark_card,
+        )
     )
 
     # A leaf key that is a generic summary word (e.g. "overall") and differs
@@ -1108,7 +1243,9 @@ def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: d
     )
     display_name = join_display_name_parts(component_name, metric["metric_name"])
     if not display_name:
-        display_name = benchmark_leaf_name or benchmark_parent_name or benchmark_family_name
+        display_name = (
+            benchmark_leaf_name or benchmark_parent_name or benchmark_family_name
+        )
     canonical_display_name = join_display_name_parts(
         benchmark_leaf_name or benchmark_parent_name or benchmark_family_name,
         slice_name,
@@ -1139,7 +1276,9 @@ def classify_evaluation_result(evaluation: dict, result: dict, benchmark_card: d
     }
 
 
-def ensure_local_dataset_snapshot(local_dataset_dir: str, hf_token: str | None, force_refresh: bool) -> str:
+def ensure_local_dataset_snapshot(
+    local_dataset_dir: str, hf_token: str | None, force_refresh: bool
+) -> str:
     target_dir = Path(local_dataset_dir).resolve()
     data_dir = target_dir / "data"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -1180,19 +1319,27 @@ def discover_configs(local_dataset_dir: str | None, hf_token: str | None) -> lis
     return sorted(set(configs))
 
 
-def list_json_files_for_config(config: str, local_dataset_dir: str | None, hf_token: str | None) -> list[str]:
+def list_json_files_for_config(
+    config: str, local_dataset_dir: str | None, hf_token: str | None
+) -> list[str]:
     if local_dataset_dir:
         root = Path(local_dataset_dir) / "data" / config
-        return sorted(str(p.relative_to(local_dataset_dir)).replace(os.sep, "/") for p in root.rglob("*.json") if p.is_file() and not p.name.endswith(".jsonl"))
+        return sorted(
+            str(p.relative_to(local_dataset_dir)).replace(os.sep, "/")
+            for p in root.rglob("*.json")
+            if p.is_file() and not p.name.endswith(".jsonl")
+        )
 
     fs = HfFileSystem(token=hf_token)
     pattern = f"datasets/{EEE_DATASET_REPO}/data/{config}/**/*.json"
     paths = [p for p in fs.glob(pattern) if not p.endswith(".jsonl")]
     prefix = f"datasets/{EEE_DATASET_REPO}/"
-    return sorted(p[len(prefix):] for p in paths)
+    return sorted(p[len(prefix) :] for p in paths)
 
 
-def read_dataset_json(dataset_path: str, local_dataset_dir: str | None, hf_token: str | None) -> dict:
+def read_dataset_json(
+    dataset_path: str, local_dataset_dir: str | None, hf_token: str | None
+) -> dict:
     if local_dataset_dir:
         local_path = Path(local_dataset_dir) / dataset_path
         return json.loads(local_path.read_text(encoding="utf-8"))
@@ -1228,9 +1375,15 @@ def normalize_detailed_eval_meta(value: Any) -> dict | None:
         except Exception:
             pass
 
-        file_path_match = re.search(r"file_path'?:\s*'([^']+)'", value, flags=re.IGNORECASE) or re.search(r'"file_path"\s*:\s*"([^"]+)"', value)
-        format_match = re.search(r"format'?:\s*'([^']+)'", value, flags=re.IGNORECASE) or re.search(r'"format"\s*:\s*"([^"]+)"', value)
-        rows_match = re.search(r"total_rows'?:\s*(\d+)", value, flags=re.IGNORECASE) or re.search(r'"total_rows"\s*:\s*(\d+)', value)
+        file_path_match = re.search(
+            r"file_path'?:\s*'([^']+)'", value, flags=re.IGNORECASE
+        ) or re.search(r'"file_path"\s*:\s*"([^"]+)"', value)
+        format_match = re.search(
+            r"format'?:\s*'([^']+)'", value, flags=re.IGNORECASE
+        ) or re.search(r'"format"\s*:\s*"([^"]+)"', value)
+        rows_match = re.search(
+            r"total_rows'?:\s*(\d+)", value, flags=re.IGNORECASE
+        ) or re.search(r'"total_rows"\s*:\s*(\d+)', value)
         if file_path_match or format_match or rows_match:
             return {
                 "file_path": file_path_match.group(1) if file_path_match else None,
@@ -1249,7 +1402,9 @@ def resolve_detailed_results_url(record: dict, source_record_url: str) -> str | 
         if cleaned.startswith("data/"):
             return raw_url_for_dataset_path(cleaned)
     if isinstance(value, dict):
-        file_path = as_string(value.get("file_path") or value.get("path") or value.get("url"))
+        file_path = as_string(
+            value.get("file_path") or value.get("path") or value.get("url")
+        )
         if file_path:
             if file_path.startswith("http://") or file_path.startswith("https://"):
                 return file_path
@@ -1277,7 +1432,9 @@ def infer_interaction_type(instances: list[dict]) -> str:
     return "unknown"
 
 
-def maybe_load_instance_data(record: dict, local_dataset_dir: str | None, hf_token: str | None) -> dict | None:
+def maybe_load_instance_data(
+    record: dict, local_dataset_dir: str | None, hf_token: str | None
+) -> dict | None:
     candidates: list[str] = []
     explicit = as_string(record.get("detailed_evaluation_results"))
     source_record_url = as_string(record.get("source_record_url"))
@@ -1303,7 +1460,9 @@ def maybe_load_instance_data(record: dict, local_dataset_dir: str | None, hf_tok
 
         try:
             if local_dataset_dir and dataset_path:
-                text = (Path(local_dataset_dir) / dataset_path).read_text(encoding="utf-8")
+                text = (Path(local_dataset_dir) / dataset_path).read_text(
+                    encoding="utf-8"
+                )
             elif dataset_path:
                 local_path = hf_hub_download(
                     repo_id=EEE_DATASET_REPO,
@@ -1337,7 +1496,9 @@ def maybe_load_instance_data(record: dict, local_dataset_dir: str | None, hf_tok
     return None
 
 
-def read_text_from_dataset_url(url: str, local_dataset_dir: str | None, hf_token: str | None) -> str | None:
+def read_text_from_dataset_url(
+    url: str, local_dataset_dir: str | None, hf_token: str | None
+) -> str | None:
     dataset_path = ""
     if url.startswith(f"{EEE_DATASET_RAW_BASE}/"):
         dataset_path = url[len(EEE_DATASET_RAW_BASE) + 1 :]
@@ -1363,19 +1524,29 @@ def dataset_resolve_url(relative_path: str) -> str:
 
 
 def build_instance_artifact_relative_path(evaluation: dict) -> str:
-    route_id = as_string((evaluation.get("model_info") or {}).get("model_route_id") or "unknown")
-    evaluation_key = slugify(evaluation.get("evaluation_id") or evaluation.get("source_record_url") or "instance")
+    route_id = as_string(
+        (evaluation.get("model_info") or {}).get("model_route_id") or "unknown"
+    )
+    evaluation_key = slugify(
+        evaluation.get("evaluation_id")
+        or evaluation.get("source_record_url")
+        or "instance"
+    )
     return f"instances/{route_id}/{evaluation_key}.jsonl"
 
 
 def build_record_artifact_relative_path(evaluation: dict) -> str:
-    route_id = as_string((evaluation.get("model_info") or {}).get("model_route_id") or "unknown")
+    route_id = as_string(
+        (evaluation.get("model_info") or {}).get("model_route_id") or "unknown"
+    )
     evaluation_key = slugify(evaluation.get("evaluation_id") or "record")
     return f"records/{route_id}/{evaluation_key}.json"
 
 
 def build_evaluation_hierarchy_payload(evaluation: dict) -> dict:
-    category = infer_category_from_benchmark(as_string(evaluation.get("benchmark")), evaluation.get("benchmark_card"))
+    category = infer_category_from_benchmark(
+        as_string(evaluation.get("benchmark")), evaluation.get("benchmark_card")
+    )
     model_info = evaluation.get("model_info") or {}
     return {
         "category": category,
@@ -1419,7 +1590,10 @@ def find_matching_result_for_instance_row(evaluation: dict, row: dict) -> dict |
     evaluation_result_id = as_string(row.get("evaluation_result_id")).strip()
     if evaluation_result_id:
         for result in results:
-            if as_string(result.get("evaluation_result_id")).strip() == evaluation_result_id:
+            if (
+                as_string(result.get("evaluation_result_id")).strip()
+                == evaluation_result_id
+            ):
                 return result
 
     evaluation_name = as_string(row.get("evaluation_name")).strip()
@@ -1448,11 +1622,15 @@ def annotate_instance_row(evaluation: dict, row: dict) -> dict:
     annotated = dict(row)
     matched_result = find_matching_result_for_instance_row(evaluation, annotated)
     if matched_result is not None:
-        annotated["hierarchy"] = build_result_hierarchy_payload(evaluation, matched_result)
+        annotated["hierarchy"] = build_result_hierarchy_payload(
+            evaluation, matched_result
+        )
     else:
         annotated["hierarchy"] = build_evaluation_hierarchy_payload(evaluation)
         if len(annotated["hierarchy"].get("eval_summary_ids", [])) == 1:
-            annotated["hierarchy"]["eval_summary_id"] = annotated["hierarchy"]["eval_summary_ids"][0]
+            annotated["hierarchy"]["eval_summary_id"] = annotated["hierarchy"][
+                "eval_summary_ids"
+            ][0]
     return annotated
 
 
@@ -1467,18 +1645,26 @@ def transform_instance_artifact_text(evaluation: dict, artifact_text: str) -> st
         except Exception:
             transformed_lines.append(stripped)
             continue
-        transformed_lines.append(json.dumps(annotate_instance_row(evaluation, row), ensure_ascii=False))
+        transformed_lines.append(
+            json.dumps(annotate_instance_row(evaluation, row), ensure_ascii=False)
+        )
     return "\n".join(transformed_lines) + ("\n" if transformed_lines else "")
 
 
 def normalize_model_info(model_info: dict) -> dict:
-    raw_id = as_string(model_info.get("id") or model_info.get("name") or "unknown/unknown")
-    fallback_developer = as_string(model_info.get("developer") or raw_id.split("/")[0] or "unknown")
+    raw_id = as_string(
+        model_info.get("id") or model_info.get("name") or "unknown/unknown"
+    )
+    fallback_developer = as_string(
+        model_info.get("developer") or raw_id.split("/")[0] or "unknown"
+    )
     if "/" in raw_id:
         parts = raw_id.split("/")
     else:
         parts = [slugify_developer(fallback_developer), raw_id]
-    raw_developer = parts[0] if len(parts) > 1 else slugify_developer(fallback_developer)
+    raw_developer = (
+        parts[0] if len(parts) > 1 else slugify_developer(fallback_developer)
+    )
     raw_model_name = "/".join(parts[1:]) if len(parts) > 1 else parts[0]
     match = VERSION_SUFFIX_REGEX.match(raw_model_name)
     base_slug = match.group(1) if match else raw_model_name
@@ -1487,7 +1673,9 @@ def normalize_model_info(model_info: dict) -> dict:
 
     return {
         "raw_id": raw_id,
-        "developer": as_string(model_info.get("developer") or humanize_slug(raw_developer)),
+        "developer": as_string(
+            model_info.get("developer") or humanize_slug(raw_developer)
+        ),
         "developer_slug": slugify_developer(raw_developer),
         "model_name": as_string(model_info.get("name") or humanize_slug(base_slug)),
         "raw_model_name": raw_model_name,
@@ -1505,7 +1693,9 @@ def canonical_model_identity(model_info: dict) -> dict:
         if "/" in normalized["raw_id"]
         else f"{normalized['developer_slug']}/{normalized['raw_id']}"
     )
-    variant_parts = [p for p in [normalized["version_date"], normalized["qualifier"]] if p]
+    variant_parts = [
+        p for p in [normalized["version_date"], normalized["qualifier"]] if p
+    ]
     variant_key = "-".join(variant_parts) if variant_parts else "default"
     variant_label = " ".join(variant_parts) if variant_parts else "Default"
 
@@ -1602,11 +1792,13 @@ _DOMAIN_CATEGORY_MAP = {
 }
 
 
-def infer_category_from_benchmark(benchmark_name: str, benchmark_card: dict | None = None) -> str:
+def infer_category_from_benchmark(
+    benchmark_name: str, benchmark_card: dict | None = None
+) -> str:
     """Derive a high-level category, preferring benchmark card domains over regex."""
     # Try card domains first
     if benchmark_card:
-        domains = ((benchmark_card.get("benchmark_details") or {}).get("domains") or [])
+        domains = (benchmark_card.get("benchmark_details") or {}).get("domains") or []
         for domain in domains:
             domain_lower = domain.lower()
             if domain_lower in _DOMAIN_CATEGORY_MAP:
@@ -1620,7 +1812,7 @@ def infer_category_from_benchmark(benchmark_name: str, benchmark_card: dict | No
     key = normalize_benchmark_key(benchmark_name)
     if not key:
         return "other"
-    if re.search(r"(appworld|swe_bench|tau_bench|browsecomp|agent|livecodebench|terminal_bench)", key):
+    if is_agentic_benchmark_name(key):
         return "agentic"
     if re.search(r"(global_mmlu_lite|boolq|medqa|legalbench|quac|cnn_dailymail)", key):
         return "knowledge"
@@ -1733,6 +1925,9 @@ def build_lightweight_model_cards(model_cards: list[dict]) -> list[dict]:
                     for variant in (card.get("variants") or [])
                 ],
                 "score_summary": card.get("score_summary") or {},
+                "reproducibility_summary": card.get("reproducibility_summary"),
+                "provenance_summary": card.get("provenance_summary"),
+                "comparability_summary": card.get("comparability_summary"),
                 "benchmark_names": (card.get("benchmark_names") or [])[:8],
                 "top_benchmark_scores": (card.get("top_benchmark_scores") or [])[:6],
             }
@@ -1771,7 +1966,8 @@ def build_lightweight_eval_list(eval_list: dict) -> dict:
                 "subtasks_count": summary.get("subtasks_count"),
                 "metric_names": summary.get("metric_names") or [],
                 "primary_metric_name": summary.get("primary_metric_name"),
-                "tags": summary.get("tags") or {"domains": [], "languages": [], "tasks": []},
+                "tags": summary.get("tags")
+                or {"domains": [], "languages": [], "tasks": []},
                 "source_data": summary.get("source_data"),
                 "metrics": summary.get("metrics") or [],
                 "top_score": summary.get("top_score"),
@@ -1779,8 +1975,13 @@ def build_lightweight_eval_list(eval_list: dict) -> dict:
                     "available": bool(instance_data.get("available", False)),
                     "url_count": instance_data.get("url_count", 0),
                     "sample_urls": (instance_data.get("sample_urls") or [])[:1],
-                    "models_with_loaded_instances": instance_data.get("models_with_loaded_instances", 0),
+                    "models_with_loaded_instances": instance_data.get(
+                        "models_with_loaded_instances", 0
+                    ),
                 },
+                "reproducibility_summary": summary.get("reproducibility_summary"),
+                "provenance_summary": summary.get("provenance_summary"),
+                "comparability_summary": summary.get("comparability_summary"),
             }
         )
 
@@ -1954,10 +2155,10 @@ def pick_primary_metric(metrics: list[dict]) -> dict | None:
 # another for the same (model_route_id, eval, metric). Surfaced per row so
 # the frontend can label the bar correctly: "Harness: droid" vs "Variant:
 # thinking-8k" vs "Re-run: 2026-03-17".
-RUN_KIND_HARNESS = "harness"   # different agent / scaffold (terminal_bench, swe_bench)
-RUN_KIND_VARIANT = "variant"   # raw_model_id varies (reasoning budget, snapshot)
-RUN_KIND_RERUN = "rerun"       # same setup, re-evaluated later
-RUN_KIND_DEFAULT = "default"   # the only submission for this peer
+RUN_KIND_HARNESS = "harness"  # different agent / scaffold (terminal_bench, swe_bench)
+RUN_KIND_VARIANT = "variant"  # raw_model_id varies (reasoning budget, snapshot)
+RUN_KIND_RERUN = "rerun"  # same setup, re-evaluated later
+RUN_KIND_DEFAULT = "default"  # the only submission for this peer
 
 
 def extract_run_descriptor(row: dict) -> tuple[str, str]:
@@ -1999,7 +2200,7 @@ def extract_run_descriptor(row: dict) -> tuple[str, str]:
     family = as_string(row.get("model_id"))
     if raw and family and raw != family:
         if raw.lower().startswith(family.lower()):
-            tail = raw[len(family):].lstrip("-_/").strip()
+            tail = raw[len(family) :].lstrip("-_/").strip()
             if tail:
                 return RUN_KIND_VARIANT, tail
         return RUN_KIND_VARIANT, raw
@@ -2012,7 +2213,11 @@ def extract_run_descriptor(row: dict) -> tuple[str, str]:
     retrieved = as_string(row.get("retrieved_timestamp"))
     if retrieved:
         try:
-            iso = datetime.fromtimestamp(float(retrieved), tz=timezone.utc).date().isoformat()
+            iso = (
+                datetime.fromtimestamp(float(retrieved), tz=timezone.utc)
+                .date()
+                .isoformat()
+            )
             return RUN_KIND_RERUN, iso
         except (TypeError, ValueError):
             return RUN_KIND_RERUN, retrieved
@@ -2036,7 +2241,9 @@ def build_comparison_index(eval_summaries: list[dict], generated_at: str) -> dic
     """
 
     evals_out: dict[str, dict] = {}
-    by_model: dict[str, dict[str, dict[str, dict]]] = defaultdict(lambda: defaultdict(dict))
+    by_model: dict[str, dict[str, dict[str, dict]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
 
     for summary in eval_summaries:
         eval_summary_id = as_string(summary.get("eval_summary_id"))
@@ -2048,7 +2255,9 @@ def build_comparison_index(eval_summaries: list[dict], generated_at: str) -> dic
         # ``primary_metric_name`` uses in eval-list.json.
         root_metrics = summary.get("metrics") or []
         subtasks = summary.get("subtasks") or []
-        candidate_metrics = root_metrics or (subtasks[0].get("metrics") if subtasks else None) or []
+        candidate_metrics = (
+            root_metrics or (subtasks[0].get("metrics") if subtasks else None) or []
+        )
         if not candidate_metrics:
             continue
 
@@ -2107,7 +2316,8 @@ def build_comparison_index(eval_summaries: list[dict], generated_at: str) -> dic
                                 "score": sub["score"],
                                 "run_kind": run_kind,
                                 "run_label": run_label,
-                                "raw_model_id": as_string(sub.get("raw_model_id")) or None,
+                                "raw_model_id": as_string(sub.get("raw_model_id"))
+                                or None,
                             }
                         )
                 else:
@@ -2124,7 +2334,9 @@ def build_comparison_index(eval_summaries: list[dict], generated_at: str) -> dic
             scores_out: list[dict] = []
             position = 0
             previous_score = None
-            for idx, (route_id, headline, submissions) in enumerate(route_entries, start=1):
+            for idx, (route_id, headline, submissions) in enumerate(
+                route_entries, start=1
+            ):
                 row_score = headline["score"]
                 if previous_score is None or row_score != previous_score:
                     position = idx
@@ -2236,17 +2448,19 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
         }
 
     published_eval_files = {
-        path.stem
-        for path in evals_dir.glob("*.json")
-        if path.is_file()
+        path.stem for path in evals_dir.glob("*.json") if path.is_file()
     }
     if eval_summary_ids and published_eval_files != eval_summary_ids:
         missing_files = sorted(eval_summary_ids - published_eval_files)
         extra_files = sorted(published_eval_files - eval_summary_ids)
         if missing_files:
-            errors.append(f"Missing eval files for eval-list entries: {missing_files[:10]}")
+            errors.append(
+                f"Missing eval files for eval-list entries: {missing_files[:10]}"
+            )
         if extra_files:
-            errors.append(f"Extra eval files not present in eval-list: {extra_files[:10]}")
+            errors.append(
+                f"Extra eval files not present in eval-list: {extra_files[:10]}"
+            )
 
     required_eval_keys = [
         "benchmark_family_key",
@@ -2262,34 +2476,60 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
         parsed = json.loads(eval_path.read_text(encoding="utf-8"))
         missing_keys = [key for key in required_eval_keys if not parsed.get(key)]
         if missing_keys:
-            errors.append(f"{eval_path.name} missing top-level hierarchy keys: {missing_keys}")
+            errors.append(
+                f"{eval_path.name} missing top-level hierarchy keys: {missing_keys}"
+            )
 
         for metric in parsed.get("metrics", []):
             for row in metric.get("model_results", []):
                 record_url = as_string(row.get("source_record_url"))
-                if record_url and not record_url.startswith(f"{DATASET_RESOLVE_BASE}/records/"):
-                    errors.append(f"{eval_path.name} has non-pipeline source_record_url: {record_url}")
+                if record_url and not record_url.startswith(
+                    f"{DATASET_RESOLVE_BASE}/records/"
+                ):
+                    errors.append(
+                        f"{eval_path.name} has non-pipeline source_record_url: {record_url}"
+                    )
                 detailed_url = as_string(row.get("detailed_evaluation_results"))
-                if detailed_url and not detailed_url.startswith(f"{DATASET_RESOLVE_BASE}/instances/"):
-                    errors.append(f"{eval_path.name} has non-pipeline detailed_evaluation_results URL: {detailed_url}")
+                if detailed_url and not detailed_url.startswith(
+                    f"{DATASET_RESOLVE_BASE}/instances/"
+                ):
+                    errors.append(
+                        f"{eval_path.name} has non-pipeline detailed_evaluation_results URL: {detailed_url}"
+                    )
                 instance_data = row.get("instance_level_data") or {}
                 source_url = as_string(instance_data.get("source_url"))
-                if source_url and not source_url.startswith(f"{DATASET_RESOLVE_BASE}/instances/"):
-                    errors.append(f"{eval_path.name} has non-pipeline instance_level_data.source_url: {source_url}")
+                if source_url and not source_url.startswith(
+                    f"{DATASET_RESOLVE_BASE}/instances/"
+                ):
+                    errors.append(
+                        f"{eval_path.name} has non-pipeline instance_level_data.source_url: {source_url}"
+                    )
 
         for subtask in parsed.get("subtasks", []):
             for metric in subtask.get("metrics", []):
                 for row in metric.get("model_results", []):
                     record_url = as_string(row.get("source_record_url"))
-                    if record_url and not record_url.startswith(f"{DATASET_RESOLVE_BASE}/records/"):
-                        errors.append(f"{eval_path.name} has non-pipeline source_record_url: {record_url}")
+                    if record_url and not record_url.startswith(
+                        f"{DATASET_RESOLVE_BASE}/records/"
+                    ):
+                        errors.append(
+                            f"{eval_path.name} has non-pipeline source_record_url: {record_url}"
+                        )
                     detailed_url = as_string(row.get("detailed_evaluation_results"))
-                    if detailed_url and not detailed_url.startswith(f"{DATASET_RESOLVE_BASE}/instances/"):
-                        errors.append(f"{eval_path.name} has non-pipeline detailed_evaluation_results URL: {detailed_url}")
+                    if detailed_url and not detailed_url.startswith(
+                        f"{DATASET_RESOLVE_BASE}/instances/"
+                    ):
+                        errors.append(
+                            f"{eval_path.name} has non-pipeline detailed_evaluation_results URL: {detailed_url}"
+                        )
                     instance_data = row.get("instance_level_data") or {}
                     source_url = as_string(instance_data.get("source_url"))
-                    if source_url and not source_url.startswith(f"{DATASET_RESOLVE_BASE}/instances/"):
-                        errors.append(f"{eval_path.name} has non-pipeline instance_level_data.source_url: {source_url}")
+                    if source_url and not source_url.startswith(
+                        f"{DATASET_RESOLVE_BASE}/instances/"
+                    ):
+                        errors.append(
+                            f"{eval_path.name} has non-pipeline instance_level_data.source_url: {source_url}"
+                        )
 
     for model_path in sorted(models_dir.glob("*.json")):
         parsed = json.loads(model_path.read_text(encoding="utf-8"))
@@ -2341,7 +2581,9 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
             for entry in model_card.get("top_benchmark_scores") or []
             if as_string(entry.get("benchmarkKey")) in eval_summary_ids
         }
-        missing_eval_summary_ids = sorted(expected_eval_summary_ids - actual_eval_summary_ids)
+        missing_eval_summary_ids = sorted(
+            expected_eval_summary_ids - actual_eval_summary_ids
+        )
         if missing_eval_summary_ids:
             errors.append(
                 f"{model_path.name} missing hierarchy nodes for model-card top_benchmark_scores: {missing_eval_summary_ids[:10]}"
@@ -2363,12 +2605,18 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
             errors.append(f"{relative_path} still contains {EEE_DATASET_REPO}")
 
     if errors:
-        raise RuntimeError("Output contract validation failed:\n- " + "\n- ".join(errors[:50]))
+        raise RuntimeError(
+            "Output contract validation failed:\n- " + "\n- ".join(errors[:50])
+        )
 
 
-def delete_stale_remote_files(api: HfApi, token: str, output_dir: Path = OUTPUT_DIR) -> None:
+def delete_stale_remote_files(
+    api: HfApi, token: str, output_dir: Path = OUTPUT_DIR
+) -> None:
     local_files = set(iter_output_relative_files(output_dir))
-    remote_files = set(api.list_repo_files(DATASET_REPO, repo_type="dataset", token=token))
+    remote_files = set(
+        api.list_repo_files(DATASET_REPO, repo_type="dataset", token=token)
+    )
     stale_files = sorted(remote_files - local_files)
     if not stale_files:
         return
@@ -2385,7 +2633,140 @@ def delete_stale_remote_files(api: HfApi, token: str, output_dir: Path = OUTPUT_
         )
 
 
-def filter_metric_summary_for_model(metric_summary: dict, family_id: str) -> dict | None:
+def attach_comparability_signals(metric_summary: dict) -> None:
+    """Compute and attach comparability and provenance signals for one metric summary."""
+    metric_summary_id = as_string(metric_summary.get("metric_summary_id"))
+    metric_config = metric_summary.get("metric_config")
+
+    rows = metric_summary.get("model_results") or []
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    group_order: list[str] = []
+    for row in rows:
+        route = as_string(row.get("model_route_id"))
+        if route not in grouped:
+            group_order.append(route)
+        grouped[route].append(row)
+
+    # Store by group so that per-eval and per-model aggregates can count groups (not rows)
+    signal_groups: list[dict] = []
+    for route in group_order:
+        group_rows = grouped[route]
+        group_id = f"{route}__{metric_summary_id}"
+
+        projected = [
+            {
+                "score": row.get("score"),
+                "evaluation_id": row.get("evaluation_id"),
+                "source_metadata": row.get("source_metadata"),
+                "generation_args": row.get("_generation_args"),
+                "variant_key": row.get("variant_key"),
+                "model_route_id": row.get("model_route_id"),
+            }
+            for row in group_rows
+        ]
+
+        provenance_per_row = signals.compute_provenance(projected)
+        variant_signal = signals.compute_variant_divergence(
+            projected, metric_config, group_id=group_id
+        )
+        cross_party_signal = signals.compute_cross_party_divergence(
+            projected, metric_config, group_id=group_id
+        )
+
+        first_party_only_in_group = False
+        for row, prov in zip(group_rows, provenance_per_row):
+            annotations = row.setdefault("evalcards", {}).setdefault("annotations", {})
+            annotations["provenance"] = prov
+            if variant_signal is None:
+                annotations["variant_divergence"] = None
+            else:
+                row_variant = dict(variant_signal)
+                row_variant["this_triple_score"] = row.get("score")
+                annotations["variant_divergence"] = row_variant
+            annotations["cross_party_divergence"] = cross_party_signal
+            if prov.get("first_party_only"):
+                first_party_only_in_group = True
+
+        is_multi_source = (
+            bool(provenance_per_row[0]["is_multi_source"])
+            if provenance_per_row
+            else False
+        )
+
+        signal_groups.append(
+            {
+                "group_id": group_id,
+                "model_route_id": route,
+                "is_multi_source": is_multi_source,
+                "first_party_only_in_group": first_party_only_in_group,
+                "variant_divergence": variant_signal,
+                "cross_party_divergence": cross_party_signal,
+            }
+        )
+
+    metric_summary["_signal_groups"] = signal_groups
+
+
+def collect_signal_rollup_inputs(
+    metrics: list[dict],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    row_repro_annotations: list[dict] = []
+    row_provenance_annotations: list[dict] = []
+    signal_groups: list[dict] = []
+    for metric in metrics:
+        signal_groups.extend(metric.get("_signal_groups") or [])
+        for row in metric.get("model_results", []):
+            annotations = (row.get("evalcards") or {}).get("annotations") or {}
+            repro = annotations.get("reproducibility_gap")
+            if repro is not None:
+                row_repro_annotations.append(repro)
+            prov = annotations.get("provenance")
+            if prov is not None:
+                row_provenance_annotations.append(prov)
+    return row_repro_annotations, row_provenance_annotations, signal_groups
+
+
+def build_benchmark_comparability(signal_groups: list[dict]) -> dict:
+    variant_divergence_groups = [
+        {
+            "group_id": g["group_id"],
+            "model_route_id": g["model_route_id"],
+            "divergence_magnitude": g["variant_divergence"]["divergence_magnitude"],
+            "threshold_used": g["variant_divergence"]["threshold_used"],
+            "threshold_basis": g["variant_divergence"].get("threshold_basis"),
+            "differing_setup_fields": g["variant_divergence"]["differing_setup_fields"],
+        }
+        for g in signal_groups
+        if g.get("variant_divergence")
+        and g["variant_divergence"].get("has_variant_divergence")
+    ]
+    cross_party_divergence_groups = [
+        {
+            "group_id": g["group_id"],
+            "model_route_id": g["model_route_id"],
+            "divergence_magnitude": g["cross_party_divergence"]["divergence_magnitude"],
+            "threshold_used": g["cross_party_divergence"]["threshold_used"],
+            "threshold_basis": g["cross_party_divergence"].get("threshold_basis"),
+            "scores_by_organization": g["cross_party_divergence"][
+                "scores_by_organization"
+            ],
+            "differing_setup_fields": g["cross_party_divergence"][
+                "differing_setup_fields"
+            ],
+        }
+        for g in signal_groups
+        if g.get("cross_party_divergence")
+        and g["cross_party_divergence"].get("has_cross_party_divergence")
+    ]
+    return {
+        "variant_divergence_groups": variant_divergence_groups,
+        "cross_party_divergence_groups": cross_party_divergence_groups,
+    }
+
+
+def filter_metric_summary_for_model(
+    metric_summary: dict, family_id: str
+) -> dict | None:
     model_results = [
         row
         for row in metric_summary.get("model_results", [])
@@ -2394,8 +2775,21 @@ def filter_metric_summary_for_model(metric_summary: dict, family_id: str) -> dic
     if not model_results:
         return None
 
-    filtered = {key: value for key, value in metric_summary.items() if key != "model_results"}
+    filtered = {
+        key: value for key, value in metric_summary.items() if key != "model_results"
+    }
     filtered["model_results"] = model_results
+    model_route_ids = {
+        as_string(row.get("model_route_id"))
+        for row in model_results
+        if as_string(row.get("model_route_id"))
+    }
+    if "_signal_groups" in filtered:
+        filtered["_signal_groups"] = [
+            group
+            for group in filtered.get("_signal_groups") or []
+            if as_string(group.get("model_route_id")) in model_route_ids
+        ]
     filtered["models_count"] = len(model_results)
     filtered["top_score"] = model_results[0].get("score") if model_results else None
     return filtered
@@ -2421,7 +2815,11 @@ def filter_eval_summary_for_model(summary: dict, family_id: str) -> dict | None:
                     **subtask,
                     "metrics": subtask_metrics,
                     "metrics_count": len(subtask_metrics),
-                    "metric_names": [as_string(metric.get("metric_name")) for metric in subtask_metrics if as_string(metric.get("metric_name"))],
+                    "metric_names": [
+                        as_string(metric.get("metric_name"))
+                        for metric in subtask_metrics
+                        if as_string(metric.get("metric_name"))
+                    ],
                 }
             )
 
@@ -2431,17 +2829,17 @@ def filter_eval_summary_for_model(summary: dict, family_id: str) -> dict | None:
     filtered = {
         key: value
         for key, value in summary.items()
-        if key not in {"metrics", "subtasks", "instance_data", "models_count", "top_score"}
+        if key
+        not in {"metrics", "subtasks", "instance_data", "models_count", "top_score"}
     }
     filtered["metrics"] = root_metrics
     filtered["subtasks"] = subtasks
     filtered["subtasks_count"] = len(subtasks)
-    filtered["metrics_count"] = len(root_metrics) + sum(len(subtask.get("metrics", [])) for subtask in subtasks)
+    filtered["metrics_count"] = len(root_metrics) + sum(
+        len(subtask.get("metrics", [])) for subtask in subtasks
+    )
     filtered["metric_names"] = sorted(
-        {
-            as_string(metric.get("metric_name"))
-            for metric in root_metrics
-        }
+        {as_string(metric.get("metric_name")) for metric in root_metrics}
         | {
             as_string(metric.get("metric_name"))
             for subtask in subtasks
@@ -2449,10 +2847,38 @@ def filter_eval_summary_for_model(summary: dict, family_id: str) -> dict | None:
         }
         - {""}
     )
-    primary_metrics = root_metrics or (subtasks[0].get("metrics", []) if subtasks else [])
-    filtered["primary_metric_name"] = as_string(primary_metrics[0].get("metric_name")) if primary_metrics else None
+    primary_metrics = root_metrics or (
+        subtasks[0].get("metrics", []) if subtasks else []
+    )
+    filtered["primary_metric_name"] = (
+        as_string(primary_metrics[0].get("metric_name")) if primary_metrics else None
+    )
     filtered["models_count"] = 1
-    filtered["top_score"] = primary_metrics[0].get("top_score") if len(primary_metrics) == 1 and not subtasks else None
+    filtered["top_score"] = (
+        primary_metrics[0].get("top_score")
+        if len(primary_metrics) == 1 and not subtasks
+        else None
+    )
+
+    filtered_metrics: list[dict] = list(root_metrics)
+    for subtask in subtasks:
+        filtered_metrics.extend(subtask.get("metrics", []))
+    row_repro_annotations, row_provenance_annotations, signal_groups = (
+        collect_signal_rollup_inputs(filtered_metrics)
+    )
+    filtered["reproducibility_summary"] = signals.summarize_reproducibility(
+        row_repro_annotations
+    )
+    filtered["provenance_summary"] = signals.summarize_provenance(
+        row_provenance_annotations, signal_groups
+    )
+    filtered["comparability_summary"] = signals.summarize_comparability(signal_groups)
+    original_annotations = (summary.get("evalcards") or {}).get("annotations") or {}
+    filtered_annotations = dict(original_annotations)
+    filtered_annotations["benchmark_comparability"] = build_benchmark_comparability(
+        signal_groups
+    )
+    filtered["evalcards"] = {"annotations": filtered_annotations}
 
     instance_urls: set[str] = set()
     models_with_instance = 0
@@ -2481,7 +2907,12 @@ def filter_eval_summary_for_model(summary: dict, family_id: str) -> dict | None:
     return filtered
 
 
-def generate_readme(manifest: dict, eval_list: dict, benchmark_metadata: dict, hierarchy_path: Path | None = None) -> str:
+def generate_readme(
+    manifest: dict,
+    eval_list: dict,
+    benchmark_metadata: dict,
+    hierarchy_path: Path | None = None,
+) -> str:
     """Generate a README.md for the HF dataset with full manifest and data access docs."""
     generated_at = manifest.get("generated_at", "unknown")
     model_count = manifest.get("model_count", 0)
@@ -2492,49 +2923,28 @@ def generate_readme(manifest: dict, eval_list: dict, benchmark_metadata: dict, h
     evals = eval_list.get("evals", [])
     total_models = eval_list.get("totalModels", model_count)
 
-    # Build the hierarchy tree from eval-list data
+    # Build a compact runtime hierarchy tree for the generated dataset README.
     hierarchy_lines = []
     if hierarchy_path and hierarchy_path.exists():
         hierarchy_data = json.loads(hierarchy_path.read_text(encoding="utf-8"))
         families = hierarchy_data.get("families", [])
 
-        def _card_mark(node: dict) -> str:
-            return "[x]" if node.get("has_card") else "[ ]"
-
-        def _render_metrics(metrics: list, indent: str) -> None:
-            for m in metrics:
-                hierarchy_lines.append(f"{indent}- {m['display_name']}")
-
-        def _render_slices(slices: list, indent: str) -> None:
-            for s in slices:
-                hierarchy_lines.append(f"{indent}- {s['display_name']}")
-                _render_metrics(s.get("metrics", []), indent + "  ")
-
-        def _render_benchmark(bm: dict, indent: str) -> None:
-            hierarchy_lines.append(f"{indent}- {_card_mark(bm)} {bm['display_name']}")
-            _render_slices(bm.get("slices", []), indent + "  ")
-            _render_metrics(bm.get("metrics", []), indent + "  ")
+        def _eval_count_label(node: dict) -> str:
+            count = node.get("evals_count")
+            if not isinstance(count, int) or count <= 0:
+                return ""
+            return f" ({count} eval{'s' if count != 1 else ''})"
 
         for fam in families:
-            hierarchy_lines.append(f"- {_card_mark(fam)} **{fam['display_name']}**")
-            # Flattened family: slices/metrics directly
-            _render_slices(fam.get("slices", []), "  ")
-            _render_metrics(fam.get("metrics", []), "  ")
-            # Flattened family: benchmarks directly
-            for bm in fam.get("benchmarks", []):
-                _render_benchmark(bm, "  ")
-            # Standalone benchmarks
-            for bm in fam.get("standalone_benchmarks", []):
-                _render_benchmark(bm, "  ")
-            # Composites
-            for comp in fam.get("composites", []):
-                hierarchy_lines.append(f"  - {_card_mark(comp)} **{comp['display_name']}**")
-                _render_slices(comp.get("slices", []), "    ")
-                _render_metrics(comp.get("metrics", []), "    ")
-                for bm in comp.get("benchmarks", []):
-                    _render_benchmark(bm, "    ")
+            family_label = fam.get("display_name") or fam.get("key") or "Unknown"
+            hierarchy_lines.append(f"- **{family_label}**{_eval_count_label(fam)}")
+            for leaf in fam.get("leaves", []):
+                leaf_label = leaf.get("display_name") or leaf.get("key") or "Unknown"
+                hierarchy_lines.append(f"  - {leaf_label}{_eval_count_label(leaf)}")
 
-    hierarchy_tree = "\n".join(hierarchy_lines) if hierarchy_lines else "_Hierarchy not available — run `build_eval_hierarchy_report.py` first._"
+    hierarchy_tree = (
+        "\n".join(hierarchy_lines) if hierarchy_lines else "_Hierarchy not available._"
+    )
 
     # Collect benchmark card coverage
     card_keys = sorted(benchmark_metadata.keys()) if benchmark_metadata else []
@@ -2547,7 +2957,9 @@ def generate_readme(manifest: dict, eval_list: dict, benchmark_metadata: dict, h
         mcount = e.get("models_count", 0)
         metrics = ", ".join(e.get("metric_names", []))
         has_card = "yes" if e.get("benchmark_card") else "no"
-        eval_table_rows.append(f"| `{eid}` | {name} | {mcount} | {metrics} | {has_card} |")
+        eval_table_rows.append(
+            f"| `{eid}` | {name} | {mcount} | {metrics} | {has_card} |"
+        )
 
     eval_table = "\n".join(eval_table_rows)
 
@@ -2985,48 +3397,30 @@ Nodes with `has_card: true` have matching benchmark metadata in `benchmark-metad
 
 ```jsonc
 {{
-  "stats": {{ "family_count": 20, "composite_count": 20, ... }},
+  "generated_at": "2026-04-26T12:00:00Z",
+  "signal_version": "1.0",
+  "schema_note": "Runtime-generated 2-level hierarchy...",
   "families": [
     {{
-      "key": "helm",                                   // Normalized key
-      "display_name": "HELM",                          // Human-readable name
-      "has_card": true,                                // Any child has metadata
-      "category": "general",                           // High-level category
-      "tags": {{                                        // Merged from all children
-        "domains": ["biology", "physics", ...],
-        "languages": ["English"],
-        "tasks": ["Multiple-choice QA", ...]
-      }},
-      "standalone_benchmarks": [],
-      "composites": [
+      "key": "helm_classic",
+      "display_name": "Helm classic",
+      "category": "general",
+      "evals_count": 15,
+      "eval_summary_ids": ["helm_classic_boolq", "..."],
+      "reproducibility_summary": {{ "results_total": 123, "...": "..." }},
+      "provenance_summary": {{ "total_results": 123, "...": "..." }},
+      "comparability_summary": {{ "total_groups": 123, "...": "..." }},
+      "leaves": [
         {{
-          "key": "helm_capabilities",
-          "display_name": "Helm capabilities",
-          "has_card": true,
+          "key": "boolq",
+          "display_name": "BoolQ",
           "category": "general",
-          "tags": {{ "domains": [...], "languages": [...], "tasks": [...] }},
-          "benchmarks": [                              // Multi-benchmark composite
-            {{
-              "key": "gpqa",
-              "display_name": "GPQA",
-              "has_card": true,
-              "tags": {{ "domains": ["biology", "physics", "chemistry"], ... }},
-              "slices": [],
-              "metrics": [{{ "key": "cot_correct", "display_name": "COT correct" }}]
-            }}
-          ],
-          "summary_eval_ids": ["helm_capabilities_overall"] // eval_summary_ids of summary/rollup score evals for this composite (empty if none)
+          "evals_count": 1,
+          "eval_summary_ids": ["helm_classic_boolq"],
+          "reproducibility_summary": {{ "...": "..." }},
+          "provenance_summary": {{ "...": "..." }},
+          "comparability_summary": {{ "...": "..." }}
         }}
-      ]
-    }},
-    {{
-      "key": "global_mmlu_lite",                       // Flattened single-benchmark family
-      "display_name": "Global MMLU Lite",
-      "has_card": false,
-      "category": "reasoning",
-      "tags": {{ "domains": [], "languages": [], "tasks": [] }},
-      "slices": [                                      // Slices directly on family
-        {{ "key": "arabic", "display_name": "Arabic", "metrics": [...] }}
       ]
     }}
   ]
@@ -3064,7 +3458,7 @@ to the family level. This means families may have their content in different sha
 
 {len(card_keys)} benchmark cards are available in `benchmark-metadata.json`:
 
-{chr(10).join(f'- `{k}`' for k in card_keys)}
+{chr(10).join(f"- `{k}`" for k in card_keys)}
 
 Each card contains: `benchmark_details` (name, overview, domains), `methodology` (metrics, scoring),
 `purpose_and_intended_users`, `data` (size, format, sources), `ethical_and_legal_considerations`.
@@ -3086,10 +3480,10 @@ Generated by `scripts/pipeline.py`. Run locally:
 
 ```bash
 # Dry run (no upload)
-python scripts/pipeline.py --dry-run
+python -m scripts.pipeline --dry-run
 
 # Full run with upload
-HF_TOKEN=hf_xxx python scripts/pipeline.py
+HF_TOKEN=hf_xxx python -m scripts.pipeline
 ```
 
 Config version: `{manifest.get("config_version", 1)}`
@@ -3104,7 +3498,9 @@ def upload_output() -> None:
 
     api = HfApi(token=token)
     try:
-        api.create_repo(repo_id=DATASET_REPO, repo_type="dataset", private=False, exist_ok=True)
+        api.create_repo(
+            repo_id=DATASET_REPO, repo_type="dataset", private=False, exist_ok=True
+        )
     except Exception as error:
         print(f"create_repo warning: {error}", file=sys.stderr)
 
@@ -3122,18 +3518,36 @@ def main() -> int:
     load_instance_in_dry_run = os.environ.get("LOAD_INSTANCE_IN_DRY_RUN") == "1"
     config_batch_size = parse_positive_int(os.environ.get("CONFIG_BATCH_SIZE"), 4)
     config_limit = os.environ.get("CONFIG_LIMIT")
-    explicit_configs = [c.strip() for c in as_string(os.environ.get("CONFIGS") or os.environ.get("CONFIG_NAMES")).split(",") if c.strip()]
-    configured_local_dataset_dir = as_string(os.environ.get("EEE_LOCAL_DATASET_DIR")).strip() or DEFAULT_LOCAL_DATASET_DIR
-    configured_local_metadata_dir = as_string(os.environ.get("BENCHMARK_METADATA_LOCAL_DIR")).strip() or DEFAULT_LOCAL_BENCHMARK_METADATA_DIR
+    explicit_configs = [
+        c.strip()
+        for c in as_string(
+            os.environ.get("CONFIGS") or os.environ.get("CONFIG_NAMES")
+        ).split(",")
+        if c.strip()
+    ]
+    configured_local_dataset_dir = (
+        as_string(os.environ.get("EEE_LOCAL_DATASET_DIR")).strip()
+        or DEFAULT_LOCAL_DATASET_DIR
+    )
+    configured_local_metadata_dir = (
+        as_string(os.environ.get("BENCHMARK_METADATA_LOCAL_DIR")).strip()
+        or DEFAULT_LOCAL_BENCHMARK_METADATA_DIR
+    )
     force_refresh_snapshot = os.environ.get("EEE_REFRESH_SNAPSHOT") == "1"
     force_refresh_metadata = os.environ.get("BENCHMARK_METADATA_REFRESH") == "1"
     allow_skipped_configs = os.environ.get("ALLOW_SKIPPED_CONFIGS") == "1"
     hf_token = os.environ.get("HF_TOKEN")
 
-    local_dataset_dir = ensure_local_dataset_snapshot(configured_local_dataset_dir, hf_token, force_refresh_snapshot)
-    local_metadata_dir = ensure_local_benchmark_metadata_snapshot(configured_local_metadata_dir, hf_token, force_refresh_metadata)
+    local_dataset_dir = ensure_local_dataset_snapshot(
+        configured_local_dataset_dir, hf_token, force_refresh_snapshot
+    )
+    local_metadata_dir = ensure_local_benchmark_metadata_snapshot(
+        configured_local_metadata_dir, hf_token, force_refresh_metadata
+    )
     if not local_metadata_dir:
-        raise RuntimeError("Failed to cache benchmark metadata from evaleval/auto-benchmarkcards")
+        raise RuntimeError(
+            "Failed to cache benchmark metadata from evaleval/auto-benchmarkcards"
+        )
 
     started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     random.seed(42)
@@ -3143,26 +3557,39 @@ def main() -> int:
     print(
         f"[pipeline] {json.dumps({'event': 'metric_registry.loaded', 'registry_path': str(DEFAULT_METRIC_REGISTRY_PATH), 'entry_count': len(METRIC_REGISTRY_ENTRIES), 'alias_count': len(METRIC_REGISTRY_ALIAS_LOOKUP)})}"
     )
-    cards, metadata_lookup, benchmark_metadata = load_benchmark_metadata(local_metadata_dir)
+    cards, metadata_lookup, benchmark_metadata = load_benchmark_metadata(
+        local_metadata_dir
+    )
     print(
         f"[pipeline] {json.dumps({'event': 'metadata.loaded', 'benchmark_card_count': len(cards), 'metadata_key_count': len(metadata_lookup), 'metadata_cache_dir': local_metadata_dir, 'metadata_repo': BENCHMARK_METADATA_DATASET_REPO})}"
     )
 
     all_configs = explicit_configs or discover_configs(local_dataset_dir, hf_token)
     if config_limit:
-        all_configs = all_configs[: max(1, min(parse_positive_int(config_limit, len(all_configs)), len(all_configs)))]
+        all_configs = all_configs[
+            : max(
+                1,
+                min(
+                    parse_positive_int(config_limit, len(all_configs)), len(all_configs)
+                ),
+            )
+        ]
 
     skipped_configs: list[str] = []
     evaluations: list[dict] = []
 
     for i in range(0, len(all_configs), config_batch_size):
         batch = all_configs[i : i + config_batch_size]
-        print(f"[pipeline] {json.dumps({'event': 'config.batch.start', 'batch_index': i // config_batch_size, 'batch_size': len(batch), 'configs': batch})}")
+        print(
+            f"[pipeline] {json.dumps({'event': 'config.batch.start', 'batch_index': i // config_batch_size, 'batch_size': len(batch), 'configs': batch})}"
+        )
 
         for config in batch:
             try:
                 files = list_json_files_for_config(config, local_dataset_dir, hf_token)
-                print(f"[pipeline] {json.dumps({'event': 'config.discovery', 'config': config, 'data_json_files_found': len(files), 'discovery_pages': 1, 'discovery_error': None})}")
+                print(
+                    f"[pipeline] {json.dumps({'event': 'config.discovery', 'config': config, 'data_json_files_found': len(files), 'discovery_pages': 1, 'discovery_error': None})}"
+                )
                 loaded_rows = 0
                 failed_files: list[str] = []
                 for dataset_path in files:
@@ -3170,7 +3597,9 @@ def main() -> int:
                     last_error = None
                     for attempt in range(1, FILE_READ_MAX_RETRIES + 1):
                         try:
-                            record = read_dataset_json(dataset_path, local_dataset_dir, hf_token)
+                            record = read_dataset_json(
+                                dataset_path, local_dataset_dir, hf_token
+                            )
                             break
                         except Exception as error:
                             last_error = error
@@ -3185,24 +3614,42 @@ def main() -> int:
                         continue
 
                     source_record_url = raw_url_for_dataset_path(dataset_path)
-                    eval_results = record.get("evaluation_results") if isinstance(record.get("evaluation_results"), list) else []
+                    eval_results = (
+                        record.get("evaluation_results")
+                        if isinstance(record.get("evaluation_results"), list)
+                        else []
+                    )
                     first_result = eval_results[0] if eval_results else None
-                    benchmark = as_string(record.get("evaluation_id")).split("/")[0] if record.get("evaluation_id") else None
-                    passthrough = {k: v for k, v in record.items() if k not in KNOWN_TOP_LEVEL_KEYS}
-                    detailed_meta = normalize_detailed_eval_meta(record.get("detailed_evaluation_results"))
+                    benchmark = (
+                        as_string(record.get("evaluation_id")).split("/")[0]
+                        if record.get("evaluation_id")
+                        else None
+                    )
+                    passthrough = {
+                        k: v for k, v in record.items() if k not in KNOWN_TOP_LEVEL_KEYS
+                    }
+                    detailed_meta = normalize_detailed_eval_meta(
+                        record.get("detailed_evaluation_results")
+                    )
                     eval_obj = {
                         "schema_version": as_string(record.get("schema_version")),
                         "evaluation_id": as_string(record.get("evaluation_id")),
-                        "retrieved_timestamp": as_string(record.get("retrieved_timestamp")),
+                        "retrieved_timestamp": as_string(
+                            record.get("retrieved_timestamp")
+                        ),
                         "benchmark": benchmark,
                         "source_data": (first_result or {}).get("source_data"),
                         "source_metadata": record.get("source_metadata"),
                         "eval_library": record.get("eval_library"),
                         "model_info": record.get("model_info") or {},
-                        "generation_config": (first_result or {}).get("generation_config"),
+                        "generation_config": (first_result or {}).get(
+                            "generation_config"
+                        ),
                         "source_record_url": source_record_url,
                         "detailed_evaluation_results_meta": detailed_meta,
-                        "detailed_evaluation_results": resolve_detailed_results_url(record, source_record_url),
+                        "detailed_evaluation_results": resolve_detailed_results_url(
+                            record, source_record_url
+                        ),
                         "passthrough_top_level_fields": passthrough or None,
                         "evaluation_results": eval_results,
                         "benchmark_card": None,
@@ -3213,7 +3660,9 @@ def main() -> int:
                     loaded_rows += 1
 
                 if failed_files:
-                    message = f"Failed to load {len(failed_files)} files for config {config}"
+                    message = (
+                        f"Failed to load {len(failed_files)} files for config {config}"
+                    )
                     print(
                         f"[pipeline] {json.dumps({'event': 'config.load.partial', 'config': config, 'row_count': loaded_rows, 'failed_files': len(failed_files), 'sample_failed_paths': failed_files[:5]})}"
                     )
@@ -3224,28 +3673,38 @@ def main() -> int:
                     f"[pipeline] {json.dumps({'event': 'config.load.ok', 'config': config, 'discovered_data_json_files': len(files), 'discovery_pages': 1, 'row_count': loaded_rows})}"
                 )
             except Exception as error:
-                print(f"[pipeline] {json.dumps({'event': 'config.load.error', 'config': config, 'message': str(error)})}")
+                print(
+                    f"[pipeline] {json.dumps({'event': 'config.load.error', 'config': config, 'message': str(error)})}"
+                )
                 if allow_skipped_configs:
                     print(f"Skipping config {config}: {error}", file=sys.stderr)
                     skipped_configs.append(config)
                 else:
                     raise
 
-        print(f"[pipeline] {json.dumps({'event': 'config.batch.done', 'batch_index': i // config_batch_size, 'cumulative_evaluations': len(evaluations), 'cumulative_skipped': len(skipped_configs)})}")
+        print(
+            f"[pipeline] {json.dumps({'event': 'config.batch.done', 'batch_index': i // config_batch_size, 'cumulative_evaluations': len(evaluations), 'cumulative_skipped': len(skipped_configs)})}"
+        )
 
     if (not dry_run) or load_instance_in_dry_run:
         with_instance = 0
         missing_instance = 0
         for idx, evaluation in enumerate(evaluations, start=1):
-            instance_data = maybe_load_instance_data(evaluation, local_dataset_dir, hf_token)
+            instance_data = maybe_load_instance_data(
+                evaluation, local_dataset_dir, hf_token
+            )
             if instance_data:
                 evaluation["instance_level_data"] = instance_data
                 with_instance += 1
             else:
                 missing_instance += 1
             if idx % 100 == 0 or idx == len(evaluations):
-                print(f"[pipeline] {json.dumps({'event': 'instance.batch.progress', 'processed': idx, 'total': len(evaluations), 'with_instance_data': with_instance, 'missing_instance_data': missing_instance})}")
-        print(f"[pipeline] {json.dumps({'event': 'instance.load.summary', 'total': len(evaluations), 'with_instance_data': with_instance, 'missing_instance_data': missing_instance})}")
+                print(
+                    f"[pipeline] {json.dumps({'event': 'instance.batch.progress', 'processed': idx, 'total': len(evaluations), 'with_instance_data': with_instance, 'missing_instance_data': missing_instance})}"
+                )
+        print(
+            f"[pipeline] {json.dumps({'event': 'instance.load.summary', 'total': len(evaluations), 'with_instance_data': with_instance, 'missing_instance_data': missing_instance})}"
+        )
 
     for evaluation in evaluations:
         raw_model_info = evaluation.get("model_info") or {}
@@ -3272,7 +3731,9 @@ def main() -> int:
         enriched_results = []
         for result in evaluation.get("evaluation_results") or []:
             enriched = dict(result)
-            normalized = classify_evaluation_result(evaluation, enriched, evaluation["benchmark_card"])
+            normalized = classify_evaluation_result(
+                evaluation, enriched, evaluation["benchmark_card"]
+            )
             enriched["normalized_result"] = normalized
             enriched_results.append(enriched)
         evaluation["evaluation_results"] = enriched_results
@@ -3296,13 +3757,21 @@ def main() -> int:
             # materialize the upstream samples into output/instances, clear the
             # public field instead of leaking raw source-dataset URLs.
             evaluation["detailed_evaluation_results"] = None
-            artifact_text = read_text_from_dataset_url(raw_instance_url, local_dataset_dir, hf_token)
+            artifact_text = read_text_from_dataset_url(
+                raw_instance_url, local_dataset_dir, hf_token
+            )
             if artifact_text is not None:
-                instance_relative_path = build_instance_artifact_relative_path(evaluation)
+                instance_relative_path = build_instance_artifact_relative_path(
+                    evaluation
+                )
                 instance_output_path = OUTPUT_DIR / instance_relative_path
                 instance_output_path.parent.mkdir(parents=True, exist_ok=True)
-                transformed_artifact_text = transform_instance_artifact_text(evaluation, artifact_text)
-                instance_output_path.write_text(transformed_artifact_text, encoding="utf-8")
+                transformed_artifact_text = transform_instance_artifact_text(
+                    evaluation, artifact_text
+                )
+                instance_output_path.write_text(
+                    transformed_artifact_text, encoding="utf-8"
+                )
                 pipeline_instance_url = dataset_resolve_url(instance_relative_path)
                 evaluation["detailed_evaluation_results"] = pipeline_instance_url
                 evaluation["instance_artifact"] = {
@@ -3315,8 +3784,15 @@ def main() -> int:
                         **(evaluation.get("instance_level_data") or {}),
                         "source_url": pipeline_instance_url,
                         "instance_examples": [
-                            annotate_instance_row(evaluation, row) if isinstance(row, dict) else row
-                            for row in ((evaluation.get("instance_level_data") or {}).get("instance_examples") or [])
+                            annotate_instance_row(evaluation, row)
+                            if isinstance(row, dict)
+                            else row
+                            for row in (
+                                (evaluation.get("instance_level_data") or {}).get(
+                                    "instance_examples"
+                                )
+                                or []
+                            )
                         ],
                     }
             elif evaluation.get("instance_level_data"):
@@ -3328,9 +3804,13 @@ def main() -> int:
         if raw_record_payload is not None:
             record_output_payload = dict(raw_record_payload)
             record_output_payload["source_record_url"] = record_artifact_url
-            record_output_payload["detailed_evaluation_results"] = evaluation.get("detailed_evaluation_results")
+            record_output_payload["detailed_evaluation_results"] = evaluation.get(
+                "detailed_evaluation_results"
+            )
             if evaluation.get("detailed_evaluation_results_meta") is not None:
-                record_output_payload["detailed_evaluation_results_meta"] = evaluation.get("detailed_evaluation_results_meta")
+                record_output_payload["detailed_evaluation_results_meta"] = (
+                    evaluation.get("detailed_evaluation_results_meta")
+                )
             write_json(OUTPUT_DIR / record_relative_path, record_output_payload)
 
     benchmark_groups: dict[str, dict] = {}
@@ -3352,26 +3832,45 @@ def main() -> int:
                 eval_group_id,
                 {
                     "eval_summary_id": eval_group_id,
-                    "benchmark": normalized.get("benchmark_parent_name") or evaluation.get("benchmark"),
+                    "benchmark": normalized.get("benchmark_parent_name")
+                    or evaluation.get("benchmark"),
                     "benchmark_family_key": normalized.get("benchmark_family_key"),
                     "benchmark_family_name": normalized.get("benchmark_family_name"),
                     "benchmark_parent_key": normalized.get("benchmark_parent_key"),
                     "benchmark_parent_name": normalized.get("benchmark_parent_name"),
                     "benchmark_leaf_key": normalized.get("benchmark_leaf_key"),
                     "benchmark_leaf_name": normalized.get("benchmark_leaf_name"),
-                    "benchmark_component_key": normalized.get("benchmark_component_key"),
-                    "benchmark_component_name": normalized.get("benchmark_component_name"),
-                    "evaluation_name": normalized.get("benchmark_leaf_name") or normalized.get("benchmark_family_name"),
-                    "display_name": normalized.get("benchmark_leaf_name") or normalized.get("benchmark_family_name"),
-                    "canonical_display_name": normalized.get("benchmark_leaf_name") or normalized.get("benchmark_parent_name") or normalized.get("benchmark_family_name"),
+                    "benchmark_component_key": normalized.get(
+                        "benchmark_component_key"
+                    ),
+                    "benchmark_component_name": normalized.get(
+                        "benchmark_component_name"
+                    ),
+                    "evaluation_name": normalized.get("benchmark_leaf_name")
+                    or normalized.get("benchmark_family_name"),
+                    "display_name": normalized.get("benchmark_leaf_name")
+                    or normalized.get("benchmark_family_name"),
+                    "canonical_display_name": normalized.get("benchmark_leaf_name")
+                    or normalized.get("benchmark_parent_name")
+                    or normalized.get("benchmark_family_name"),
                     "is_summary_score": bool(normalized.get("is_summary_score")),
-                    "category": infer_category_from_benchmark(as_string(evaluation.get("benchmark"))),
+                    "category": infer_category_from_benchmark(
+                        as_string(evaluation.get("benchmark"))
+                    ),
                     "source_data": result.get("source_data"),
                     "benchmark_card": None,
                     "tags": {"domains": [], "languages": [], "tasks": []},
                     "subtasks": {},
+                    "_source_metadata_aggregate": {},
                 },
             )
+
+            evaluation_source_metadata = evaluation.get("source_metadata")
+            if isinstance(evaluation_source_metadata, dict):
+                aggregate = group["_source_metadata_aggregate"]
+                for sm_key, sm_value in evaluation_source_metadata.items():
+                    if sm_value is not None and sm_key not in aggregate:
+                        aggregate[sm_key] = sm_value
 
             # Set benchmark card and tags on first encounter
             if group["benchmark_card"] is None:
@@ -3401,11 +3900,17 @@ def main() -> int:
             subtask = group["subtasks"].setdefault(
                 subtask_key,
                 {
-                    "subtask_key": None if subtask_key == "__root__" else normalized.get("slice_key"),
+                    "subtask_key": None
+                    if subtask_key == "__root__"
+                    else normalized.get("slice_key"),
                     "subtask_name": normalized.get("slice_name"),
-                    "display_name": normalized.get("slice_name") or normalized.get("benchmark_leaf_name") or normalized.get("benchmark_family_name"),
+                    "display_name": normalized.get("slice_name")
+                    or normalized.get("benchmark_leaf_name")
+                    or normalized.get("benchmark_family_name"),
                     "canonical_display_name": join_display_name_parts(
-                        normalized.get("benchmark_leaf_name") or normalized.get("benchmark_parent_name") or normalized.get("benchmark_family_name"),
+                        normalized.get("benchmark_leaf_name")
+                        or normalized.get("benchmark_parent_name")
+                        or normalized.get("benchmark_family_name"),
                         normalized.get("slice_name"),
                     ),
                     "metrics": {},
@@ -3436,7 +3941,9 @@ def main() -> int:
                     "benchmark_leaf_name": normalized.get("benchmark_leaf_name"),
                     "slice_key": normalized.get("slice_key"),
                     "slice_name": normalized.get("slice_name"),
-                    "lower_is_better": bool((result.get("metric_config") or {}).get("lower_is_better")),
+                    "lower_is_better": bool(
+                        (result.get("metric_config") or {}).get("lower_is_better")
+                    ),
                     "metric_name": normalized.get("metric_name"),
                     "metric_id": normalized.get("metric_id"),
                     "metric_key": normalized.get("metric_key"),
@@ -3445,14 +3952,42 @@ def main() -> int:
                     "model_results": [],
                 },
             )
+            generation_args = (result.get("generation_config") or {}).get(
+                "generation_args"
+            )
+            if not isinstance(generation_args, dict):
+                generation_args = None
+            agentic_for_spec = signals.is_agentic(
+                evaluation.get("benchmark"),
+                evaluation.get("benchmark_card"),
+                generation_args,
+            )
+            reproducibility_gap = signals.compute_reproducibility_gap(
+                generation_args, agentic_for_spec
+            )
+
             metric_summary["model_results"].append(
                 {
-                    "model_id": as_string((evaluation.get("model_info") or {}).get("family_id")),
-                    "model_route_id": as_string((evaluation.get("model_info") or {}).get("model_route_id")),
-                    "model_name": as_string((evaluation.get("model_info") or {}).get("family_name") or (evaluation.get("model_info") or {}).get("name")),
-                    "developer": as_string((evaluation.get("model_info") or {}).get("developer")),
-                    "variant_key": as_string((evaluation.get("model_info") or {}).get("variant_key")) or "default",
-                    "raw_model_id": as_string((evaluation.get("model_info") or {}).get("id")),
+                    "model_id": as_string(
+                        (evaluation.get("model_info") or {}).get("family_id")
+                    ),
+                    "model_route_id": as_string(
+                        (evaluation.get("model_info") or {}).get("model_route_id")
+                    ),
+                    "model_name": as_string(
+                        (evaluation.get("model_info") or {}).get("family_name")
+                        or (evaluation.get("model_info") or {}).get("name")
+                    ),
+                    "developer": as_string(
+                        (evaluation.get("model_info") or {}).get("developer")
+                    ),
+                    "variant_key": as_string(
+                        (evaluation.get("model_info") or {}).get("variant_key")
+                    )
+                    or "default",
+                    "raw_model_id": as_string(
+                        (evaluation.get("model_info") or {}).get("id")
+                    ),
                     "score": score,
                     "evaluation_id": evaluation.get("evaluation_id"),
                     "retrieved_timestamp": evaluation.get("retrieved_timestamp"),
@@ -3464,11 +3999,25 @@ def main() -> int:
                     "source_metadata": evaluation.get("source_metadata"),
                     "source_data": evaluation.get("source_data"),
                     "source_record_url": evaluation.get("source_record_url"),
-                    "detailed_evaluation_results": evaluation.get("detailed_evaluation_results"),
-                    "detailed_evaluation_results_meta": evaluation.get("detailed_evaluation_results_meta"),
-                    "passthrough_top_level_fields": evaluation.get("passthrough_top_level_fields"),
+                    "detailed_evaluation_results": evaluation.get(
+                        "detailed_evaluation_results"
+                    ),
+                    "detailed_evaluation_results_meta": evaluation.get(
+                        "detailed_evaluation_results_meta"
+                    ),
+                    "passthrough_top_level_fields": evaluation.get(
+                        "passthrough_top_level_fields"
+                    ),
                     "instance_level_data": evaluation.get("instance_level_data"),
                     "normalized_result": normalized,
+                    "evalcards": {
+                        "annotations": {
+                            "reproducibility_gap": reproducibility_gap,
+                        }
+                    },
+                    # Carried per row for variant_divergence comparison,
+                    # cross_party representative-setup.
+                    "_generation_args": generation_args,
                 }
             )
 
@@ -3486,12 +4035,23 @@ def main() -> int:
             metric_summaries: list[dict] = []
             for metric_summary in subtask["metrics"].values():
                 lower = bool(metric_summary.get("lower_is_better"))
-                model_results = sorted(metric_summary["model_results"], key=lambda r: (r["score"], r["model_id"]))
+                model_results = sorted(
+                    metric_summary["model_results"],
+                    key=lambda r: (r["score"], r["model_id"]),
+                )
                 if not lower:
                     model_results.reverse()
                 metric_summary["model_results"] = model_results
                 metric_summary["models_count"] = len(model_results)
-                metric_summary["top_score"] = model_results[0]["score"] if model_results else None
+                metric_summary["top_score"] = (
+                    model_results[0]["score"] if model_results else None
+                )
+
+                # Compute provenance + variant_divergence + cross_party_divergence per group,
+                # and attach annotations to each row.
+                # Group-level summaries are stashed on the metric_summary for downstream aggregation
+                attach_comparability_signals(metric_summary)
+
                 metric_summaries.append(metric_summary)
                 total_metric_count += 1
                 unique_metric_names.add(as_string(metric_summary.get("metric_name")))
@@ -3512,7 +4072,12 @@ def main() -> int:
                 metric_summary["_ranks"] = ranks
                 metric_summary["_total"] = len(model_results)
 
-            metric_summaries.sort(key=lambda metric: (as_string(metric.get("metric_name")), as_string(metric.get("metric_summary_id"))))
+            metric_summaries.sort(
+                key=lambda metric: (
+                    as_string(metric.get("metric_name")),
+                    as_string(metric.get("metric_summary_id")),
+                )
+            )
             if subtask.get("subtask_key") is None:
                 root_metrics = metric_summaries
             else:
@@ -3523,21 +4088,34 @@ def main() -> int:
                         "display_name": subtask.get("display_name"),
                         "metrics": metric_summaries,
                         "metrics_count": len(metric_summaries),
-                        "metric_names": [as_string(metric.get("metric_name")) for metric in metric_summaries],
+                        "metric_names": [
+                            as_string(metric.get("metric_name"))
+                            for metric in metric_summaries
+                        ],
                     }
                 )
 
-        subtask_summaries.sort(key=lambda subtask: as_string(subtask.get("display_name")))
+        subtask_summaries.sort(
+            key=lambda subtask: as_string(subtask.get("display_name"))
+        )
         summary["metrics"] = root_metrics
         summary["subtasks"] = subtask_summaries
         summary["subtasks_count"] = len(subtask_summaries)
         summary["metrics_count"] = total_metric_count
         summary["models_count"] = len(model_ids_for_group)
         summary["metric_names"] = sorted(name for name in unique_metric_names if name)
-        primary_metrics = root_metrics or (subtask_summaries[0]["metrics"] if subtask_summaries else [])
+        primary_metrics = root_metrics or (
+            subtask_summaries[0]["metrics"] if subtask_summaries else []
+        )
         primary_metric = pick_primary_metric(primary_metrics)
-        summary["primary_metric_name"] = as_string(primary_metric.get("metric_name")) if primary_metric else None
-        summary["top_score"] = primary_metric.get("top_score") if primary_metric and len(primary_metrics) == 1 and not subtask_summaries else None
+        summary["primary_metric_name"] = (
+            as_string(primary_metric.get("metric_name")) if primary_metric else None
+        )
+        summary["top_score"] = (
+            primary_metric.get("top_score")
+            if primary_metric and len(primary_metrics) == 1 and not subtask_summaries
+            else None
+        )
 
         # Peer ranks at single-benchmark level: average rank across all metrics
         all_metric_summaries = list(root_metrics)
@@ -3566,7 +4144,10 @@ def main() -> int:
                 if previous_avg is None or avg != previous_avg:
                     position = idx
                     previous_avg = avg
-                benchmark_ranks[model_id] = {"position": position, "total": len(avg_ranks)}
+                benchmark_ranks[model_id] = {
+                    "position": position,
+                    "total": len(avg_ranks),
+                }
             peer_ranks[summary["eval_summary_id"]] = benchmark_ranks
 
         # Summarise instance-level data availability across all model results
@@ -3599,19 +4180,27 @@ def main() -> int:
         if summary.get("is_summary_score"):
             parent_key = as_string(summary.get("benchmark_parent_key"))
             if parent_key:
-                parent_to_summary_eval_ids[parent_key].append(summary["eval_summary_id"])
+                parent_to_summary_eval_ids[parent_key].append(
+                    summary["eval_summary_id"]
+                )
 
     for summary in eval_summaries:
         if summary.get("is_summary_score"):
-            summary["summary_score_for"] = as_string(summary.get("benchmark_parent_key"))
-            summary["summary_score_for_name"] = as_string(summary.get("benchmark_parent_name"))
+            summary["summary_score_for"] = as_string(
+                summary.get("benchmark_parent_key")
+            )
+            summary["summary_score_for_name"] = as_string(
+                summary.get("benchmark_parent_name")
+            )
         else:
             parent_key = as_string(summary.get("benchmark_parent_key"))
             sibling_summary_ids = parent_to_summary_eval_ids.get(parent_key, [])
             if sibling_summary_ids:
                 summary["summary_eval_ids"] = sibling_summary_ids
 
-    eval_summaries.sort(key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id"))))
+    eval_summaries.sort(
+        key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id")))
+    )
 
     comparison_index = build_comparison_index(eval_summaries, started_at)
 
@@ -3625,26 +4214,84 @@ def main() -> int:
                 metric.pop("_ranks", None)
                 metric.pop("_total", None)
 
+    # Attach interpretive-signal annotations to each eval summary:
+    # - reporting_completeness at the benchmark level
+    # - benchmark_comparability listing divergent groups
+    # - reproducibility_summary, provenance_summary, comparability_summary
+    #   aggregates over the eval's rows / groups.
+    for summary in eval_summaries:
+        joined_record = {
+            "autobenchmarkcard": summary.get("benchmark_card") or {},
+            "eee_eval": {
+                "source_metadata": summary.pop("_source_metadata_aggregate", {}) or {}
+            },
+            "evalcards": {},
+        }
+        completeness = signals.compute_reporting_completeness(joined_record)
+
+        all_metrics: list[dict] = list(summary.get("metrics", []))
+        for subtask in summary.get("subtasks", []):
+            all_metrics.extend(subtask.get("metrics", []))
+
+        row_repro_annotations, row_provenance_annotations, signal_groups = (
+            collect_signal_rollup_inputs(all_metrics)
+        )
+
+        repro_summary = signals.summarize_reproducibility(row_repro_annotations)
+        provenance_summary = signals.summarize_provenance(
+            row_provenance_annotations, signal_groups
+        )
+        comparability_summary = signals.summarize_comparability(signal_groups)
+
+        summary["evalcards"] = {
+            "annotations": {
+                "reporting_completeness": completeness,
+                "benchmark_comparability": build_benchmark_comparability(signal_groups),
+            }
+        }
+        summary["reproducibility_summary"] = repro_summary
+        summary["provenance_summary"] = provenance_summary
+        summary["comparability_summary"] = comparability_summary
+
     aggregated_model_family_groups: dict[str, list[dict]] = defaultdict(list)
     for family_evals in model_family_groups.values():
         for evaluation in family_evals:
-            display_identity = aggregated_display_identity(evaluation.get("model_info") or {})
-            aggregated_model_family_groups[display_identity["family_id"]].append(evaluation)
+            display_identity = aggregated_display_identity(
+                evaluation.get("model_info") or {}
+            )
+            aggregated_model_family_groups[display_identity["family_id"]].append(
+                evaluation
+            )
 
     model_summaries: list[dict] = []
     model_cards: list[dict] = []
 
     for family_id, family_evals in aggregated_model_family_groups.items():
-        family_evals_sorted = sorted(family_evals, key=lambda e: as_string(e.get("retrieved_timestamp")))
+        family_evals_sorted = sorted(
+            family_evals, key=lambda e: as_string(e.get("retrieved_timestamp"))
+        )
         latest = family_evals_sorted[-1]
         model_info = latest.get("model_info") or {}
         display_identity = aggregated_display_identity(model_info)
-        route_id = as_string(display_identity.get("model_route_id") or family_id.replace("/", "__"))
-        family_name = as_string(display_identity.get("family_name") or model_info.get("family_name") or model_info.get("name") or family_id.split("/")[-1])
+        route_id = as_string(
+            display_identity.get("model_route_id") or family_id.replace("/", "__")
+        )
+        family_name = as_string(
+            display_identity.get("family_name")
+            or model_info.get("family_name")
+            or model_info.get("name")
+            or family_id.split("/")[-1]
+        )
         params_billions: float | None = None
 
         by_category: dict[str, list[dict]] = defaultdict(list)
-        raw_model_ids = sorted({as_string((e.get("model_info") or {}).get("id")) for e in family_evals if as_string((e.get("model_info") or {}).get("id"))})
+        raw_model_ids = sorted(
+            {
+                as_string((e.get("model_info") or {}).get("id"))
+                for e in family_evals
+                if as_string((e.get("model_info") or {}).get("id"))
+            }
+        )
         variants_map: dict[str, dict] = {}
         score_values: list[float] = []
         last_updated = None
@@ -3655,21 +4302,31 @@ def main() -> int:
         best_per_metric: dict[str, dict] = {}
 
         for evaluation in family_evals:
-            category = infer_category_from_benchmark(as_string(evaluation.get("benchmark")))
+            category = infer_category_from_benchmark(
+                as_string(evaluation.get("benchmark"))
+            )
             by_category[category].append(evaluation)
             iso = iso_from_epoch_string(evaluation.get("retrieved_timestamp"))
             last_updated = max_iso(last_updated, iso)
 
             if params_billions is None:
-                params_billions = derive_model_params_billions(evaluation.get("model_info") or {})
+                params_billions = derive_model_params_billions(
+                    evaluation.get("model_info") or {}
+                )
 
-            evaluation_display_identity = aggregated_display_identity(evaluation.get("model_info") or {})
-            model_variant_key = as_string(evaluation_display_identity.get("variant_key") or "default")
+            evaluation_display_identity = aggregated_display_identity(
+                evaluation.get("model_info") or {}
+            )
+            model_variant_key = as_string(
+                evaluation_display_identity.get("variant_key") or "default"
+            )
             variant = variants_map.setdefault(
                 model_variant_key,
                 {
                     "variant_key": model_variant_key,
-                    "variant_label": as_string(evaluation_display_identity.get("variant_label") or "Default"),
+                    "variant_label": as_string(
+                        evaluation_display_identity.get("variant_label") or "Default"
+                    ),
                     "evaluation_count": 0,
                     "raw_model_ids": set(),
                     "last_updated": None,
@@ -3707,7 +4364,8 @@ def main() -> int:
                     )
                     if is_better:
                         best_per_metric[esid] = {
-                            "benchmark": benchmark_display_name or as_string(evaluation.get("benchmark")),
+                            "benchmark": benchmark_display_name
+                            or as_string(evaluation.get("benchmark")),
                             "benchmarkKey": esid,
                             "canonical_display_name": as_string(
                                 normalized.get("canonical_display_name")
@@ -3795,6 +4453,38 @@ def main() -> int:
             for category in summary_categories
         }
         summary["hierarchy_by_category"] = summary["evaluation_summaries_by_category"]
+
+        # Aggregate row-level reproducibility_gap + provenance annotations
+        # across this model's filtered hierarchy, and per-group signals
+        model_repro_annotations: list[dict] = []
+        model_provenance_annotations: list[dict] = []
+        model_signal_groups: list[dict] = []
+        for filtered_summary in filtered_eval_summaries:
+            filtered_metrics: list[dict] = list(filtered_summary.get("metrics", []))
+            for subtask in filtered_summary.get("subtasks", []):
+                filtered_metrics.extend(subtask.get("metrics", []))
+            for metric in filtered_metrics:
+                for entry in metric.get("_signal_groups") or []:
+                    if as_string(entry.get("model_route_id")) == route_id:
+                        model_signal_groups.append(entry)
+                for row in metric.get("model_results", []):
+                    annotations = (row.get("evalcards") or {}).get("annotations") or {}
+                    repro = annotations.get("reproducibility_gap")
+                    if repro is not None:
+                        model_repro_annotations.append(repro)
+                    prov = annotations.get("provenance")
+                    if prov is not None:
+                        model_provenance_annotations.append(prov)
+        model_repro_summary = signals.summarize_reproducibility(model_repro_annotations)
+        model_provenance_summary = signals.summarize_provenance(
+            model_provenance_annotations, model_signal_groups
+        )
+        model_comparability_summary = signals.summarize_comparability(
+            model_signal_groups
+        )
+        summary["reproducibility_summary"] = model_repro_summary
+        summary["provenance_summary"] = model_provenance_summary
+        summary["comparability_summary"] = model_comparability_summary
         model_summaries.append(summary)
 
         if score_values:
@@ -3815,19 +4505,40 @@ def main() -> int:
                 "developer": as_string(model_info.get("developer")),
                 "params_billions": params_billions,
                 "total_evaluations": len(family_evals),
-                "benchmark_count": len({as_string(e.get("benchmark")) for e in family_evals if as_string(e.get("benchmark"))}),
+                "benchmark_count": len(
+                    {
+                        as_string(e.get("benchmark"))
+                        for e in family_evals
+                        if as_string(e.get("benchmark"))
+                    }
+                ),
                 "benchmark_family_count": len(
                     {
-                        as_string(((result.get("normalized_result") or {}).get("benchmark_family_key")))
+                        as_string(
+                            (
+                                (result.get("normalized_result") or {}).get(
+                                    "benchmark_family_key"
+                                )
+                            )
+                        )
                         for evaluation in family_evals
                         for result in evaluation.get("evaluation_results") or []
-                        if as_string(((result.get("normalized_result") or {}).get("benchmark_family_key")))
+                        if as_string(
+                            (
+                                (result.get("normalized_result") or {}).get(
+                                    "benchmark_family_key"
+                                )
+                            )
+                        )
                     }
                 ),
                 "categories_covered": summary_categories,
                 "last_updated": last_updated,
                 "variants": summary["variants"],
                 "score_summary": score_summary,
+                "reproducibility_summary": model_repro_summary,
+                "provenance_summary": model_provenance_summary,
+                "comparability_summary": model_comparability_summary,
                 # ---- FIX 2 continued: include benchmark names and per-benchmark
                 # scores so the frontend compare dialog and domain pills work ----
                 "benchmark_names": sorted(benchmark_names_set),
@@ -3835,7 +4546,9 @@ def main() -> int:
             }
         )
 
-    model_cards.sort(key=lambda m: (-m["total_evaluations"], as_string(m["model_route_id"])))
+    model_cards.sort(
+        key=lambda m: (-m["total_evaluations"], as_string(m["model_route_id"]))
+    )
     model_summaries.sort(key=lambda m: as_string(m.get("model_route_id")))
 
     lite_model_cards = build_lightweight_model_cards(model_cards)
@@ -3898,7 +4611,9 @@ def main() -> int:
                                 "metric_id": metric.get("metric_id"),
                                 "metric_key": metric.get("metric_key"),
                                 "metric_source": metric.get("metric_source"),
-                                "canonical_display_name": metric.get("canonical_display_name"),
+                                "canonical_display_name": metric.get(
+                                    "canonical_display_name"
+                                ),
                                 "lower_is_better": metric.get("lower_is_better"),
                                 "models_count": metric.get("models_count"),
                                 "top_score": metric.get("top_score"),
@@ -3909,7 +4624,19 @@ def main() -> int:
                     for subtask in s.get("subtasks", [])
                 ],
                 "top_score": s.get("top_score"),
-                "instance_data": s.get("instance_data", {"available": False, "url_count": 0, "sample_urls": [], "models_with_loaded_instances": 0}),
+                "instance_data": s.get(
+                    "instance_data",
+                    {
+                        "available": False,
+                        "url_count": 0,
+                        "sample_urls": [],
+                        "models_with_loaded_instances": 0,
+                    },
+                ),
+                "evalcards": s.get("evalcards"),
+                "reproducibility_summary": s.get("reproducibility_summary"),
+                "provenance_summary": s.get("provenance_summary"),
+                "comparability_summary": s.get("comparability_summary"),
             }
             for s in eval_summaries
         ],
@@ -3928,7 +4655,9 @@ def main() -> int:
         dev_group_by_slug[slug].append(card)
         # Keep the most common name variant (or the capitalized one)
         existing_name = dev_name_by_slug.get(slug)
-        if existing_name is None or (developer[0:1].isupper() and not existing_name[0:1].isupper()):
+        if existing_name is None or (
+            developer[0:1].isupper() and not existing_name[0:1].isupper()
+        ):
             dev_name_by_slug[slug] = developer
 
     developers = [
@@ -3940,15 +4669,82 @@ def main() -> int:
     dev_summaries = []
     for slug, models in dev_group_by_slug.items():
         developer = dev_name_by_slug[slug]
-        sorted_models = sorted(models, key=lambda m: as_string(m.get("model_family_name")))
-        dev_summaries.append({"developer": developer, "slug": slug, "models": sorted_models})
+        sorted_models = sorted(
+            models, key=lambda m: as_string(m.get("model_family_name"))
+        )
+        dev_summaries.append(
+            {"developer": developer, "slug": slug, "models": sorted_models}
+        )
+
+    # Corpus-level aggregates: walks every eval_summary's per-row
+    # annotations + per-eval completeness + per-group signal entries to build
+    # one summary artifact for paper / dashboard consumption. Must run before
+    # the strip pass since it reads `_signal_groups` off the metric_summaries.
+    repro_inputs: list[tuple] = []
+    provenance_row_inputs: list[tuple] = []
+    group_inputs: list[tuple] = []
+    completeness_inputs: list[tuple] = []
+    base_field_count = len(signals.BASE_REPRODUCIBILITY_FIELDS)
+
+    for eval_summary in eval_summaries:
+        category = as_string(eval_summary.get("category")) or None
+        completeness = (
+            (eval_summary.get("evalcards") or {}).get("annotations") or {}
+        ).get("reporting_completeness")
+        if isinstance(completeness, dict):
+            completeness_inputs.append((completeness, category))
+
+        all_metrics: list[dict] = list(eval_summary.get("metrics", []))
+        for subtask in eval_summary.get("subtasks", []):
+            all_metrics.extend(subtask.get("metrics", []))
+        for metric in all_metrics:
+            for group in metric.get("_signal_groups") or []:
+                group_inputs.append((group, category))
+            for row in metric.get("model_results", []):
+                annotations = (row.get("evalcards") or {}).get("annotations") or {}
+                repro = annotations.get("reproducibility_gap")
+                if isinstance(repro, dict):
+                    # Derive is_agentic from required_field_count: any extras
+                    # beyond the base set come from the agentic schema.
+                    is_agentic = (
+                        repro.get("required_field_count") or 0
+                    ) > base_field_count
+                    repro_inputs.append(
+                        (
+                            {"annotation": repro, "is_agentic": is_agentic},
+                            category,
+                        )
+                    )
+                provenance = annotations.get("provenance")
+                if isinstance(provenance, dict):
+                    provenance_row_inputs.append((provenance, category))
+
+    corpus_aggregates = {
+        "generated_at": started_at,
+        "signal_version": signals.SIGNAL_VERSION,
+        "stratification_dimensions": ["category"],
+        "reproducibility": signals.stratify(
+            repro_inputs, signals.aggregate_reproducibility
+        ),
+        "completeness": signals.stratify(
+            completeness_inputs, signals.aggregate_completeness
+        ),
+        "provenance": signals.stratify_provenance(provenance_row_inputs, group_inputs),
+        "comparability": signals.stratify(
+            group_inputs, signals.aggregate_comparability
+        ),
+    }
 
     manifest = {
         "generated_at": started_at,
         "model_count": len(model_cards),
         "eval_count": len(eval_summaries),
         "metric_eval_count": sum(
-            len(summary.get("metrics", [])) + sum(len(subtask.get("metrics", [])) for subtask in summary.get("subtasks", []))
+            len(summary.get("metrics", []))
+            + sum(
+                len(subtask.get("metrics", []))
+                for subtask in summary.get("subtasks", [])
+            )
             for summary in eval_summaries
         ),
         "config_version": CONFIG_VERSION,
@@ -3961,9 +4757,12 @@ def main() -> int:
             "eval_list": "eval-list.json",
             "eval_list_lite": "eval-list-lite.json",
             "comparison_index": "comparison-index.json",
+            "corpus_aggregates": "corpus-aggregates.json",
+            "eval_hierarchy": "eval-hierarchy.json",
         },
     }
 
+    write_json(OUTPUT_DIR / "corpus-aggregates.json", corpus_aggregates)
     write_json(OUTPUT_DIR / "model-cards.json", model_cards)
     write_json(OUTPUT_DIR / "model-cards-lite.json", lite_model_cards)
     write_json(OUTPUT_DIR / "eval-list.json", eval_list)
@@ -3973,19 +4772,169 @@ def main() -> int:
     write_json(OUTPUT_DIR / "benchmark-metadata.json", benchmark_metadata)
     write_json(OUTPUT_DIR / "developers.json", developers)
 
-    # Copy eval hierarchy into output if available; generate README
-    hierarchy_path = Path("reports/eval_hierarchy.json")
-    if hierarchy_path.exists():
-        shutil.copy2(hierarchy_path, OUTPUT_DIR / "eval-hierarchy.json")
-    readme_text = generate_readme(manifest, eval_list, benchmark_metadata, hierarchy_path)
+    # eval-hierarchy.json: regenerate at runtime from current eval_summaries
+    # (replaces a previous shutil.copy2 of `reports/eval_hierarchy.json`,
+    # which was a stale snapshot from a separate generator script and only
+    # covered ~7/20 of the live family keys).
+    #
+    # Two-level structure: family → leaf. `family_key` and `leaf_key` come
+    # straight off each eval_summary, so the output always reflects the
+    # current corpus. Per-family rollups aggregate across all the family's
+    # leaves; per-leaf rollups aggregate the eval_summary(ies) that
+    # share that `(family, leaf)` pair (typically one).
+    #
+    # KNOWN LIMITATION (2026-04-26): family keys are NOT collapsed via
+    # `build_eval_hierarchy_report.py`'s FAMILY_RULES. Consequence:
+    # `helm_air_bench`, `helm_classic`, `helm_lite`, `helm_instruct`,
+    # `helm_capabilities`, and `helm_mmlu` each appear as a top-level
+    # family instead of as composites under one `helm` family. Same for
+    # `apex_v1` + `apex_agents` etc.
+    def _collect_eval_signal_data(eval_summary: dict) -> tuple[list, list, list]:
+        repro_anns: list[dict] = []
+        prov_anns: list[dict] = []
+        sig_groups: list[dict] = []
+        metrics_pool = list(eval_summary.get("metrics") or [])
+        for subtask in eval_summary.get("subtasks") or []:
+            metrics_pool.extend(subtask.get("metrics") or [])
+        for metric in metrics_pool:
+            sig_groups.extend(metric.get("_signal_groups") or [])
+            for row in metric.get("model_results") or []:
+                annotations = (row.get("evalcards") or {}).get("annotations") or {}
+                repro = annotations.get("reproducibility_gap")
+                if isinstance(repro, dict):
+                    repro_anns.append(repro)
+                prov = annotations.get("provenance")
+                if isinstance(prov, dict):
+                    prov_anns.append(prov)
+        return repro_anns, prov_anns, sig_groups
+
+    def _node_rollups(evals_for_node: list[dict]) -> dict:
+        repro_all: list[dict] = []
+        prov_all: list[dict] = []
+        groups_all: list[dict] = []
+        for es in evals_for_node:
+            r, p, g = _collect_eval_signal_data(es)
+            repro_all.extend(r)
+            prov_all.extend(p)
+            groups_all.extend(g)
+        return {
+            "reproducibility_summary": signals.summarize_reproducibility(repro_all),
+            "provenance_summary": signals.summarize_provenance(prov_all, groups_all),
+            "comparability_summary": signals.summarize_comparability(groups_all),
+        }
+
+    families_in_progress: dict[str, dict] = {}
+    for eval_summary in eval_summaries:
+        family_key = as_string(eval_summary.get("benchmark_family_key")) or "unknown"
+        family = families_in_progress.setdefault(
+            family_key,
+            {
+                "key": family_key,
+                "display_name": (
+                    as_string(eval_summary.get("benchmark_family_name")) or family_key
+                ),
+                "category": as_string(eval_summary.get("category")) or "other",
+                "_evals": [],
+                "_leaves": {},
+            },
+        )
+        family["_evals"].append(eval_summary)
+        leaf_key = as_string(eval_summary.get("benchmark_leaf_key")) or as_string(
+            eval_summary.get("eval_summary_id")
+        )
+        family["_leaves"].setdefault(leaf_key, []).append(eval_summary)
+
+    runtime_hierarchy: dict[str, Any] = {
+        "generated_at": started_at,
+        "signal_version": signals.SIGNAL_VERSION,
+        "schema_note": (
+            "Runtime-generated 2-level hierarchy (family → leaf). "
+            "Replaces the previously-shipped static reports/eval_hierarchy.json snapshot. "
+            "Family keys are uncollapsed runtime values: `helm_classic`, `helm_lite`, "
+            "`helm_air_bench` etc. each appear as separate top-level families instead "
+            "of as composites under one `helm` family. Family-collapse is deferred to "
+            "the planned evalcard-registry integration sweep so all artifacts in this "
+            "directory share a single canonical-identity scheme."
+        ),
+        "families": [],
+    }
+    for family_key in sorted(families_in_progress):
+        family = families_in_progress[family_key]
+        family_rollups = _node_rollups(family["_evals"])
+        leaves: list[dict] = []
+        for leaf_key in sorted(family["_leaves"]):
+            leaf_evals = family["_leaves"][leaf_key]
+            leaf_rollups = _node_rollups(leaf_evals)
+            leaves.append(
+                {
+                    "key": leaf_key,
+                    "display_name": (
+                        as_string(leaf_evals[0].get("benchmark_leaf_name")) or leaf_key
+                    ),
+                    "category": as_string(leaf_evals[0].get("category")) or "other",
+                    "evals_count": len(leaf_evals),
+                    "eval_summary_ids": sorted(
+                        as_string(es.get("eval_summary_id"))
+                        for es in leaf_evals
+                        if as_string(es.get("eval_summary_id"))
+                    ),
+                    **leaf_rollups,
+                }
+            )
+        runtime_hierarchy["families"].append(
+            {
+                "key": family["key"],
+                "display_name": family["display_name"],
+                "category": family["category"],
+                "evals_count": len(family["_evals"]),
+                "eval_summary_ids": sorted(
+                    as_string(es.get("eval_summary_id"))
+                    for es in family["_evals"]
+                    if as_string(es.get("eval_summary_id"))
+                ),
+                **family_rollups,
+                "leaves": leaves,
+            }
+        )
+
+    write_json(OUTPUT_DIR / "eval-hierarchy.json", runtime_hierarchy)
+
+    hierarchy_path = OUTPUT_DIR / "eval-hierarchy.json"
+    readme_text = generate_readme(
+        manifest, eval_list, benchmark_metadata, hierarchy_path
+    )
     (OUTPUT_DIR / "README.md").write_text(readme_text, encoding="utf-8")
+
+    # Strip Signals 3+4 internals carried for the rollup passes. After this
+    # point the per-summary JSONs serialize cleanly: rows lose
+    # `_generation_args` (input plumbing for variant_divergence comparison)
+    # and metric_summaries lose `_signal_groups` (group-level summaries used
+    # by the per-eval / per-model rollups).
+    def _strip_signals_internals(summary_obj: dict) -> None:
+        all_metrics: list[dict] = list(summary_obj.get("metrics", []))
+        for subtask in summary_obj.get("subtasks", []):
+            all_metrics.extend(subtask.get("metrics", []))
+        for metric in all_metrics:
+            metric.pop("_signal_groups", None)
+            for row in metric.get("model_results", []):
+                row.pop("_generation_args", None)
+
+    for summary in eval_summaries:
+        _strip_signals_internals(summary)
+    for summary in model_summaries:
+        for category_summaries in summary.get("hierarchy_by_category", {}).values():
+            for filtered_summary in category_summaries:
+                _strip_signals_internals(filtered_summary)
 
     for summary in model_summaries:
         write_json(OUTPUT_DIR / "models" / f"{summary['model_route_id']}.json", summary)
     for summary in eval_summaries:
         write_json(OUTPUT_DIR / "evals" / f"{summary['eval_summary_id']}.json", summary)
     for summary in dev_summaries:
-        write_json(OUTPUT_DIR / "developers" / f"{summary['slug']}.json", {"developer": summary["developer"], "models": summary["models"]})
+        write_json(
+            OUTPUT_DIR / "developers" / f"{summary['slug']}.json",
+            {"developer": summary["developer"], "models": summary["models"]},
+        )
 
     manifest["artifact_sizes"] = collect_artifact_sizes(OUTPUT_DIR)
     write_json(OUTPUT_DIR / "manifest.json", manifest)
