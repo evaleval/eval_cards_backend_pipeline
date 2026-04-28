@@ -537,26 +537,45 @@ def lookup_benchmark_card_for_parent(
     if not candidates:
         return None
 
+    search_keys = set(candidate_benchmark_keys(*values))
     parent_keys = set(candidate_benchmark_keys(*parent_values))
-    if not parent_keys:
-        return candidates[0]
 
-    compatible: list[dict] = []
-    unconstrained: list[dict] = []
+    # Bucket candidates by relationship to what we searched for. A "child card"
+    # is one whose `appears_in` lists a benchmark we already passed as a search
+    # key — i.e. this card describes a sub-component of one of those, not the
+    # thing itself. A "self/parent card" has no such relationship to our search
+    # keys. When we're resolving a parent benchmark, the search values can
+    # accidentally include child identifiers (from per-record dataset_name
+    # etc.), so without this split a child card can shadow the real parent.
+    self_cards: list[dict] = []
+    child_cards: list[tuple[dict, set[str]]] = []
     for card in candidates:
         details = card.get("benchmark_details") if isinstance(card, dict) else {}
         appears_in = as_string_list((details or {}).get("appears_in"))
-        if not appears_in:
-            unconstrained.append(card)
-            continue
-        appears_in_keys = set(candidate_benchmark_keys(*appears_in))
-        if parent_keys & appears_in_keys:
-            compatible.append(card)
+        appears_in_keys = (
+            set(candidate_benchmark_keys(*appears_in)) if appears_in else set()
+        )
+        if appears_in_keys and (appears_in_keys & search_keys):
+            child_cards.append((card, appears_in_keys))
+        else:
+            self_cards.append(card)
 
+    # Prefer the self/parent card whenever one is available — that's the card
+    # that actually describes what was asked for.
+    if self_cards:
+        return self_cards[0]
+
+    # Otherwise we only have child cards; fall back to the existing
+    # parent-preference logic so leaf-benchmark lookups (where the search keys
+    # name a single child) still pick the variant compatible with the parent.
+    if not parent_keys:
+        return child_cards[0][0] if child_cards else candidates[0]
+
+    compatible = [c for c, appears_in_keys in child_cards if parent_keys & appears_in_keys]
     if compatible:
         return compatible[0]
-    if unconstrained:
-        return unconstrained[0]
+    if child_cards:
+        return child_cards[0][0]
     return None
 
 
