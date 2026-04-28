@@ -27,6 +27,7 @@ EEE_DATASET_RAW_BASE = f"https://huggingface.co/datasets/{EEE_DATASET_REPO}/raw/
 DATASET_RESOLVE_BASE = f"https://huggingface.co/datasets/{DATASET_REPO}/resolve/main"
 CONFIG_VERSION = 1
 OUTPUT_DIR = Path("output")
+DUCKDB_ARTIFACT_FILENAME = "eval_cards.duckdb"
 DEFAULT_LOCAL_DATASET_DIR = ".cache/eee_datastore"
 DEFAULT_LOCAL_BENCHMARK_METADATA_DIR = ".cache/auto_benchmarkcards"
 DEFAULT_METRIC_REGISTRY_PATH = Path("registry/metric_looking_strings.json")
@@ -1888,6 +1889,43 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def duckdb_artifact_path() -> Path:
+    configured = as_string(os.environ.get("EVAL_CARDS_DUCKDB_PATH")).strip()
+    if configured:
+        return Path(configured)
+    return OUTPUT_DIR / DUCKDB_ARTIFACT_FILENAME
+
+
+def _artifact_relative_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(OUTPUT_DIR.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def materialize_duckdb_artifact(evaluations: list[dict], generated_at: str) -> dict:
+    from shared.duckdb_backend import DuckDBBackend
+
+    db_path = duckdb_artifact_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists():
+        db_path.unlink()
+
+    backend = DuckDBBackend(str(db_path))
+    ingest_stats = backend.ingest_pipeline_evaluations(evaluations, OUTPUT_DIR)
+    table_counts = backend.stats()
+    join_integrity = backend.join_integrity()
+    identifier_issues = backend.identifier_issues(limit=0)["summary"]
+    return {
+        "path": _artifact_relative_path(db_path),
+        "generated_at": generated_at,
+        "ingest_stats": ingest_stats,
+        "table_counts": table_counts,
+        "join_integrity": join_integrity,
+        "identifier_issue_summary": identifier_issues,
+    }
+
+
 def iter_output_relative_files(root_dir: Path = OUTPUT_DIR) -> list[str]:
     if not root_dir.exists():
         return []
@@ -2600,6 +2638,8 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
             )
 
     for relative_path in iter_output_relative_files(output_dir):
+        if Path(relative_path).suffix == ".duckdb":
+            continue
         text = (output_dir / relative_path).read_text(encoding="utf-8")
         if EEE_DATASET_REPO in text:
             errors.append(f"{relative_path} still contains {EEE_DATASET_REPO}")
@@ -4735,6 +4775,11 @@ def main() -> int:
         ),
     }
 
+    duckdb_artifact = materialize_duckdb_artifact(evaluations, started_at)
+    print(
+        f"[pipeline] {json.dumps({'event': 'duckdb.materialized', 'path': duckdb_artifact['path'], 'table_counts': duckdb_artifact['table_counts'], 'join_integrity': duckdb_artifact['join_integrity']})}"
+    )
+
     manifest = {
         "generated_at": started_at,
         "model_count": len(model_cards),
@@ -4759,7 +4804,9 @@ def main() -> int:
             "comparison_index": "comparison-index.json",
             "corpus_aggregates": "corpus-aggregates.json",
             "eval_hierarchy": "eval-hierarchy.json",
+            "duckdb": duckdb_artifact["path"],
         },
+        "duckdb_artifact": duckdb_artifact,
     }
 
     write_json(OUTPUT_DIR / "corpus-aggregates.json", corpus_aggregates)

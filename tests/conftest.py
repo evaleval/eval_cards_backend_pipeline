@@ -436,6 +436,34 @@ def _write_fixtures(eee_root: Path, abc_root: Path) -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    # Metric-selective samples for the multi-result run. The aggregate record
+    # has metric_a/metric_b/metric_c, but this file intentionally covers only
+    # metric_a so DuckDB joins must not advertise run-wide instance coverage.
+    samples_path = eee_data_root / "bench_multiresult" / "openai_gpt-5" / "run-11_samples.jsonl"
+    samples_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {
+                    "evaluation_id": "bench_multiresult/run-11",
+                    "sample_id": "sample-a-1",
+                    "evaluation_name": "metric_a",
+                    "model_id": "openai/gpt-5",
+                    "evaluation": {"score": 1.0, "is_correct": True},
+                },
+                {
+                    "evaluation_id": "bench_multiresult/run-11",
+                    "sample_id": "sample-a-2",
+                    "evaluation_name": "metric_a",
+                    "model_id": "openai/gpt-5",
+                    "evaluation": {"score": 0.0, "is_correct": False},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
     # ABC cards — names mirror the configs. bench_agentic gets the
     # tasks-literal agentic marker so `is_agentic` fires. bench_fuzzy is
     # named with snake_case while the EEE config uses kebab-case
@@ -481,6 +509,7 @@ def pipeline_output(tmp_path_factory) -> Path:
             "CONFIG_NAMES",
             "CONFIG_LIMIT",
             "HF_TOKEN",
+            "LOAD_INSTANCE_IN_DRY_RUN",
         )
     }
     try:
@@ -493,6 +522,7 @@ def pipeline_output(tmp_path_factory) -> Path:
         )
         os.environ.pop("CONFIG_NAMES", None)
         os.environ.pop("CONFIG_LIMIT", None)
+        os.environ["LOAD_INSTANCE_IN_DRY_RUN"] = "1"
         # Avoid any chance of HF upload even if --dry-run logic regresses.
         os.environ.pop("HF_TOKEN", None)
         sys.argv = ["pipeline.py", "--dry-run"]

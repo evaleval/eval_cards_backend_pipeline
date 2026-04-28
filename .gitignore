@@ -2,5 +2,8 @@ output/
 node_modules/
 .DS_Store
 .cache/
+.pytest_cache/
+*.egg-info/
+data/*.duckdb
 __pycache__/
 scripts/__pycache__/

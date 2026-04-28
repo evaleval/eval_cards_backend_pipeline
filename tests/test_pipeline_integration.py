@@ -1111,3 +1111,114 @@ def test_reproducibility_summary_bench_agentic_flags_one_row(pipeline_output):
     eval_limits, so has_reproducibility_gap_count must be 1."""
     summary = _read(pipeline_output / "evals" / "bench_agentic.json")
     assert summary["reproducibility_summary"]["has_reproducibility_gap_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# DuckDB backend artifact — canonical identity and metric-scoped joins
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_emits_duckdb_backend_artifact_and_manifest_metadata(pipeline_output):
+    from shared.duckdb_backend import DuckDBBackend
+
+    manifest = _read(pipeline_output / "manifest.json")
+    artifact = manifest["duckdb_artifact"]
+    assert artifact["path"] == "eval_cards.duckdb"
+    assert manifest["summary_artifacts"]["duckdb"] == "eval_cards.duckdb"
+
+    db_path = pipeline_output / artifact["path"]
+    assert db_path.exists()
+
+    backend = DuckDBBackend(str(db_path))
+    stats = backend.stats()
+    record_count = len(list((pipeline_output / "records").glob("**/*.json")))
+    metric_count = 0
+    for path in (pipeline_output / "evals").glob("*.json"):
+        summary = _read(path)
+        metric_count += len(_walk_rows(summary))
+    instance_count = sum(
+        1
+        for path in (pipeline_output / "instances").glob("**/*.jsonl")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+
+    assert stats["evaluation_runs"] == record_count
+    assert stats["evaluation_metrics"] == metric_count
+    assert stats["instance_rows"] == instance_count
+    assert artifact["table_counts"]["evaluation_runs"] == record_count
+    assert artifact["join_integrity"]["instance_rows_total"] == instance_count
+
+
+def test_duckdb_preserves_pipeline_canonical_identity_fields(pipeline_output):
+    from shared.duckdb_backend import DuckDBBackend
+
+    backend = DuckDBBackend(str(pipeline_output / "eval_cards.duckdb"))
+    row = backend.conn.execute(
+        """
+        SELECT
+            canonical_metric_tuple,
+            model_route_id,
+            eval_summary_id,
+            metric_summary_id,
+            benchmark_family_id,
+            eval_slice_id,
+            canonical_metric_id,
+            harness_id,
+            source_record_url
+        FROM evaluation_metrics
+        WHERE evaluation_id = 'bench_multiresult/run-11'
+          AND evaluation_name = 'metric_a'
+        """
+    ).fetchone()
+
+    assert row is not None
+    assert row[0] == (
+        "bench_multiresult/run-11|openai/gpt-5|bench_multiresult|"
+        "bench_multiresult|metric_a|fixture|0"
+    )
+    assert row[1] == "openai__gpt-5"
+    assert row[2] == "bench_multiresult"
+    assert row[3] == "bench_multiresult_metric_a"
+    assert row[4] == "bench_multiresult"
+    assert row[5] == "bench_multiresult"
+    assert row[6] == "metric_a"
+    assert row[7] == "fixture"
+    assert row[8].endswith("/records/openai__gpt-5/bench_multiresult_run_11.json")
+
+
+def test_duckdb_instance_coverage_is_metric_scoped_not_run_wide(pipeline_output):
+    from shared.duckdb_backend import DuckDBBackend
+
+    backend = DuckDBBackend(str(pipeline_output / "eval_cards.duckdb"))
+    rows = backend.conn.execute(
+        """
+        SELECT
+            m.evaluation_name,
+            m.metric_summary_id,
+            COUNT(i.sample_id) AS joined_instance_rows
+        FROM evaluation_metrics m
+        LEFT JOIN instance_evaluations i
+          ON i.evaluation_id = m.evaluation_id
+         AND (
+            (
+                i.evaluation_result_id IS NOT NULL
+                AND m.evaluation_result_id IS NOT NULL
+                AND i.evaluation_result_id = m.evaluation_result_id
+            )
+            OR (
+                (
+                    i.evaluation_result_id IS NULL
+                    OR m.evaluation_result_id IS NULL
+                )
+                AND i.name_join_id = m.name_join_id
+            )
+         )
+        WHERE m.evaluation_id = 'bench_multiresult/run-11'
+        GROUP BY 1, 2
+        ORDER BY 1
+        """
+    ).fetchall()
+
+    joined_by_metric = {row[0]: int(row[2]) for row in rows}
+    assert joined_by_metric == {"metric_a": 2, "metric_b": 0, "metric_c": 0}

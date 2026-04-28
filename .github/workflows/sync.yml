@@ -7,9 +7,13 @@ on:
   push:
     branches: [main]
     paths:
+      - "api/**"
       - "metadata/**"
       - "scripts/**"
+      - "shared/**"
+      - "tests/**"
       - "package.json"
+      - "pyproject.toml"
       - ".github/workflows/sync.yml"
 
 jobs:
@@ -26,7 +30,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install python dependencies
-        run: python -m pip install --upgrade pip huggingface_hub pytest
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
 
       - name: Run tests
         run: python -m pytest tests/
