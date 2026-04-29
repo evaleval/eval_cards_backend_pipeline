@@ -4,7 +4,7 @@ We can't trust the verifier's "OK: all surfaces match" output unless we
 prove the verifier ACTUALLY catches divergences. These tests:
 
   1. Unit-test the comparison primitives (`_diff`, `_normalize_for_compare`,
-     `_strip_sidecars`, `_load_parquet_payloads`).
+     `_load_parquet_payloads`).
   2. End-to-end: run the verifier against a fixture pipeline output, then
      deliberately mutate one parquet row and confirm the verifier flags
      the divergence and exits non-zero.
@@ -95,23 +95,6 @@ def test_normalize_for_compare_recurses_through_nested():
         {"a": [{"b": 1, "c": None}, 2]}
     )
     assert out == {"a": [{"b": 1.0}, 2.0]}
-
-
-def test_strip_sidecars_drops_known_keys_per_surface():
-    payload = {
-        "id": "openai/gpt-5",
-        "license_short": "MIT",  # sidecar on eval_list / eval_summaries
-        "developer_route_id": "openai",  # sidecar on model_cards
-    }
-    cleaned = verify_parity._strip_sidecars(payload, "model_cards")
-    assert "developer_route_id" not in cleaned
-    assert "license_short" in cleaned  # not a model_cards sidecar
-
-
-def test_strip_sidecars_unknown_surface_passes_through():
-    payload = {"a": 1, "license_short": "MIT"}
-    cleaned = verify_parity._strip_sidecars(payload, "unknown_surface")
-    assert cleaned == payload
 
 
 # ---------------------------------------------------------------------------

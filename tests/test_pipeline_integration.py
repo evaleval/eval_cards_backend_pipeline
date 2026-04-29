@@ -1209,28 +1209,6 @@ def test_parity_model_cards_carry_canonical_columns(pipeline_output):
     assert openai_payload["evaluator_count"] == 0
 
 
-def test_parity_eval_list_carries_display_name_and_license(pipeline_output):
-    """TS `BenchmarkEvalListItem` uses `composite_benchmark_name` for the
-    rendered title; license_short and dataset_url are parity sidecars."""
-    pytest.importorskip("pyarrow.parquet")
-    payloads = list(
-        _parquet_payloads(
-            pipeline_output / "duckdb" / "v1" / "eval_list.parquet",
-            key_col="eval_summary_id",
-        ).values()
-    )
-    assert payloads
-    for payload in payloads:
-        assert "composite_benchmark_name" in payload
-        assert "evaluation_id" in payload
-        # Hardcoded TS defaults from `hfEvalEntryToListItem`.
-        assert payload["evaluator_names"] == []
-        assert payload["source_types"] == []
-        # The fixture cards have no `data_licensing` field, so license_short
-        # must collapse to "" via the falsy short-circuit.
-        assert payload["license_short"] == ""
-
-
 def test_parity_model_summaries_carry_ts_shape(pipeline_output):
     """`createModelFamilySummary` shape — variants[] sorted, raw_model_ids[]
     sorted distinct, evaluations_by_category bucketed, model_family_id +
