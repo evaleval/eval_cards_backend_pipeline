@@ -531,45 +531,66 @@ def iter_matching_benchmark_cards(
 
 
 def lookup_benchmark_card_for_parent(
-    metadata_lookup: dict[str, dict], *values: Any, parent_values: tuple[Any, ...] = ()
+    metadata_lookup: dict[str, dict],
+    *values: Any,
+    aux_values: tuple[Any, ...] = (),
+    parent_values: tuple[Any, ...] = (),
 ) -> dict | None:
-    candidates = iter_matching_benchmark_cards(metadata_lookup, *values)
+    """Resolve the benchmark card that best describes the requested benchmark.
+
+    `*values` are the **primary** identifiers of the benchmark we're looking
+    up (its leaf name and key). `aux_values` are auxiliary identifiers used
+    to cast a wider net when matching (e.g. the parent suite name, family
+    key, dataset_name on a per-record source) — they help us *find*
+    candidates but on their own they don't make a candidate the right answer.
+    `parent_values` carry the same role as before: they describe the
+    enclosing parent and are used to pick the most compatible child variant
+    when a card has multiple `appears_in` entries.
+
+    A returned card is the one whose own name matches a primary identifier
+    ("self"). If none qualifies, we fall back to a child card whose
+    `appears_in` matches one of our search keys (this is what allows
+    leaf-benchmark lookups to find variant-specific cards). We deliberately
+    do **not** fall back to a card that matched only via `aux_values`
+    without also being a recorded child of the search — returning such a
+    card would mean handing the requester their *parent's* card (e.g. the
+    helm_classic suite card when they asked for XSUM).
+    """
+
+    # Phase 1: direct lookup by the primary identifiers. metadata_lookup is
+    # keyed by normalized card identifiers (file basename / card name), so a
+    # match here means the card *is* the thing we asked for. This is the most
+    # reliable signal — when it succeeds, return it immediately without
+    # consulting aux_values, which would otherwise drag in parent/family cards.
+    direct = lookup_benchmark_card(metadata_lookup, *values)
+    if direct is not None:
+        return direct
+
+    # Phase 2: cast a wider net via aux_values. The candidates picked up here
+    # were matched via family or dataset identifiers, so they're typically
+    # variant siblings/children. We accept them only when their `appears_in`
+    # explicitly lists one of our search keys — otherwise it's an
+    # ancestor of the leaf and returning it would mislead.
+    all_search_values = (*values, *aux_values)
+    candidates = iter_matching_benchmark_cards(metadata_lookup, *all_search_values)
     if not candidates:
         return None
 
-    search_keys = set(candidate_benchmark_keys(*values))
+    search_keys = set(candidate_benchmark_keys(*all_search_values))
     parent_keys = set(candidate_benchmark_keys(*parent_values))
 
-    # Bucket candidates by relationship to what we searched for. A "child card"
-    # is one whose `appears_in` lists a benchmark we already passed as a search
-    # key — i.e. this card describes a sub-component of one of those, not the
-    # thing itself. A "self/parent card" has no such relationship to our search
-    # keys. When we're resolving a parent benchmark, the search values can
-    # accidentally include child identifiers (from per-record dataset_name
-    # etc.), so without this split a child card can shadow the real parent.
-    self_cards: list[dict] = []
     child_cards: list[tuple[dict, set[str]]] = []
     for card in candidates:
         details = card.get("benchmark_details") if isinstance(card, dict) else {}
         appears_in = as_string_list((details or {}).get("appears_in"))
-        appears_in_keys = (
-            set(candidate_benchmark_keys(*appears_in)) if appears_in else set()
-        )
-        if appears_in_keys and (appears_in_keys & search_keys):
+        if not appears_in:
+            continue  # skip standalone cards picked up only via aux/parent keys
+        appears_in_keys = set(candidate_benchmark_keys(*appears_in))
+        if appears_in_keys & search_keys:
             child_cards.append((card, appears_in_keys))
-        else:
-            self_cards.append(card)
 
-    # Prefer the self/parent card whenever one is available — that's the card
-    # that actually describes what was asked for.
-    if self_cards:
-        return self_cards[0]
-
-    # Otherwise we only have child cards; fall back to the existing
-    # parent-preference logic so leaf-benchmark lookups (where the search keys
-    # name a single child) still pick the variant compatible with the parent.
     if not parent_keys:
-        return child_cards[0][0] if child_cards else candidates[0]
+        return child_cards[0][0] if child_cards else None
 
     compatible = [c for c, appears_in_keys in child_cards if parent_keys & appears_in_keys]
     if compatible:
@@ -3897,9 +3918,11 @@ def main() -> int:
                     metadata_lookup,
                     normalized.get("benchmark_leaf_name"),
                     normalized.get("benchmark_leaf_key"),
-                    evaluation.get("benchmark"),
-                    normalized.get("benchmark_family_key"),
-                    (result.get("source_data") or {}).get("dataset_name"),
+                    aux_values=(
+                        evaluation.get("benchmark"),
+                        normalized.get("benchmark_family_key"),
+                        (result.get("source_data") or {}).get("dataset_name"),
+                    ),
                     parent_values=(
                         normalized.get("benchmark_parent_key"),
                         normalized.get("benchmark_parent_name"),
