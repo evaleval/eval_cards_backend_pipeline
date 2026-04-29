@@ -481,6 +481,8 @@ def pipeline_output(tmp_path_factory) -> Path:
             "CONFIG_NAMES",
             "CONFIG_LIMIT",
             "HF_TOKEN",
+            "CARD_BACKEND_OUTPUT_REPO",
+            "CARD_BACKEND_ALLOW_PRODUCTION",
         )
     }
     try:
@@ -493,8 +495,12 @@ def pipeline_output(tmp_path_factory) -> Path:
         )
         os.environ.pop("CONFIG_NAMES", None)
         os.environ.pop("CONFIG_LIMIT", None)
-        # Avoid any chance of HF upload even if --dry-run logic regresses.
+        # Avoid any chance of HF upload influencing the baseline fixture run.
         os.environ.pop("HF_TOKEN", None)
+        # Clear the staging-target env so the upload-guard tests in the
+        # same file don't leak across fixture invocations.
+        os.environ.pop("CARD_BACKEND_OUTPUT_REPO", None)
+        os.environ.pop("CARD_BACKEND_ALLOW_PRODUCTION", None)
         sys.argv = ["pipeline.py", "--dry-run"]
 
         rc = pipeline_module.main()
