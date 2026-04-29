@@ -247,7 +247,11 @@ def build_aggregate_eval_summaries(
     rows: list[dict] = []
     for suite_key, eval_ids in suite_groups.items():
         # Spec quirk: skip suites with fewer than two distinct sub-evals.
-        unique_ids = list(dict.fromkeys(eval_ids))
+        # Sort by `eval_summary_id` so the "first" sub-eval (which drives
+        # the aggregate's category, evaluation_name, metric_config) is
+        # deterministic across re-runs and matches the verifier dump's
+        # alphabetical filesystem iteration over evals/*.json.
+        unique_ids = sorted(dict.fromkeys(eval_ids))
         if len(unique_ids) < 2:
             continue
         summaries = [summary_by_id[i] for i in unique_ids]
@@ -259,7 +263,14 @@ def build_aggregate_eval_summaries(
 
 
 def build_matrix_eval_summaries(eval_summaries: list[dict]) -> list[dict]:
-    """Materialize ``matrix__<suite_key>`` rows per spec reshape/06."""
+    """Materialize ``matrix__<suite_key>`` rows per spec reshape/06.
+
+    Inputs are sorted by `eval_summary_id` so the matrix builder sees a
+    stable iteration order regardless of pipeline in-memory ordering.
+    `build_single_metric_suite_matrix_summary` does its own
+    locale-compare sort on `benchmark_leaf_name` afterwards, but the
+    pre-sort still matters for the metric_config / benchmark_card
+    selection (taken from the first element)."""
     suite_groups: dict[str, list[dict]] = {}
     for eval_summary in eval_summaries:
         if eval_summary.get("is_summary_score"):
@@ -274,7 +285,12 @@ def build_matrix_eval_summaries(eval_summaries: list[dict]) -> list[dict]:
 
     rows: list[dict] = []
     for suite_key, details in suite_groups.items():
-        result = parity_adapters.build_single_metric_suite_matrix_summary(details, suite_key)
+        sorted_details = sorted(
+            details, key=lambda d: d.get("eval_summary_id") or ""
+        )
+        result = parity_adapters.build_single_metric_suite_matrix_summary(
+            sorted_details, suite_key
+        )
         if result is None:
             continue
         rows.append(result)

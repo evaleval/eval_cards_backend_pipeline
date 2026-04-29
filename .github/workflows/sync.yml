@@ -36,6 +36,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           CONFIG_BATCH_SIZE: "3"
           EEE_LOCAL_DATASET_DIR: .cache/eee_datastore
+          CARD_BACKEND_ALLOW_PRODUCTION: "1"
         run: python -m scripts.pipeline
 
       - name: Upload manifest as artifact
