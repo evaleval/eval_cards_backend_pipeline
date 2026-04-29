@@ -483,6 +483,7 @@ def pipeline_output(tmp_path_factory) -> Path:
             "HF_TOKEN",
             "CARD_BACKEND_OUTPUT_REPO",
             "CARD_BACKEND_ALLOW_PRODUCTION",
+            "GITHUB_ACTIONS",
         )
     }
     try:
@@ -501,6 +502,7 @@ def pipeline_output(tmp_path_factory) -> Path:
         # same file don't leak across fixture invocations.
         os.environ.pop("CARD_BACKEND_OUTPUT_REPO", None)
         os.environ.pop("CARD_BACKEND_ALLOW_PRODUCTION", None)
+        os.environ.pop("GITHUB_ACTIONS", None)
         sys.argv = ["pipeline.py", "--dry-run"]
 
         rc = pipeline_module.main()

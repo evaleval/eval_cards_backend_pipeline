@@ -22,10 +22,12 @@ from scripts.helpers.benchmark_identity import (
 
 PRODUCTION_DATASET_REPO = "evaleval/card_backend"
 # `CARD_BACKEND_OUTPUT_REPO` lets local/CI runs target a different upload
-# destination during the parity migration. `CARD_BACKEND_ALLOW_PRODUCTION=1`
-# is the explicit opt-in required to write to `evaleval/card_backend`; without
-# it, accidental publishes against production fail loudly. Migration scripts
-# must NEVER set the production flag.
+# destination. The `resolve_upload_target` guard refuses unintended writes
+# to `evaleval/card_backend` from local shells (where `HF_TOKEN` is often
+# auto-loaded from a profile); `CARD_BACKEND_ALLOW_PRODUCTION=1` is the
+# explicit opt-in for an intentional manual local prod push. CI runs
+# (`GITHUB_ACTIONS=true`) deploy to production by default — the gate
+# there is owner PR review at merge time, not an env flag.
 #
 # Both `DATASET_REPO` and `DATASET_RESOLVE_BASE` are resolved at *import*
 # time. Tests that need to flip the env after import should call
@@ -3663,22 +3665,25 @@ Config version: `{manifest.get("config_version", 1)}`
 
 
 def resolve_upload_target() -> str:
-    """Pick the upload target, refusing production unless explicitly allowed.
+    """Pick the upload target, refusing accidental production writes from local shells.
 
-    During the backend parity migration, `CARD_BACKEND_OUTPUT_REPO` (set per
-    run, e.g. `j-chim/temp_evalcard_backend`) routes writes away from the
-    production dataset. Pointing at `evaleval/card_backend` requires
-    `CARD_BACKEND_ALLOW_PRODUCTION=1` so misconfigured local runs cannot
-    overwrite published artifacts.
+    Local runs must set `CARD_BACKEND_OUTPUT_REPO` to a non-production
+    dataset, or set `CARD_BACKEND_ALLOW_PRODUCTION=1` for an intentional
+    manual prod push. CI runs (where `GITHUB_ACTIONS=true` is set
+    automatically by the GitHub-hosted runner) deploy to production by
+    default — owner PR review at merge time is the gate, not the env flag.
     """
     target = (os.environ.get("CARD_BACKEND_OUTPUT_REPO") or "").strip()
-    allow_production = os.environ.get("CARD_BACKEND_ALLOW_PRODUCTION") == "1"
+    allow_production = (
+        os.environ.get("CARD_BACKEND_ALLOW_PRODUCTION") == "1"
+        or os.environ.get("GITHUB_ACTIONS") == "true"
+    )
     if not target:
         if not allow_production:
             raise RuntimeError(
-                "CARD_BACKEND_OUTPUT_REPO is required during the parity migration. "
+                "CARD_BACKEND_OUTPUT_REPO is required for local uploads. "
                 "Set it to a non-production dataset (e.g. `j-chim/temp_evalcard_backend`); "
-                "production uploads also need CARD_BACKEND_ALLOW_PRODUCTION=1."
+                "intentional local prod uploads also need CARD_BACKEND_ALLOW_PRODUCTION=1."
             )
         return PRODUCTION_DATASET_REPO
     if target == PRODUCTION_DATASET_REPO and not allow_production:
@@ -3928,11 +3933,67 @@ def main() -> int:
             }
         )
         evaluation["model_info"] = model_info
+        # Direct per-evaluation card lookup using the EEE benchmark name —
+        # behavior unchanged for any benchmark whose name matches a card
+        # in `metadata_lookup`.
         evaluation["benchmark_card"] = lookup_benchmark_card(
             metadata_lookup,
             evaluation.get("benchmark"),
             canonical_benchmark_family_key(evaluation.get("benchmark")),
         )
+
+        # Fallback ONLY when the direct lookup misses: try the shared
+        # `dataset_name` from `evaluation_results[*].source_data`. This
+        # covers benchmarks whose ABC card name diverges from the EEE
+        # benchmark name (e.g. EEE `fibble_arena` ↔ ABC
+        # `fibble_arena_daily`) — without it, `benchmark_card` stays
+        # None, `top_level_benchmark_owns_slices` returns False, and
+        # `classify_evaluation_result` promotes each sub-variant to its
+        # own leaf instead of treating it as a slice of the family.
+        #
+        # Two guards keep the fallback from misfiring:
+        #   1. **Shared across all results.** Aggregator records (e.g.
+        #      `llm-stats` wrapping 8-12+ scraped benchmarks per record)
+        #      scatter their per-result `dataset_name`s; we only use one
+        #      when every result agrees, leaving `shared_dataset_name`
+        #      None for aggregators.
+        #   2. **Compact-key relatedness.** Even a shared dataset_name
+        #      must overlap the EEE benchmark by compact-key substring
+        #      (`fibble_arena` ⊂ `fibble_arena_daily` ✓). A single-record
+        #      aggregator (e.g. an llm-stats record covering only
+        #      `ARC-AGI v2`) has `llmstats` vs `arcagiv2` — unrelated, so
+        #      we don't pull in an unrelated child card and accidentally
+        #      flip every result onto the `owns_slices` path.
+        if evaluation["benchmark_card"] is None:
+            unique_dataset_names = {
+                (r.get("source_data") or {}).get("dataset_name")
+                for r in (evaluation.get("evaluation_results") or [])
+                if isinstance(r, dict) and isinstance(r.get("source_data"), dict)
+            }
+            unique_dataset_names.discard(None)
+            unique_dataset_names.discard("")
+            shared_dataset_name = (
+                next(iter(unique_dataset_names))
+                if len(unique_dataset_names) == 1
+                else None
+            )
+            eee_compact = compact_benchmark_key(evaluation.get("benchmark"))
+            ds_compact = (
+                compact_benchmark_key(shared_dataset_name)
+                if shared_dataset_name
+                else ""
+            )
+            if (
+                eee_compact
+                and ds_compact
+                and (eee_compact in ds_compact or ds_compact in eee_compact)
+            ):
+                evaluation["benchmark_card"] = lookup_benchmark_card(
+                    metadata_lookup,
+                    evaluation.get("benchmark"),
+                    canonical_benchmark_family_key(evaluation.get("benchmark")),
+                    shared_dataset_name,
+                )
         enriched_results = []
         for result in evaluation.get("evaluation_results") or []:
             enriched = dict(result)

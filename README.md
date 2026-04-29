@@ -1,6 +1,6 @@
 # eval-cards-backend-pipeline
 
-Python pipeline for materializing static evaluation artifacts from `evaleval/EEE_datastore` and publishing them to the Hugging Face dataset `evaleval/card_backend` (or a staging target during the parity migration — see "Upload safety guard" below).
+Python pipeline for materializing static evaluation artifacts from `evaleval/EEE_datastore` and publishing them to the Hugging Face dataset `evaleval/card_backend` (or a staging target — see "Upload safety guard" below).
 
 ## What it does
 
@@ -47,21 +47,23 @@ Generate the metric-looking string registry from the local EEE snapshot:
 uv run --with huggingface_hub --no-project python -m scripts.build_metric_looking_registry
 ```
 
-Upload to Hugging Face (during the parity migration — staging target):
+Upload to Hugging Face:
 
 ```bash
-HF_TOKEN=hf_xxx CARD_BACKEND_OUTPUT_REPO=j-chim/temp_evalcard_backend \
+HF_TOKEN=hf_xxx CARD_BACKEND_OUTPUT_REPO=DATASET_NAME \
   uv run --with huggingface_hub --with datasets --no-project python -m scripts.pipeline
 ```
 
 ## Upload safety guard
 
-`pipeline.resolve_upload_target()` requires an explicit destination:
+`pipeline.resolve_upload_target()` defends against accidental production writes from local shells where `HF_TOKEN` is auto-loaded from a profile (e.g. `~/.zshrc`). It does **not** gate CI deploys — owner PR review is the gate there, and `main` is the production branch.
 
-- `CARD_BACKEND_OUTPUT_REPO`: target dataset (`j-chim/temp_evalcard_backend` during the migration).
-- `CARD_BACKEND_ALLOW_PRODUCTION=1`: extra opt-in needed to publish to `evaleval/card_backend`.
-
-Without either, the upload step raises rather than silently shipping. Migration scripts must NEVER set `CARD_BACKEND_ALLOW_PRODUCTION`.
+| Context | Behavior |
+|---|---|
+| **CI** (`GITHUB_ACTIONS=true`) | Uploads to `evaleval/card_backend` by default. Set `CARD_BACKEND_OUTPUT_REPO` to a non-prod dataset to override. |
+| **Local**, `CARD_BACKEND_OUTPUT_REPO` unset | Raises. Set the variable to a staging dataset, or set `CARD_BACKEND_ALLOW_PRODUCTION=1` for an intentional manual prod push. |
+| **Local**, `CARD_BACKEND_OUTPUT_REPO=evaleval/card_backend` | Raises unless `CARD_BACKEND_ALLOW_PRODUCTION=1` is also set. |
+| **Local**, any other `CARD_BACKEND_OUTPUT_REPO` | Uploads to that target. |
 
 ## Cross-repo parity verification
 
@@ -78,8 +80,8 @@ Exits non-zero on any unexplained divergence between the parity parquet payloads
 ## Environment variables
 
 - `HF_TOKEN`: required for non-dry-run uploads.
-- `CARD_BACKEND_OUTPUT_REPO`: required for non-dry-run uploads. Pinning the staging target keeps the pipeline from publishing to production by default.
-- `CARD_BACKEND_ALLOW_PRODUCTION=1`: extra opt-in for `evaleval/card_backend`.
+- `CARD_BACKEND_OUTPUT_REPO`: optional override for the upload target. Required for local non-dry-run uploads (the safety guard raises otherwise); CI runs default to `evaleval/card_backend`.
+- `CARD_BACKEND_ALLOW_PRODUCTION=1`: opt-in for an intentional manual local prod push. Not needed in CI.
 - `CONFIG_BATCH_SIZE`: optional. Controls how many EEE configs are loaded concurrently. Default: `4`.
 - `EEE_LOCAL_DATASET_DIR`: optional local snapshot directory (used in CI to avoid HF rate limits).
 - `BENCHMARK_METADATA_LOCAL_DIR`: optional local cache directory for `evaleval/auto-benchmarkcards`.
