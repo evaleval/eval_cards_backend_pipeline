@@ -19,9 +19,46 @@ These tests catch integration bugs that pure-function unit tests in
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _read(path: Path) -> dict | list:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _parquet_table(path: Path, columns: list[str] | None = None):
+    """Helper for reading parquet rows in tests. Uses pyarrow (transitive
+    dep of `datasets`) instead of spinning up a SQL engine."""
+    import pyarrow.parquet as pq
+
+    return pq.read_table(str(path), columns=columns)
+
+
+def _parquet_columns(path: Path) -> list[str]:
+    """Return the column names of a parquet file."""
+    import pyarrow.parquet as pq
+
+    return pq.read_schema(str(path)).names
+
+
+def _parquet_count(path: Path) -> int:
+    """Return the row count of a parquet file (cheap — uses metadata only)."""
+    import pyarrow.parquet as pq
+
+    return pq.read_metadata(str(path)).num_rows
+
+
+def _parquet_payloads(path: Path, key_col: str = "model_route_id") -> dict[str, dict]:
+    """Read `(key_col, payload_json)` rows and return `{key: parsed_payload}`."""
+    table = _parquet_table(path, columns=[key_col, "payload_json"])
+    return {
+        key: json.loads(payload)
+        for key, payload in zip(
+            table.column(key_col).to_pylist(),
+            table.column("payload_json").to_pylist(),
+        )
+        if key is not None
+    }
 
 
 def _walk_metric_summaries(eval_summary: dict) -> list[dict]:
@@ -73,6 +110,11 @@ def test_pipeline_emits_one_eval_json_per_fixture_benchmark(pipeline_output):
 def test_pipeline_emits_one_model_json_per_fixture_model(pipeline_output):
     model_files = {p.stem for p in (pipeline_output / "models").glob("*.json")}
     assert {"openai__gpt-5", "anthropic__claude-opus-4-5"} <= model_files
+
+
+# The legacy `experimental/parquet` path was removed in favor of the
+# parity layer at `output/duckdb/v1/`. Coverage for the parquet contract
+# now lives in the `test_parity_*` tests below.
 
 
 # ---------------------------------------------------------------------------
@@ -1111,3 +1153,206 @@ def test_reproducibility_summary_bench_agentic_flags_one_row(pipeline_output):
     eval_limits, so has_reproducibility_gap_count must be 1."""
     summary = _read(pipeline_output / "evals" / "bench_agentic.json")
     assert summary["reproducibility_summary"]["has_reproducibility_gap_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Parity layer — output/duckdb/v1/*.parquet
+# ---------------------------------------------------------------------------
+
+
+PARITY_DUCKDB_TABLES = (
+    "model_cards.parquet",
+    "model_cards_lite.parquet",
+    "eval_list.parquet",
+    "eval_list_lite.parquet",
+    "eval_summaries.parquet",
+    "aggregate_eval_summaries.parquet",
+    "matrix_eval_summaries.parquet",
+    "model_summaries.parquet",
+    "developers.parquet",
+    "developer_summaries.parquet",
+)
+
+
+def test_parity_artifacts_emitted_by_default(pipeline_output):
+    """Every parity parquet table is materialized on every dry run."""
+    pytest.importorskip("pyarrow.parquet")
+    parity_dir = pipeline_output / "duckdb" / "v1"
+    assert parity_dir.is_dir(), "duckdb/v1 not emitted"
+    for name in PARITY_DUCKDB_TABLES:
+        path = parity_dir / name
+        assert path.exists(), f"missing parity table: {name}"
+        # Confirm the file is a valid parquet (metadata-read is enough).
+        assert _parquet_count(path) >= 0
+
+
+def test_parity_model_cards_carry_canonical_columns(pipeline_output):
+    """Payload follows the TS `EvaluationCardData` shape — keys like `id`,
+    `route_id`, `model_name`, `category_stats`, plus the hardcoded TS
+    defaults (`evaluator_count`, `source_types: ["documentation"]` etc.)."""
+    pytest.importorskip("pyarrow.parquet")
+    payload_by_route = _parquet_payloads(
+        pipeline_output / "duckdb" / "v1" / "model_cards.parquet"
+    )
+    assert payload_by_route, "no model_cards rows"
+    openai_payload = payload_by_route.get("openai__gpt-5")
+    assert openai_payload is not None
+    # TS adapter shape — `developer` is normalized via normalizeDeveloperName.
+    assert openai_payload["developer"] == "OpenAI"
+    assert openai_payload["model_name"] == "GPT 5"
+    assert openai_payload["id"] == "openai/gpt-5"
+    assert openai_payload["route_id"] == "openai__gpt-5"
+    assert isinstance(openai_payload["category_stats"], dict)
+    # Hardcoded TS defaults that must be present on every card.
+    assert openai_payload["source_types"] == ["documentation"]
+    assert openai_payload["reproducibility_status"] == "partial"
+    assert openai_payload["evaluator_count"] == 0
+
+
+def test_parity_eval_list_carries_display_name_and_license(pipeline_output):
+    """TS `BenchmarkEvalListItem` uses `composite_benchmark_name` for the
+    rendered title; license_short and dataset_url are parity sidecars."""
+    pytest.importorskip("pyarrow.parquet")
+    payloads = list(
+        _parquet_payloads(
+            pipeline_output / "duckdb" / "v1" / "eval_list.parquet",
+            key_col="eval_summary_id",
+        ).values()
+    )
+    assert payloads
+    for payload in payloads:
+        assert "composite_benchmark_name" in payload
+        assert "evaluation_id" in payload
+        # Hardcoded TS defaults from `hfEvalEntryToListItem`.
+        assert payload["evaluator_names"] == []
+        assert payload["source_types"] == []
+        # The fixture cards have no `data_licensing` field, so license_short
+        # must collapse to "" via the falsy short-circuit.
+        assert payload["license_short"] == ""
+
+
+def test_parity_model_summaries_carry_ts_shape(pipeline_output):
+    """`createModelFamilySummary` shape — variants[] sorted, raw_model_ids[]
+    sorted distinct, evaluations_by_category bucketed, model_family_id +
+    model_route_id + model_family_name from `getCanonicalModelIdentity`."""
+    pytest.importorskip("pyarrow.parquet")
+    payloads = list(
+        _parquet_payloads(
+            pipeline_output / "duckdb" / "v1" / "model_summaries.parquet"
+        ).values()
+    )
+    assert payloads
+    for payload in payloads:
+        # Every model_summary must carry the family identity triple.
+        assert payload.get("model_family_id")
+        assert payload.get("model_route_id")
+        assert payload.get("model_family_name")
+        # `evaluations_by_category` is the TS surface (NOT category_stats —
+        # that's derived per-card on a different surface).
+        assert isinstance(payload.get("evaluations_by_category"), dict)
+        assert isinstance(payload.get("variants"), list)
+        # raw_model_ids must be sorted distinct (TS sortBy localeCompare).
+        raw_ids = payload.get("raw_model_ids") or []
+        assert raw_ids == sorted(set(raw_ids), key=str)
+
+
+def test_parity_eval_summaries_carry_ts_shape(pipeline_output):
+    """`hfEvalDetailToSummary` shape — `evaluation_id`, `composite_*`,
+    `metric_config` (with min_score=0/max_score=1 derived), hardcoded
+    `evaluator_names: []` / `source_types: []` per spec 14."""
+    pytest.importorskip("pyarrow.parquet")
+    payloads = list(
+        _parquet_payloads(
+            pipeline_output / "duckdb" / "v1" / "eval_summaries.parquet",
+            key_col="eval_summary_id",
+        ).values()
+    )
+    assert payloads
+    for payload in payloads:
+        assert payload.get("evaluation_id")
+        assert "composite_benchmark_key" in payload
+        assert "composite_benchmark_name" in payload
+        assert "metric_config" in payload
+        assert payload["evaluator_names"] == []
+        assert payload["source_types"] == []
+        # Category is the regex-derived bucket (per `inferCategoryFromBenchmark`).
+        assert payload["category"] in {
+            "Safety",
+            "Agentic",
+            "Reasoning",
+            "Knowledge",
+            "General",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Dataset target reload + import-time bindings
+# ---------------------------------------------------------------------------
+
+
+def test_reload_dataset_target_picks_up_env(monkeypatch):
+    """`reload_dataset_target()` must re-bind module-level constants so
+    URL emitters and validators see the current env value."""
+    from scripts import pipeline as pipeline_module
+
+    saved_repo = pipeline_module.DATASET_REPO
+    saved_base = pipeline_module.DATASET_RESOLVE_BASE
+    monkeypatch.setenv("CARD_BACKEND_OUTPUT_REPO", "j-chim/temp_evalcard_backend")
+    try:
+        pipeline_module.reload_dataset_target()
+        assert pipeline_module.DATASET_REPO == "j-chim/temp_evalcard_backend"
+        assert (
+            pipeline_module.DATASET_RESOLVE_BASE
+            == "https://huggingface.co/datasets/j-chim/temp_evalcard_backend/resolve/main"
+        )
+    finally:
+        monkeypatch.delenv("CARD_BACKEND_OUTPUT_REPO", raising=False)
+        pipeline_module.reload_dataset_target()
+        assert pipeline_module.DATASET_REPO == saved_repo
+        assert pipeline_module.DATASET_RESOLVE_BASE == saved_base
+
+
+# ---------------------------------------------------------------------------
+# Upload safety guard
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_upload_target_accepts_staging_repo(monkeypatch):
+    from scripts import pipeline as pipeline_module
+
+    monkeypatch.setenv("CARD_BACKEND_OUTPUT_REPO", "j-chim/temp_evalcard_backend")
+    monkeypatch.delenv("CARD_BACKEND_ALLOW_PRODUCTION", raising=False)
+    assert pipeline_module.resolve_upload_target() == "j-chim/temp_evalcard_backend"
+
+
+def test_resolve_upload_target_rejects_production_without_opt_in(monkeypatch):
+    from scripts import pipeline as pipeline_module
+
+    monkeypatch.setenv("CARD_BACKEND_OUTPUT_REPO", "evaleval/card_backend")
+    monkeypatch.delenv("CARD_BACKEND_ALLOW_PRODUCTION", raising=False)
+    with pytest.raises(RuntimeError, match="production"):
+        pipeline_module.resolve_upload_target()
+
+
+def test_resolve_upload_target_requires_explicit_target(monkeypatch):
+    from scripts import pipeline as pipeline_module
+
+    monkeypatch.delenv("CARD_BACKEND_OUTPUT_REPO", raising=False)
+    monkeypatch.delenv("CARD_BACKEND_ALLOW_PRODUCTION", raising=False)
+    with pytest.raises(RuntimeError, match="CARD_BACKEND_OUTPUT_REPO"):
+        pipeline_module.resolve_upload_target()
+
+
+def test_resolve_upload_target_allows_production_with_opt_in(monkeypatch):
+    from scripts import pipeline as pipeline_module
+
+    monkeypatch.setenv("CARD_BACKEND_OUTPUT_REPO", "evaleval/card_backend")
+    monkeypatch.setenv("CARD_BACKEND_ALLOW_PRODUCTION", "1")
+    assert pipeline_module.resolve_upload_target() == "evaleval/card_backend"
+
+
+def test_dry_run_does_not_invoke_upload_target_resolution(pipeline_output):
+    """Smoke check: the fixture pipeline ran successfully with no production
+    target set, confirming dry-run never calls `resolve_upload_target` and
+    so the guard never trips on legitimate dev runs."""
+    assert (pipeline_output / "manifest.json").exists()

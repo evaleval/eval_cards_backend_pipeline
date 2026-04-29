@@ -20,11 +20,41 @@ from scripts.helpers.benchmark_identity import (
 )
 
 
-DATASET_REPO = "evaleval/card_backend"
+PRODUCTION_DATASET_REPO = "evaleval/card_backend"
+# `CARD_BACKEND_OUTPUT_REPO` lets local/CI runs target a different upload
+# destination during the parity migration. `CARD_BACKEND_ALLOW_PRODUCTION=1`
+# is the explicit opt-in required to write to `evaleval/card_backend`; without
+# it, accidental publishes against production fail loudly. Migration scripts
+# must NEVER set the production flag.
+#
+# Both `DATASET_REPO` and `DATASET_RESOLVE_BASE` are resolved at *import*
+# time. Tests that need to flip the env after import should call
+# `reload_dataset_target()` to re-bind the module-level constants.
 EEE_DATASET_REPO = "evaleval/EEE_datastore"
 BENCHMARK_METADATA_DATASET_REPO = "evaleval/auto-benchmarkcards"
 EEE_DATASET_RAW_BASE = f"https://huggingface.co/datasets/{EEE_DATASET_REPO}/raw/main"
+
+
+def _resolve_dataset_repo() -> str:
+    return os.environ.get("CARD_BACKEND_OUTPUT_REPO") or PRODUCTION_DATASET_REPO
+
+
+DATASET_REPO = _resolve_dataset_repo()
 DATASET_RESOLVE_BASE = f"https://huggingface.co/datasets/{DATASET_REPO}/resolve/main"
+
+
+def reload_dataset_target() -> None:
+    """Re-bind module-level dataset constants from the current env.
+
+    Used by tests + CLI flags that change ``CARD_BACKEND_OUTPUT_REPO``
+    after import. Without this, validators / README generators continue
+    to reference the import-time value and silently produce stale URLs.
+    """
+    global DATASET_REPO, DATASET_RESOLVE_BASE
+    DATASET_REPO = _resolve_dataset_repo()
+    DATASET_RESOLVE_BASE = (
+        f"https://huggingface.co/datasets/{DATASET_REPO}/resolve/main"
+    )
 CONFIG_VERSION = 1
 OUTPUT_DIR = Path("output")
 DEFAULT_LOCAL_DATASET_DIR = ".cache/eee_datastore"
@@ -171,10 +201,20 @@ def slugify_model_segment(value: Any) -> str:
     return ensure_safe_slug_segment(cleaned)
 
 
+_V_VERSION_TOKEN_RE = re.compile(r"^v\d", re.IGNORECASE)
+
+
 def humanize_slug(value: Any) -> str:
     parts = [p for p in re.split(r"[-_/]+", as_string(value)) if p]
     out = []
     for part in parts:
+        # v/V version tokens (e.g. `v3`, `v0.1`) — keep `v` lowercase per
+        # spec 01 Group B. This rule predates the digit-uppercase rule
+        # below; without it, model names like `Deepseek v3` regress to
+        # `Deepseek V3` (1,253 cards in the production corpus).
+        if _V_VERSION_TOKEN_RE.match(part):
+            out.append("v" + part[1:])
+            continue
         if len(part) <= 3 and any(c.isdigit() for c in part):
             out.append(part.upper())
         else:
@@ -1792,10 +1832,93 @@ _DOMAIN_CATEGORY_MAP = {
 }
 
 
+# Lowercase tokens that map to a backend-key category. Mirrors the TS
+# `inferCategoryFromBenchmark` regex (`lib/benchmark-schema.ts:182`) so a
+# benchmark with no card domains still gets the same canonical bucket the
+# frontend would have computed at request time.
+_FRONTEND_REGEX_CATEGORY_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "safety",
+        (
+            "safety",
+            "harmful",
+            "toxic",
+            "truthful",
+            "unsafe",
+            "civilcomments",
+            "civil_comments",
+            "jailbreak",
+            "red-team",
+            "adversarial",
+        ),
+    ),
+    (
+        "agentic",
+        (
+            "agent",
+            "swe-bench",
+            "swe_bench",
+            "terminal-bench",
+            "tau-bench",
+            "tau_bench",
+            "appworld",
+            "browsecomp",
+        ),
+    ),
+    (
+        "reasoning",
+        (
+            "reasoning",
+            "bbh",
+            "math",
+            "gsm",
+            "gpqa",
+            "musr",
+            "code",
+            "humaneval",
+            "livecodebench",
+        ),
+    ),
+    (
+        "knowledge",
+        (
+            "mmlu",
+            "knowledge",
+            "trivia",
+            "medqa",
+            "legalbench",
+            "theory_of_mind",
+        ),
+    ),
+)
+
+
+def _frontend_regex_category(benchmark_name: str) -> str | None:
+    if not benchmark_name:
+        return None
+    text = str(benchmark_name).lower()
+    for category, tokens in _FRONTEND_REGEX_CATEGORY_TOKENS:
+        if any(token in text for token in tokens):
+            return category
+    return None
+
+
 def infer_category_from_benchmark(
     benchmark_name: str, benchmark_card: dict | None = None
 ) -> str:
-    """Derive a high-level category, preferring benchmark card domains over regex."""
+    """Derive a high-level category, preferring benchmark card domains over regex.
+
+    Layered fallback (most-specific → most-general):
+      1. ABC card `benchmark_details.domains` (exact + substring match)
+      2. Pipeline's own keyword regexes (helm, mmlu, etc.)
+      3. The frontend's `inferCategoryFromBenchmark` regex tokens —
+         catches Safety / Agentic / Reasoning / Knowledge cases the
+         pipeline's narrower regex would have left as `"other"`.
+
+    Without layer 3, the corpus emitted `category: "other"` on ~84% of
+    evals (per migration audit 2026-04-27); downstream JSON consumers
+    saw bogus catch-all buckets.
+    """
     # Try card domains first
     if benchmark_card:
         domains = (benchmark_card.get("benchmark_details") or {}).get("domains") or []
@@ -1824,6 +1947,10 @@ def infer_category_from_benchmark(
         return "instruction_following"
     if re.search(r"(hfopenllm|helm)", key):
         return "general"
+
+    frontend = _frontend_regex_category(benchmark_name)
+    if frontend is not None:
+        return frontend
     return "other"
 
 
@@ -2611,11 +2738,15 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
 
 
 def delete_stale_remote_files(
-    api: HfApi, token: str, output_dir: Path = OUTPUT_DIR
+    api: HfApi,
+    token: str,
+    output_dir: Path = OUTPUT_DIR,
+    repo_id: str | None = None,
 ) -> None:
+    target = repo_id or DATASET_REPO
     local_files = set(iter_output_relative_files(output_dir))
     remote_files = set(
-        api.list_repo_files(DATASET_REPO, repo_type="dataset", token=token)
+        api.list_repo_files(target, repo_type="dataset", token=token)
     )
     stale_files = sorted(remote_files - local_files)
     if not stale_files:
@@ -2625,7 +2756,7 @@ def delete_stale_remote_files(
     for index in range(0, len(stale_files), chunk_size):
         chunk = stale_files[index : index + chunk_size]
         api.delete_files(
-            repo_id=DATASET_REPO,
+            repo_id=target,
             repo_type="dataset",
             token=token,
             delete_patterns=chunk,
@@ -3491,23 +3622,51 @@ Config version: `{manifest.get("config_version", 1)}`
     return readme
 
 
+def resolve_upload_target() -> str:
+    """Pick the upload target, refusing production unless explicitly allowed.
+
+    During the backend parity migration, `CARD_BACKEND_OUTPUT_REPO` (set per
+    run, e.g. `j-chim/temp_evalcard_backend`) routes writes away from the
+    production dataset. Pointing at `evaleval/card_backend` requires
+    `CARD_BACKEND_ALLOW_PRODUCTION=1` so misconfigured local runs cannot
+    overwrite published artifacts.
+    """
+    target = (os.environ.get("CARD_BACKEND_OUTPUT_REPO") or "").strip()
+    allow_production = os.environ.get("CARD_BACKEND_ALLOW_PRODUCTION") == "1"
+    if not target:
+        if not allow_production:
+            raise RuntimeError(
+                "CARD_BACKEND_OUTPUT_REPO is required during the parity migration. "
+                "Set it to a non-production dataset (e.g. `j-chim/temp_evalcard_backend`); "
+                "production uploads also need CARD_BACKEND_ALLOW_PRODUCTION=1."
+            )
+        return PRODUCTION_DATASET_REPO
+    if target == PRODUCTION_DATASET_REPO and not allow_production:
+        raise RuntimeError(
+            f"Refusing to upload to production target {PRODUCTION_DATASET_REPO}. "
+            "Set CARD_BACKEND_ALLOW_PRODUCTION=1 to override."
+        )
+    return target
+
+
 def upload_output() -> None:
     token = os.environ.get("HF_TOKEN")
     if not token:
         raise RuntimeError("HF_TOKEN is required unless --dry-run is used")
 
+    upload_target = resolve_upload_target()
     api = HfApi(token=token)
     try:
         api.create_repo(
-            repo_id=DATASET_REPO, repo_type="dataset", private=False, exist_ok=True
+            repo_id=upload_target, repo_type="dataset", private=False, exist_ok=True
         )
     except Exception as error:
         print(f"create_repo warning: {error}", file=sys.stderr)
 
-    delete_stale_remote_files(api, token, OUTPUT_DIR)
+    delete_stale_remote_files(api, token, OUTPUT_DIR, repo_id=upload_target)
 
     api.upload_large_folder(
-        repo_id=DATASET_REPO,
+        repo_id=upload_target,
         repo_type="dataset",
         folder_path=str(OUTPUT_DIR),
     )
@@ -3548,6 +3707,12 @@ def main() -> int:
         raise RuntimeError(
             "Failed to cache benchmark metadata from evaleval/auto-benchmarkcards"
         )
+
+    # Pick up any per-run override of `CARD_BACKEND_OUTPUT_REPO` BEFORE
+    # any URL-emitting code runs. Without this re-bind, the README and
+    # the URL prefix guard in `validate_output_contract` would silently
+    # use the import-time value.
+    reload_dataset_target()
 
     started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     random.seed(42)
@@ -4897,6 +5062,62 @@ def main() -> int:
             }
         )
 
+    # Frontend (`general-eval-card/lib/backend-artifacts.ts:67-79`) declares
+    # `EvalHierarchy.stats` as required and `app/evals/page.tsx` reads
+    # `hierarchy.stats.family_count` without a guard. The canonical semantics
+    # come from `scripts/build_eval_hierarchy_report.py:647-654`. The runtime
+    # hierarchy here is a 2-level (family → leaf) view built from
+    # `eval_summaries`; we approximate the report-script counters from the
+    # current corpus rather than from the report's tree:
+    #   - `family_count`         : top-level families emitted
+    #   - `composite_count`      : families with >1 leaf (multi-leaf suites)
+    #   - `standalone_benchmark_count`: families with exactly one leaf
+    #   - `single_benchmark_count`: total leaves under composite (multi-leaf)
+    #     families (i.e. the per-benchmark members of those suites)
+    #   - `slice_count`          : distinct `slice_key` values across all
+    #     metrics in the corpus (root metrics + subtask metrics)
+    #   - `metric_count`         : distinct `metric_key` values across the
+    #     same metric set
+    #   - `metric_rows_scanned`  : total `model_results` rows across all
+    #     metrics (each row is one model×metric submission)
+    runtime_family_count = len(runtime_hierarchy["families"])
+    runtime_composite_count = sum(
+        1 for fam in runtime_hierarchy["families"] if len(fam.get("leaves") or []) > 1
+    )
+    runtime_standalone_benchmark_count = sum(
+        1 for fam in runtime_hierarchy["families"] if len(fam.get("leaves") or []) == 1
+    )
+    runtime_single_benchmark_count = sum(
+        len(fam.get("leaves") or [])
+        for fam in runtime_hierarchy["families"]
+        if len(fam.get("leaves") or []) > 1
+    )
+    runtime_slice_keys: set[str] = set()
+    runtime_metric_keys: set[str] = set()
+    runtime_metric_rows_scanned = 0
+    for eval_summary in eval_summaries:
+        metrics_pool = list(eval_summary.get("metrics") or [])
+        for subtask in eval_summary.get("subtasks") or []:
+            metrics_pool.extend(subtask.get("metrics") or [])
+        for metric in metrics_pool:
+            slice_key_value = as_string(metric.get("slice_key"))
+            if slice_key_value:
+                runtime_slice_keys.add(slice_key_value)
+            metric_key_value = as_string(metric.get("metric_key"))
+            if metric_key_value:
+                runtime_metric_keys.add(metric_key_value)
+            runtime_metric_rows_scanned += len(metric.get("model_results") or [])
+
+    runtime_hierarchy["stats"] = {
+        "family_count": runtime_family_count,
+        "composite_count": runtime_composite_count,
+        "standalone_benchmark_count": runtime_standalone_benchmark_count,
+        "single_benchmark_count": runtime_single_benchmark_count,
+        "slice_count": len(runtime_slice_keys),
+        "metric_count": len(runtime_metric_keys),
+        "metric_rows_scanned": runtime_metric_rows_scanned,
+    }
+
     write_json(OUTPUT_DIR / "eval-hierarchy.json", runtime_hierarchy)
 
     hierarchy_path = OUTPUT_DIR / "eval-hierarchy.json"
@@ -4936,10 +5157,31 @@ def main() -> int:
             {"developer": summary["developer"], "models": summary["models"]},
         )
 
+    validate_output_contract(OUTPUT_DIR)
+
+    # Parity-layer parquet artifacts under output/duckdb/v1/. Adds a
+    # frontend-ready read surface alongside the existing JSON files;
+    # run on every pipeline invocation so consumers can rely on the
+    # path being present. Cleaning transforms (license, dev names,
+    # params, variants, benchmark display names) are applied here per
+    # PLAN_20260428.md. Emitted AFTER `validate_output_contract` because
+    # the validator scans every output file as UTF-8 text.
+    from scripts import parity_outputs
+
+    parity_outputs.write_parity_artifacts(
+        model_cards=model_cards,
+        lite_model_cards=lite_model_cards,
+        eval_list=eval_list,
+        lite_eval_list=lite_eval_list,
+        eval_summaries=eval_summaries,
+        model_summaries=model_summaries,
+        dev_summaries=dev_summaries,
+        benchmark_metadata=benchmark_metadata,
+        output_dir=OUTPUT_DIR,
+    )
+
     manifest["artifact_sizes"] = collect_artifact_sizes(OUTPUT_DIR)
     write_json(OUTPUT_DIR / "manifest.json", manifest)
-
-    validate_output_contract(OUTPUT_DIR)
 
     print(
         f"[pipeline] {json.dumps({'event': 'pipeline.summary', 'dry_run': dry_run, 'evaluations_loaded': len(evaluations), 'model_count': len(model_cards), 'eval_count': len(eval_summaries), 'skipped_config_count': len(skipped_configs)})}"
