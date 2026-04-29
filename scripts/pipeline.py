@@ -22,10 +22,12 @@ from scripts.helpers.benchmark_identity import (
 
 PRODUCTION_DATASET_REPO = "evaleval/card_backend"
 # `CARD_BACKEND_OUTPUT_REPO` lets local/CI runs target a different upload
-# destination during the parity migration. `CARD_BACKEND_ALLOW_PRODUCTION=1`
-# is the explicit opt-in required to write to `evaleval/card_backend`; without
-# it, accidental publishes against production fail loudly. Migration scripts
-# must NEVER set the production flag.
+# destination. The `resolve_upload_target` guard refuses unintended writes
+# to `evaleval/card_backend` from local shells (where `HF_TOKEN` is often
+# auto-loaded from a profile); `CARD_BACKEND_ALLOW_PRODUCTION=1` is the
+# explicit opt-in for an intentional manual local prod push. CI runs
+# (`GITHUB_ACTIONS=true`) deploy to production by default — the gate
+# there is owner PR review at merge time, not an env flag.
 #
 # Both `DATASET_REPO` and `DATASET_RESOLVE_BASE` are resolved at *import*
 # time. Tests that need to flip the env after import should call
@@ -3663,22 +3665,25 @@ Config version: `{manifest.get("config_version", 1)}`
 
 
 def resolve_upload_target() -> str:
-    """Pick the upload target, refusing production unless explicitly allowed.
+    """Pick the upload target, refusing accidental production writes from local shells.
 
-    During the backend parity migration, `CARD_BACKEND_OUTPUT_REPO` (set per
-    run, e.g. `j-chim/temp_evalcard_backend`) routes writes away from the
-    production dataset. Pointing at `evaleval/card_backend` requires
-    `CARD_BACKEND_ALLOW_PRODUCTION=1` so misconfigured local runs cannot
-    overwrite published artifacts.
+    Local runs must set `CARD_BACKEND_OUTPUT_REPO` to a non-production
+    dataset, or set `CARD_BACKEND_ALLOW_PRODUCTION=1` for an intentional
+    manual prod push. CI runs (where `GITHUB_ACTIONS=true` is set
+    automatically by the GitHub-hosted runner) deploy to production by
+    default — owner PR review at merge time is the gate, not the env flag.
     """
     target = (os.environ.get("CARD_BACKEND_OUTPUT_REPO") or "").strip()
-    allow_production = os.environ.get("CARD_BACKEND_ALLOW_PRODUCTION") == "1"
+    allow_production = (
+        os.environ.get("CARD_BACKEND_ALLOW_PRODUCTION") == "1"
+        or os.environ.get("GITHUB_ACTIONS") == "true"
+    )
     if not target:
         if not allow_production:
             raise RuntimeError(
-                "CARD_BACKEND_OUTPUT_REPO is required during the parity migration. "
+                "CARD_BACKEND_OUTPUT_REPO is required for local uploads. "
                 "Set it to a non-production dataset (e.g. `j-chim/temp_evalcard_backend`); "
-                "production uploads also need CARD_BACKEND_ALLOW_PRODUCTION=1."
+                "intentional local prod uploads also need CARD_BACKEND_ALLOW_PRODUCTION=1."
             )
         return PRODUCTION_DATASET_REPO
     if target == PRODUCTION_DATASET_REPO and not allow_production:

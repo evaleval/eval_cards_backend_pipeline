@@ -1300,6 +1300,7 @@ def test_resolve_upload_target_accepts_staging_repo(monkeypatch):
 
     monkeypatch.setenv("CARD_BACKEND_OUTPUT_REPO", "j-chim/temp_evalcard_backend")
     monkeypatch.delenv("CARD_BACKEND_ALLOW_PRODUCTION", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     assert pipeline_module.resolve_upload_target() == "j-chim/temp_evalcard_backend"
 
 
@@ -1308,6 +1309,7 @@ def test_resolve_upload_target_rejects_production_without_opt_in(monkeypatch):
 
     monkeypatch.setenv("CARD_BACKEND_OUTPUT_REPO", "evaleval/card_backend")
     monkeypatch.delenv("CARD_BACKEND_ALLOW_PRODUCTION", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     with pytest.raises(RuntimeError, match="production"):
         pipeline_module.resolve_upload_target()
 
@@ -1317,6 +1319,7 @@ def test_resolve_upload_target_requires_explicit_target(monkeypatch):
 
     monkeypatch.delenv("CARD_BACKEND_OUTPUT_REPO", raising=False)
     monkeypatch.delenv("CARD_BACKEND_ALLOW_PRODUCTION", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     with pytest.raises(RuntimeError, match="CARD_BACKEND_OUTPUT_REPO"):
         pipeline_module.resolve_upload_target()
 
@@ -1326,7 +1329,31 @@ def test_resolve_upload_target_allows_production_with_opt_in(monkeypatch):
 
     monkeypatch.setenv("CARD_BACKEND_OUTPUT_REPO", "evaleval/card_backend")
     monkeypatch.setenv("CARD_BACKEND_ALLOW_PRODUCTION", "1")
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     assert pipeline_module.resolve_upload_target() == "evaleval/card_backend"
+
+
+def test_resolve_upload_target_defaults_to_production_in_ci(monkeypatch):
+    """`GITHUB_ACTIONS=true` is set automatically by GitHub-hosted runners
+    and grants implicit production permission — owner PR review at merge
+    time is the gate for CI deploys, not the env flag."""
+    from scripts import pipeline as pipeline_module
+
+    monkeypatch.delenv("CARD_BACKEND_OUTPUT_REPO", raising=False)
+    monkeypatch.delenv("CARD_BACKEND_ALLOW_PRODUCTION", raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    assert pipeline_module.resolve_upload_target() == "evaleval/card_backend"
+
+
+def test_resolve_upload_target_ci_respects_explicit_staging_override(monkeypatch):
+    """A non-prod `CARD_BACKEND_OUTPUT_REPO` overrides the CI default so
+    branch builds / manual workflow dispatches can target a staging dataset."""
+    from scripts import pipeline as pipeline_module
+
+    monkeypatch.setenv("CARD_BACKEND_OUTPUT_REPO", "j-chim/temp_evalcard_backend")
+    monkeypatch.delenv("CARD_BACKEND_ALLOW_PRODUCTION", raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    assert pipeline_module.resolve_upload_target() == "j-chim/temp_evalcard_backend"
 
 
 def test_dry_run_does_not_invoke_upload_target_resolution(pipeline_output):
