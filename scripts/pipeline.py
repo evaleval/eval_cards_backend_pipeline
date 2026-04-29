@@ -3928,11 +3928,67 @@ def main() -> int:
             }
         )
         evaluation["model_info"] = model_info
+        # Direct per-evaluation card lookup using the EEE benchmark name —
+        # behavior unchanged for any benchmark whose name matches a card
+        # in `metadata_lookup`.
         evaluation["benchmark_card"] = lookup_benchmark_card(
             metadata_lookup,
             evaluation.get("benchmark"),
             canonical_benchmark_family_key(evaluation.get("benchmark")),
         )
+
+        # Fallback ONLY when the direct lookup misses: try the shared
+        # `dataset_name` from `evaluation_results[*].source_data`. This
+        # covers benchmarks whose ABC card name diverges from the EEE
+        # benchmark name (e.g. EEE `fibble_arena` ↔ ABC
+        # `fibble_arena_daily`) — without it, `benchmark_card` stays
+        # None, `top_level_benchmark_owns_slices` returns False, and
+        # `classify_evaluation_result` promotes each sub-variant to its
+        # own leaf instead of treating it as a slice of the family.
+        #
+        # Two guards keep the fallback from misfiring:
+        #   1. **Shared across all results.** Aggregator records (e.g.
+        #      `llm-stats` wrapping 8-12+ scraped benchmarks per record)
+        #      scatter their per-result `dataset_name`s; we only use one
+        #      when every result agrees, leaving `shared_dataset_name`
+        #      None for aggregators.
+        #   2. **Compact-key relatedness.** Even a shared dataset_name
+        #      must overlap the EEE benchmark by compact-key substring
+        #      (`fibble_arena` ⊂ `fibble_arena_daily` ✓). A single-record
+        #      aggregator (e.g. an llm-stats record covering only
+        #      `ARC-AGI v2`) has `llmstats` vs `arcagiv2` — unrelated, so
+        #      we don't pull in an unrelated child card and accidentally
+        #      flip every result onto the `owns_slices` path.
+        if evaluation["benchmark_card"] is None:
+            unique_dataset_names = {
+                (r.get("source_data") or {}).get("dataset_name")
+                for r in (evaluation.get("evaluation_results") or [])
+                if isinstance(r, dict) and isinstance(r.get("source_data"), dict)
+            }
+            unique_dataset_names.discard(None)
+            unique_dataset_names.discard("")
+            shared_dataset_name = (
+                next(iter(unique_dataset_names))
+                if len(unique_dataset_names) == 1
+                else None
+            )
+            eee_compact = compact_benchmark_key(evaluation.get("benchmark"))
+            ds_compact = (
+                compact_benchmark_key(shared_dataset_name)
+                if shared_dataset_name
+                else ""
+            )
+            if (
+                eee_compact
+                and ds_compact
+                and (eee_compact in ds_compact or ds_compact in eee_compact)
+            ):
+                evaluation["benchmark_card"] = lookup_benchmark_card(
+                    metadata_lookup,
+                    evaluation.get("benchmark"),
+                    canonical_benchmark_family_key(evaluation.get("benchmark")),
+                    shared_dataset_name,
+                )
         enriched_results = []
         for result in evaluation.get("evaluation_results") or []:
             enriched = dict(result)
