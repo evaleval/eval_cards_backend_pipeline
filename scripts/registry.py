@@ -1,0 +1,146 @@
+"""Registry-based benchmark identity resolution.
+
+Wraps ``eval_entity_resolver`` so the rest of the pipeline can stamp a
+canonical ``benchmark`` identity on each ``eval_summary`` regardless of the
+EEE suite the row came from. Resolution is memoized on
+``(raw_value, source_config)`` since the corpus has at most a few hundred
+unique combinations and they re-occur across thousands of rows.
+
+Source of truth: the HuggingFace dataset ``evaleval/entity-registry-data``.
+Override with ``REGISTRY_LOCAL_PARQUET_DIR`` to load from a local parquet
+directory (the directory must contain ``aliases.parquet`` per the
+``AliasStore.from_parquet`` contract). Set ``REGISTRY_DISABLE=1`` to
+short-circuit all lookups — useful for diagnostic runs that want to
+isolate non-registry behaviour.
+
+Only ``benchmark`` resolution is exposed for now. Models, metrics, and
+harnesses are deferred until the registry's coverage of those entity
+types stabilizes; partial migration would create contradictory taxonomies
+across artifacts (see CLAUDE.md "Pending: evalcard-registry integration
+sweep").
+"""
+from __future__ import annotations
+
+import json
+import os
+from functools import lru_cache
+from typing import Any
+
+REGISTRY_HF_DATASET = "evaleval/entity-registry-data"
+
+_resolver: Any = None
+_resolver_init_attempted = False
+_resolver_init_error: str | None = None
+
+
+def _log(event: str, **fields: Any) -> None:
+    print(f"[pipeline] {json.dumps({'event': event, **fields})}")
+
+
+def _build_resolver() -> Any:
+    """Construct the AliasStore-backed Resolver. Returns None on failure.
+
+    Tries the local parquet override first when ``REGISTRY_LOCAL_PARQUET_DIR``
+    is set, otherwise falls back to the published HF dataset. The HF path
+    uses ``hf_hub_download`` internally, so subsequent runs reuse the
+    standard HF cache without us managing a separate snapshot directory.
+    """
+    from eval_entity_resolver import AliasStore, Resolver
+
+    local_dir = (os.environ.get("REGISTRY_LOCAL_PARQUET_DIR") or "").strip()
+    if local_dir:
+        store = AliasStore.from_parquet(local_dir, read_only=True)
+        _log(
+            "registry.loaded",
+            source="local_parquet",
+            path=local_dir,
+            alias_rows=len(store.to_dataframe()),
+        )
+        return Resolver(store)
+
+    store = AliasStore.from_hf(REGISTRY_HF_DATASET, read_only=True)
+    _log(
+        "registry.loaded",
+        source="hf_dataset",
+        repo=REGISTRY_HF_DATASET,
+        alias_rows=len(store.to_dataframe()),
+    )
+    return Resolver(store)
+
+
+def _get_resolver() -> Any:
+    """Lazy resolver initialization. Returns None if disabled or unreachable.
+
+    Failure is non-fatal: the pipeline keeps running with canonical_id=None
+    on every summary, which mirrors the pre-registry behaviour. The
+    ``registry.disabled`` / ``registry.init_failed`` log lines are how we
+    surface a missing registry post-hoc.
+    """
+    global _resolver, _resolver_init_attempted, _resolver_init_error
+    if _resolver is not None:
+        return _resolver
+    if _resolver_init_attempted:
+        return None
+    _resolver_init_attempted = True
+
+    if os.environ.get("REGISTRY_DISABLE") == "1":
+        _resolver_init_error = "REGISTRY_DISABLE=1"
+        _log("registry.disabled", reason="env_flag")
+        return None
+
+    try:
+        _resolver = _build_resolver()
+        return _resolver
+    except Exception as error:
+        _resolver_init_error = str(error)
+        _log("registry.init_failed", error=str(error))
+        return None
+
+
+@lru_cache(maxsize=2048)
+def _resolve_cached(
+    raw_value: str | None, source_config: str | None
+) -> tuple[str | None, str, float]:
+    """Inner cache. Returns (canonical_id, strategy, confidence)."""
+    if not raw_value:
+        return (None, "empty_input", 0.0)
+    resolver = _get_resolver()
+    if resolver is None:
+        return (None, "registry_unavailable", 0.0)
+    result = resolver.resolve(raw_value, "benchmark", source_config)
+    return (result.canonical_id, result.strategy, float(result.confidence))
+
+
+def resolve_benchmark(
+    raw_value: str | None, source_config: str | None
+) -> dict[str, Any]:
+    """Resolve a benchmark identifier to its canonical registry id.
+
+    ``raw_value`` should be the most specific benchmark name available on
+    the eval_summary (typically ``benchmark_leaf_name`` falling back to
+    ``benchmark_leaf_key``). ``source_config`` MUST be the raw EEE config
+    name with original punctuation (e.g. ``tau-bench-2_airline``,
+    ``apex-agents``, ``global-mmlu-lite``) — the pipeline-normalized
+    ``benchmark_family_key`` does NOT match the registry's
+    ``scoped_aliases`` keys, which preserve hyphens.
+
+    Returns a stable dict shape regardless of resolution outcome so the
+    caller can treat the audit trail uniformly.
+    """
+    canonical_id, strategy, confidence = _resolve_cached(raw_value, source_config)
+    return {
+        "canonical_id": canonical_id,
+        "strategy": strategy,
+        "confidence": confidence,
+        "raw_value": raw_value,
+        "source_config": source_config,
+    }
+
+
+def reset_for_tests() -> None:
+    """Clear the module-level resolver and the lru_cache. Test-only."""
+    global _resolver, _resolver_init_attempted, _resolver_init_error
+    _resolver = None
+    _resolver_init_attempted = False
+    _resolver_init_error = None
+    _resolve_cached.cache_clear()

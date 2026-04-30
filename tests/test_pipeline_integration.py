@@ -239,9 +239,13 @@ def test_no_internal_underscore_fields_leak_to_evals_json(pipeline_output):
     leaks: list[str] = []
     for path in (pipeline_output / "evals").glob("*.json"):
         summary = _read(path)
+        if "_eee_source_config" in summary:
+            leaks.append(f"{path.name}::summary._eee_source_config")
         for metric in _walk_metric_summaries(summary):
             if "_signal_groups" in metric:
                 leaks.append(f"{path.name}::metric._signal_groups")
+            if "_signal_groups_canonical" in metric:
+                leaks.append(f"{path.name}::metric._signal_groups_canonical")
             for row in metric.get("model_results", []):
                 if "_generation_args" in row:
                     leaks.append(f"{path.name}::row._generation_args")
@@ -254,9 +258,15 @@ def test_no_internal_underscore_fields_leak_to_models_json(pipeline_output):
         model = _read(path)
         for cat_summaries in model.get("hierarchy_by_category", {}).values():
             for summary in cat_summaries:
+                if "_eee_source_config" in summary:
+                    leaks.append(f"{path.name}::summary._eee_source_config")
                 for metric in _walk_metric_summaries(summary):
                     if "_signal_groups" in metric:
                         leaks.append(f"{path.name}::metric._signal_groups")
+                    if "_signal_groups_canonical" in metric:
+                        leaks.append(
+                            f"{path.name}::metric._signal_groups_canonical"
+                        )
                     for row in metric.get("model_results", []):
                         if "_generation_args" in row:
                             leaks.append(f"{path.name}::row._generation_args")
@@ -1361,3 +1371,226 @@ def test_dry_run_does_not_invoke_upload_target_resolution(pipeline_output):
     target set, confirming dry-run never calls `resolve_upload_target` and
     so the guard never trips on legitimate dev runs."""
     assert (pipeline_output / "manifest.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Registry / canonical_benchmark_id integration
+# ---------------------------------------------------------------------------
+#
+# Fixtures `bench_canonical_a` and `bench_canonical_b` both emit raw
+# benchmark name "MMLU" under different EEE configs. The bundled alias
+# parquet maps "MMLU" → canonical "mmlu", so both eval_summaries must
+# carry canonical_benchmark_id="mmlu" and the cross-suite Signal 4 pass
+# must produce a non-null cross_party_divergence_canonical annotation
+# linking them.
+
+
+def _eval_by_id(pipeline_output, eval_summary_id: str) -> dict:
+    return _read(pipeline_output / "evals" / f"{eval_summary_id}.json")
+
+
+def test_canonical_benchmark_id_stamped_on_cross_suite_summaries(pipeline_output):
+    a = _eval_by_id(pipeline_output, "bench_canonical_a_mmlu")
+    b = _eval_by_id(pipeline_output, "bench_canonical_b_mmlu")
+    assert a.get("canonical_benchmark_id") == "mmlu"
+    assert b.get("canonical_benchmark_id") == "mmlu"
+    # Audit trail preserved on summary header.
+    assert a.get("canonical_benchmark_resolution", {}).get("strategy") in {
+        "exact",
+        "normalized",
+    }
+
+
+def test_canonical_benchmark_id_appears_in_eval_list(pipeline_output):
+    eval_list = _read(pipeline_output / "eval-list.json")
+    a_entry = next(
+        e for e in eval_list["evals"] if e["eval_summary_id"] == "bench_canonical_a_mmlu"
+    )
+    b_entry = next(
+        e for e in eval_list["evals"] if e["eval_summary_id"] == "bench_canonical_b_mmlu"
+    )
+    assert a_entry["canonical_benchmark_id"] == "mmlu"
+    assert b_entry["canonical_benchmark_id"] == "mmlu"
+
+
+def test_canonical_benchmark_id_appears_in_comparison_index(pipeline_output):
+    cidx = _read(pipeline_output / "comparison-index.json")
+    assert cidx["evals"]["bench_canonical_a_mmlu"]["canonical_benchmark_id"] == "mmlu"
+    assert cidx["evals"]["bench_canonical_b_mmlu"]["canonical_benchmark_id"] == "mmlu"
+
+
+def test_cross_suite_signal_4_fires_on_canonical_duplicates(pipeline_output):
+    """The whole point of this PR: two suites with the same canonical
+    benchmark must produce a cross_party_divergence_canonical annotation
+    that the legacy per-suite cross_party_divergence cannot, by
+    construction, surface."""
+    for eid in ("bench_canonical_a_mmlu", "bench_canonical_b_mmlu"):
+        summary = _eval_by_id(pipeline_output, eid)
+        rows = list(_walk_rows(summary))
+        assert rows, f"{eid} should have at least one row"
+        for row in rows:
+            ann = (row.get("evalcards") or {}).get("annotations") or {}
+            canonical = ann.get("cross_party_divergence_canonical")
+            assert canonical is not None, (
+                f"{eid} row missing canonical Signal 4 — registry "
+                "stamping or cross-suite pass did not run"
+            )
+            # Per-suite annotation should also be set (not replaced),
+            # confirming sidecar shape.
+            assert "cross_party_divergence" in ann
+
+
+def test_canonical_signal_4_detects_score_divergence(pipeline_output):
+    """Scores 0.85 and 0.55 are 0.30 apart — well above the 0.05
+    absolute threshold — so has_cross_party_divergence must be True."""
+    summary = _eval_by_id(pipeline_output, "bench_canonical_a_mmlu")
+    rows = list(_walk_rows(summary))
+    assert rows
+    canonical = rows[0]["evalcards"]["annotations"][
+        "cross_party_divergence_canonical"
+    ]
+    assert canonical["has_cross_party_divergence"] is True
+    # group_id should encode the canonical bucket key, not the suite-prefixed
+    # metric_summary_id used by the legacy version.
+    assert "canonical" in canonical["group_id"]
+    assert "mmlu" in canonical["group_id"]
+
+
+def test_legacy_cross_party_does_not_fire_within_each_suite(pipeline_output):
+    """Each suite has a single row for gpt-5, so the legacy per-suite
+    Signal 4 has no cross-org comparison to make. This test confirms the
+    surfacing-failure mode the canonical pass fixes."""
+    for eid in ("bench_canonical_a_mmlu", "bench_canonical_b_mmlu"):
+        summary = _eval_by_id(pipeline_output, eid)
+        rows = list(_walk_rows(summary))
+        legacy = rows[0]["evalcards"]["annotations"].get("cross_party_divergence")
+        # Legacy may be None (single-row group) or has_cross_party_divergence=False —
+        # in either case it cannot surface the cross-suite divergence.
+        if isinstance(legacy, dict):
+            assert legacy.get("has_cross_party_divergence") is False
+
+
+def test_corpus_aggregates_emits_canonical_block(pipeline_output):
+    aggs = _read(pipeline_output / "corpus-aggregates.json")
+    assert "comparability_canonical" in aggs
+    canonical = aggs["comparability_canonical"]
+    overall = canonical.get("overall", {})
+    # Our fixture produces exactly 1 cross-suite eligible group
+    # (gpt-5 × canonical mmlu × accuracy).
+    assert overall.get("cross_party_eligible_groups", 0) >= 1
+    assert overall.get("cross_party_divergent_groups", 0) >= 1
+
+
+def test_per_eval_cross_party_summary_canonical_emitted(pipeline_output):
+    summary = _eval_by_id(pipeline_output, "bench_canonical_a_mmlu")
+    canonical_summary = summary.get("cross_party_summary_canonical")
+    assert canonical_summary is not None
+    assert canonical_summary.get("groups_with_cross_party_check", 0) >= 1
+    assert canonical_summary.get("cross_party_divergent_count", 0) >= 1
+
+
+def test_eval_hierarchy_carries_canonical_benchmark_ids(pipeline_output):
+    hierarchy = _read(pipeline_output / "eval-hierarchy.json")
+    families_with_canonical = [
+        f for f in hierarchy["families"] if f.get("canonical_benchmark_ids")
+    ]
+    assert families_with_canonical, "no family carries canonical_benchmark_ids"
+    # bench_canonical_a + bench_canonical_b each become their own family at
+    # the runtime level (family-collapse is deferred); both should report
+    # canonical_benchmark_ids=["mmlu"].
+    matching = [
+        f
+        for f in hierarchy["families"]
+        if "mmlu" in (f.get("canonical_benchmark_ids") or [])
+    ]
+    assert len(matching) >= 2, (
+        "both bench_canonical_a and bench_canonical_b should expose "
+        "canonical_benchmark_ids=['mmlu']"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Paren-form parser + slice-key disambiguation (end-to-end pipeline view)
+# ---------------------------------------------------------------------------
+#
+# ParenBench fixture: three rows under EEE config "ParenBench" with
+# dataset_names "ParenBench (Foo)", "ParenBench (Bar)", "ParenBench (Baz)".
+# Without the paren parser these become three eval_summaries; with the
+# parser they collapse into one ``parenbench`` summary carrying three
+# subtasks (foo, bar, baz). CollideBench similarly tests c vs c++
+# disambiguation.
+
+
+def test_paren_split_collapses_to_one_eval_summary(pipeline_output):
+    eval_files = {p.stem for p in (pipeline_output / "evals").glob("*.json")}
+    paren = [eid for eid in eval_files if "parenbench" in eid.lower()]
+    assert len(paren) == 1, (
+        f"ParenBench should collapse to ONE eval_summary; got {paren}"
+    )
+
+
+def test_paren_split_emits_three_subtasks(pipeline_output):
+    summary = _read(pipeline_output / "evals" / "parenbench.json")
+    subtasks = summary.get("subtasks") or []
+    keys = sorted(st.get("subtask_key") for st in subtasks if st.get("subtask_key"))
+    assert keys == ["bar", "baz", "foo"], (
+        f"expected three paren-suffix subtasks, got {keys}"
+    )
+    # Each subtask must carry a metric, otherwise the surface is empty
+    for st in subtasks:
+        assert st.get("metrics"), f"subtask {st.get('subtask_key')!r} has no metrics"
+
+
+def test_paren_split_leaf_name_uses_clean_prefix(pipeline_output):
+    summary = _read(pipeline_output / "evals" / "parenbench.json")
+    # Display should be the clean parent name, not "ParenBench (Foo)".
+    leaf_name = summary.get("benchmark_leaf_name") or summary.get("display_name")
+    assert leaf_name == "ParenBench", (
+        f"leaf_name should be the clean prefix; got {leaf_name!r}"
+    )
+
+
+def test_collide_bench_disambiguates_c_and_cpp_subtasks(pipeline_output):
+    """The whole point of normalize_subset_key. Without the alias map
+    'c' and 'c++' both normalize to 'c' and the second slice silently
+    overwrites the first, leaving one subtask. With the alias map,
+    'c++' becomes 'cpp' so both subtasks survive."""
+    summary = _read(pipeline_output / "evals" / "collidebench.json")
+    keys = sorted(
+        st.get("subtask_key")
+        for st in (summary.get("subtasks") or [])
+        if st.get("subtask_key")
+    )
+    assert keys == ["c", "cpp"], (
+        f"c and c++ must produce distinct subtasks; got {keys}"
+    )
+    # Display names should show "C" and "C++" (not "C++" → "Cpp").
+    names = sorted(
+        st.get("subtask_name")
+        for st in (summary.get("subtasks") or [])
+        if st.get("subtask_name")
+    )
+    assert names == ["C", "C++"], f"display names lost punctuation; got {names}"
+
+
+def test_paren_parser_does_not_affect_other_eval_summaries(pipeline_output):
+    """Regression guard: the paren parser must NOT alter the existing
+    bench_canonical_a/_b collapse, the bench_multiorg cross-party
+    behaviour, or any other fixture's eval_summary_id."""
+    eval_files = {p.stem for p in (pipeline_output / "evals").glob("*.json")}
+    # Sample of stable eval_summary_ids from earlier fixtures that must
+    # continue to exist exactly as named.
+    must_exist = {
+        "bench_variant",
+        "bench_multiorg",
+        "bench_orgcollapse",
+        "bench_agentic",
+        "bench_canonical_a_mmlu",
+        "bench_canonical_b_mmlu",
+        "bench_setupalias",
+        "bench_fuzzy",
+    }
+    missing = must_exist - eval_files
+    assert not missing, (
+        f"paren parser regressed unrelated eval_summary_ids: missing {missing}"
+    )

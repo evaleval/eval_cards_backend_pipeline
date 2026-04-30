@@ -413,6 +413,146 @@ def _write_fixtures(eee_root: Path, abc_root: Path) -> None:
         record["model_info"]["additional_details"] = {"mode": mode}
         records.append(("bench_setupalias", f"openai_gpt-5/{record_id}", record))
 
+    # bench_canonical_a / bench_canonical_b — same registry-canonical
+    # benchmark appearing under two different EEE configs. The EEE
+    # config name (the folder) is what the pipeline reads as
+    # ``evaluation.benchmark`` (parent_key driver), so the two suites
+    # produce distinct ``eval_summary_id``s. The shared dataset_name
+    # ``MMLU`` resolves to canonical ``mmlu`` via the bundled alias
+    # parquet, so the cross-suite Signal 4 pass groups them and surfaces
+    # divergence (0.85 vs 0.55) that the legacy per-suite version
+    # cannot detect. Hand-crafted to keep ``evaluation_id`` prefix and
+    # ``source_data.dataset_name`` independent (the helper ties them
+    # together via the ``benchmark`` arg).
+    def _canonical_record(config: str, record_id: str, org: str, score: float) -> dict:
+        record = {
+            "schema_version": "0.2.2",
+            "evaluation_id": f"{config}/{record_id}",
+            "retrieved_timestamp": "1700000000",
+            "source_metadata": {
+                "evaluator_relationship": (
+                    "first_party" if org == "OpenAI" else "third_party"
+                ),
+                "source_organization_name": org,
+                "source_type": "leaderboard",
+                "source_name": "fixture",
+            },
+            "model_info": {
+                "id": "openai/gpt-5",
+                "developer": "openai",
+                "name": "gpt-5",
+            },
+            "evaluation_results": [
+                {
+                    "evaluation_name": "MMLU",
+                    "source_data": {"dataset_name": "MMLU"},
+                    "metric_config": {
+                        "evaluation_description": "Accuracy",
+                        "lower_is_better": False,
+                        "metric_id": "MMLU.accuracy",
+                        "metric_name": "accuracy",
+                        "metric_kind": "score",
+                        "metric_unit": "proportion",
+                        "min_score": 0,
+                        "max_score": 1,
+                    },
+                    "score_details": {"score": score},
+                    "generation_config": {
+                        "generation_args": {
+                            "temperature": 0.0,
+                            "max_tokens": 2048,
+                        }
+                    },
+                }
+            ],
+            "eval_library": {"name": "fixture", "version": "1.0.0"},
+        }
+        return record
+
+    for config, record_id, org, score in [
+        ("bench_canonical_a", "run-18", "OpenAI", 0.85),
+        ("bench_canonical_b", "run-19", "Scale AI", 0.55),
+    ]:
+        records.append((
+            config,
+            f"openai_gpt-5/{record_id}",
+            _canonical_record(config, record_id, org, score),
+        ))
+
+    # paren_split / paren_collision — paren-form dataset_names under a
+    # single EEE config. ``evaluation.benchmark`` (parsed from
+    # evaluation_id) stays constant per config and matches the prefix
+    # of each dataset_name, which is what the paren parser's
+    # prefix-extends-benchmark-identity guard requires. With the
+    # parser, paren_split collapses to ONE eval_summary "ParenBench"
+    # carrying three subtasks (foo, bar, baz); paren_collision yields
+    # one eval_summary "CollideBench" with two distinct subtasks (c
+    # and cpp via normalize_subset_key, NOT silently merged on key 'c').
+    def _paren_record(
+        config: str, record_id: str, dataset_name: str, score: float
+    ) -> dict:
+        return {
+            "schema_version": "0.2.2",
+            "evaluation_id": f"{config}/{record_id}",
+            "retrieved_timestamp": "1700000000",
+            "source_metadata": {
+                "evaluator_relationship": "first_party",
+                "source_organization_name": "OpenAI",
+                "source_type": "leaderboard",
+                "source_name": "fixture",
+            },
+            "model_info": {
+                "id": "openai/gpt-5",
+                "developer": "openai",
+                "name": "gpt-5",
+            },
+            "evaluation_results": [
+                {
+                    "evaluation_name": dataset_name,
+                    "source_data": {"dataset_name": dataset_name},
+                    "metric_config": {
+                        "evaluation_description": "Accuracy",
+                        "lower_is_better": False,
+                        "metric_id": f"{config}.accuracy",
+                        "metric_name": "accuracy",
+                        "metric_kind": "score",
+                        "metric_unit": "proportion",
+                        "min_score": 0,
+                        "max_score": 1,
+                    },
+                    "score_details": {"score": score},
+                    "generation_config": {
+                        "generation_args": {
+                            "temperature": 0.0,
+                            "max_tokens": 2048,
+                        }
+                    },
+                }
+            ],
+            "eval_library": {"name": "fixture", "version": "1.0.0"},
+        }
+
+    for record_id, dataset_name, score in [
+        ("run-20", "ParenBench (Foo)", 0.42),
+        ("run-21", "ParenBench (Bar)", 0.55),
+        ("run-22", "ParenBench (Baz)", 0.61),
+    ]:
+        records.append((
+            "ParenBench",  # config name == evaluation.benchmark prefix
+            f"openai_gpt-5/{record_id}",
+            _paren_record("ParenBench", record_id, dataset_name, score),
+        ))
+
+    for record_id, dataset_name, score in [
+        ("run-23", "CollideBench (c)", 0.50),
+        ("run-24", "CollideBench (c++)", 0.60),
+    ]:
+        records.append((
+            "CollideBench",
+            f"openai_gpt-5/{record_id}",
+            _paren_record("CollideBench", record_id, dataset_name, score),
+        ))
+
     # bench-fuzzy — kebab-case EEE benchmark name vs snake-case ABC card
     # filename. Both normalize to the same `bench_fuzzy` lookup key.
     records.append((
@@ -450,6 +590,9 @@ def _write_fixtures(eee_root: Path, abc_root: Path) -> None:
         ("bench_lower_better", False),
         ("bench_setupalias", False),
         ("bench_fuzzy", False),  # EEE side: bench-fuzzy (kebab); ABC: snake
+        ("MMLU", False),  # bench_canonical_a/_b both reference benchmark="MMLU"
+        ("ParenBench", False),  # paren_split fixture
+        ("CollideBench", False),  # paren_collision fixture
     ]:
         card_path = abc_cards_root / f"{name}.json"
         card_path.write_text(json.dumps(_abc_card(name=name, agentic=agentic), indent=2), encoding="utf-8")
@@ -484,6 +627,8 @@ def pipeline_output(tmp_path_factory) -> Path:
             "CARD_BACKEND_OUTPUT_REPO",
             "CARD_BACKEND_ALLOW_PRODUCTION",
             "GITHUB_ACTIONS",
+            "REGISTRY_LOCAL_PARQUET_DIR",
+            "REGISTRY_DISABLE",
         )
     }
     try:
@@ -503,6 +648,18 @@ def pipeline_output(tmp_path_factory) -> Path:
         os.environ.pop("CARD_BACKEND_OUTPUT_REPO", None)
         os.environ.pop("CARD_BACKEND_ALLOW_PRODUCTION", None)
         os.environ.pop("GITHUB_ACTIONS", None)
+        # Use the bundled tests/fixtures alias parquet so resolution is
+        # deterministic and offline. The fixture has just enough rows for
+        # bench_canonical_a/_b ('MMLU' → 'mmlu') and a couple non-conflict
+        # entries (BBH, IFEval) for sanity.
+        os.environ["REGISTRY_LOCAL_PARQUET_DIR"] = str(
+            REPO_ROOT / "tests" / "fixtures" / "registry_aliases"
+        )
+        os.environ.pop("REGISTRY_DISABLE", None)
+        # Reset the resolver module state so each session sees a clean
+        # cache and re-loads from REGISTRY_LOCAL_PARQUET_DIR.
+        from scripts import registry as registry_module
+        registry_module.reset_for_tests()
         sys.argv = ["pipeline.py", "--dry-run"]
 
         rc = pipeline_module.main()

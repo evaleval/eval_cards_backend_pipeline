@@ -171,6 +171,8 @@ def fixture_pipeline_output(tmp_path_factory) -> Path:
             "BENCHMARK_METADATA_LOCAL_DIR",
             "CONFIGS",
             "HF_TOKEN",
+            "REGISTRY_LOCAL_PARQUET_DIR",
+            "REGISTRY_DISABLE",
         )
     }
     try:
@@ -181,6 +183,16 @@ def fixture_pipeline_output(tmp_path_factory) -> Path:
             sorted(p.name for p in (eee_root / "data").iterdir() if p.is_dir())
         )
         os.environ.pop("HF_TOKEN", None)
+        # Match the registry isolation used by tests/conftest::pipeline_output:
+        # offline, deterministic resolution from the bundled alias parquet.
+        repo_root = Path(__file__).resolve().parent.parent
+        os.environ["REGISTRY_LOCAL_PARQUET_DIR"] = str(
+            repo_root / "tests" / "fixtures" / "registry_aliases"
+        )
+        os.environ.pop("REGISTRY_DISABLE", None)
+        from scripts import registry as registry_module
+
+        registry_module.reset_for_tests()
         sys.argv = ["pipeline.py", "--dry-run"]
         rc = pipeline_module.main()
         assert rc == 0

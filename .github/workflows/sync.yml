@@ -26,7 +26,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install python dependencies
-        run: python -m pip install --upgrade pip huggingface_hub datasets pytest
+        run: |
+          python -m pip install --upgrade pip huggingface_hub datasets pytest pandas pyarrow
+          python -m pip install 'eval-entity-resolver @ git+https://github.com/evaleval/evalcard-registry.git#subdirectory=packages/eval-entity-resolver'
 
       - name: Run tests
         run: python -m pytest tests/
