@@ -38,7 +38,9 @@ The pipeline runs via `uv` with no project venv. Required packages are pulled in
 Dry run (no upload, full output written under `output/`):
 
 ```bash
-uv run --with huggingface_hub --with datasets --no-project python -m scripts.pipeline --dry-run
+uv run --with huggingface_hub --with datasets --with pandas --with pyarrow \
+  --with 'eval-entity-resolver @ git+https://github.com/evaleval/evalcard-registry.git#subdirectory=packages/eval-entity-resolver' \
+  --no-project python -m scripts.pipeline --dry-run
 ```
 
 Generate the metric-looking string registry from the local EEE snapshot:
@@ -51,7 +53,9 @@ Upload to Hugging Face:
 
 ```bash
 HF_TOKEN=hf_xxx CARD_BACKEND_OUTPUT_REPO=DATASET_NAME \
-  uv run --with huggingface_hub --with datasets --no-project python -m scripts.pipeline
+  uv run --with huggingface_hub --with datasets --with pandas --with pyarrow \
+  --with 'eval-entity-resolver @ git+https://github.com/evaleval/evalcard-registry.git#subdirectory=packages/eval-entity-resolver' \
+  --no-project python -m scripts.pipeline
 ```
 
 ## Upload safety guard
@@ -95,7 +99,9 @@ Lower `CONFIG_BATCH_SIZE` reduces peak disk and memory pressure on GitHub Action
 ## Tests
 
 ```bash
-uv run --with pytest --with huggingface_hub --with datasets --no-project pytest tests/
+uv run --with pytest --with huggingface_hub --with datasets --with pandas --with pyarrow \
+  --with 'eval-entity-resolver @ git+https://github.com/evaleval/evalcard-registry.git#subdirectory=packages/eval-entity-resolver' \
+  --no-project pytest tests/
 ```
 
 Coverage is split across:
