@@ -111,6 +111,13 @@ def _scalar_columns(payload: dict, *, developer_route_id: str | None = None) -> 
             payload.get("model_family_id"),
             payload.get("model_id"),
         ),
+        # Registry-resolved canonical model id (None when payload has no
+        # registry hit). Surfaced as a separate scalar column so DuckDB
+        # / frontend queries can group by canonical without parsing
+        # route_id. The TS adapter doesn't carry this field, so it's
+        # populated only when the upstream caller (pipeline.model_cards
+        # build) sets `canonical_model_id` on the source dict.
+        "canonical_model_id": payload.get("canonical_model_id"),
         "eval_summary_id": _first_present(
             payload.get("evaluation_id"), payload.get("eval_summary_id")
         ),
@@ -364,6 +371,11 @@ _PAYLOAD_TABLE_COLUMNS: list[tuple[str, str]] = [
     ("record_type", "VARCHAR"),
     ("model_route_id", "VARCHAR"),
     ("model_family_id", "VARCHAR"),
+    # Phase 2.3 (Session 5h): registry-resolved canonical model id, distinct
+    # from `model_family_id` (which is slug-derived from the TS adapter).
+    # None on rows where no registry hit; populated when the upstream
+    # pipeline.canonical_model_identity resolved the model.
+    ("canonical_model_id", "VARCHAR"),
     ("eval_summary_id", "VARCHAR"),
     ("developer_route_id", "VARCHAR"),
     ("developer", "VARCHAR"),
@@ -397,6 +409,7 @@ def _emit_table(
                 "record_type": record_type,
                 "model_route_id": scalars["model_route_id"],
                 "model_family_id": scalars["model_family_id"],
+                "canonical_model_id": scalars["canonical_model_id"],
                 "eval_summary_id": scalars["eval_summary_id"],
                 "developer_route_id": scalars["developer_route_id"],
                 "developer": scalars["developer"],

@@ -13,11 +13,12 @@ directory (the directory must contain ``aliases.parquet`` per the
 short-circuit all lookups — useful for diagnostic runs that want to
 isolate non-registry behaviour.
 
-Only ``benchmark`` resolution is exposed for now. Models, metrics, and
-harnesses are deferred until the registry's coverage of those entity
-types stabilizes; partial migration would create contradictory taxonomies
-across artifacts (see CLAUDE.md "Pending: evalcard-registry integration
-sweep").
+``benchmark`` resolution is the production path; ``model``, ``metric``,
+and ``org`` resolvers are also exposed (mirroring the same pattern) to
+unblock pipeline-side migration work, even though registry coverage of
+those entity types is still maturing — partial migration would create
+contradictory taxonomies across artifacts (see CLAUDE.md "Pending:
+evalcard-registry integration sweep").
 """
 from __future__ import annotations
 
@@ -137,6 +138,125 @@ def resolve_benchmark(
     }
 
 
+def _resolve_entity(
+    entity_type: str,
+    raw_value: str | None,
+    source_config: str | None,
+    failure_event: str,
+) -> tuple[str | None, str, float]:
+    """Shared resolver call. Returns (canonical_id, strategy, confidence)."""
+    if not raw_value:
+        return (None, "empty_input", 0.0)
+    resolver = _get_resolver()
+    if resolver is None:
+        return (None, "registry_unavailable", 0.0)
+    try:
+        result = resolver.resolve(raw_value, entity_type, source_config)
+    except Exception as error:
+        _log(
+            failure_event,
+            error=str(error),
+            raw_value=raw_value,
+            source_config=source_config,
+        )
+        return (None, "resolver_error", 0.0)
+    return (result.canonical_id, result.strategy, float(result.confidence))
+
+
+@lru_cache(maxsize=2048)
+def _resolve_model_cached(
+    raw_value: str | None, source_config: str | None
+) -> tuple[str | None, str, float]:
+    return _resolve_entity(
+        "model", raw_value, source_config, "registry.resolve_model_failed"
+    )
+
+
+def resolve_model(
+    raw_value: str | None, source_config: str | None = None
+) -> dict[str, Any]:
+    """Resolve a model identifier to its canonical registry id.
+
+    ``raw_value`` is typically a HuggingFace-style ``developer/model`` slug
+    or whatever surface form appears on the EEE record. ``source_config``
+    is the raw EEE config name (preserve original punctuation) when
+    scoped lookups matter; pass ``None`` for global lookups.
+
+    Returns a stable dict shape regardless of resolution outcome.
+    """
+    canonical_id, strategy, confidence = _resolve_model_cached(
+        raw_value, source_config
+    )
+    return {
+        "canonical_id": canonical_id,
+        "strategy": strategy,
+        "confidence": confidence,
+        "raw_value": raw_value,
+        "source_config": source_config,
+    }
+
+
+@lru_cache(maxsize=2048)
+def _resolve_metric_cached(
+    raw_value: str | None, source_config: str | None
+) -> tuple[str | None, str, float]:
+    return _resolve_entity(
+        "metric", raw_value, source_config, "registry.resolve_metric_failed"
+    )
+
+
+def resolve_metric(
+    raw_value: str | None, source_config: str | None = None
+) -> dict[str, Any]:
+    """Resolve a metric identifier to its canonical registry id.
+
+    ``raw_value`` is the metric name as it appears on the evaluation_result
+    (e.g. ``accuracy``, ``exact_match``, ``win_rate``). ``source_config``
+    is the raw EEE config name when scoped lookups matter.
+    """
+    canonical_id, strategy, confidence = _resolve_metric_cached(
+        raw_value, source_config
+    )
+    return {
+        "canonical_id": canonical_id,
+        "strategy": strategy,
+        "confidence": confidence,
+        "raw_value": raw_value,
+        "source_config": source_config,
+    }
+
+
+@lru_cache(maxsize=2048)
+def _resolve_org_cached(
+    raw_value: str | None, source_config: str | None
+) -> tuple[str | None, str, float]:
+    return _resolve_entity(
+        "org", raw_value, source_config, "registry.resolve_org_failed"
+    )
+
+
+def resolve_org(
+    raw_value: str | None, source_config: str | None = None
+) -> dict[str, Any]:
+    """Resolve an organization identifier to its canonical registry id.
+
+    ``raw_value`` is the org name as it appears on the source record
+    (e.g. ``OpenAI``, ``Anthropic``, ``Stanford CRFM``). May return
+    ``canonical_id=None`` until the org schema is seeded — that's
+    expected; callers should fall back to existing normalization logic.
+    """
+    canonical_id, strategy, confidence = _resolve_org_cached(
+        raw_value, source_config
+    )
+    return {
+        "canonical_id": canonical_id,
+        "strategy": strategy,
+        "confidence": confidence,
+        "raw_value": raw_value,
+        "source_config": source_config,
+    }
+
+
 def reset_for_tests() -> None:
     """Clear the module-level resolver and the lru_cache. Test-only."""
     global _resolver, _resolver_init_attempted, _resolver_init_error
@@ -144,3 +264,6 @@ def reset_for_tests() -> None:
     _resolver_init_attempted = False
     _resolver_init_error = None
     _resolve_cached.cache_clear()
+    _resolve_model_cached.cache_clear()
+    _resolve_metric_cached.cache_clear()
+    _resolve_org_cached.cache_clear()
