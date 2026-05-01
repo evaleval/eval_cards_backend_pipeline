@@ -797,6 +797,11 @@ def hf_model_card_to_evaluation_card_data(entry: dict) -> dict:
         "model_name": canonical_identity["familyName"],
         "model_id": canonical_identity["familyId"],
         "canonical_model_name": canonical_identity["familyName"],
+        # Registry-resolved canonical id from the upstream pipeline.
+        # Distinct from `id` (which is the slug-derived family id from
+        # the TS adapter): this is the evalcard-registry's canonical for
+        # the model. None when no registry hit on this row.
+        "canonical_model_id": entry.get("canonical_model_id"),
         "developer": parity.normalize_developer_name(entry.get("developer")),
         "evaluations_count": total_evaluations,
         # TS: `entry.benchmark_family_count || entry.benchmark_count` — no

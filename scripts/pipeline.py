@@ -846,6 +846,10 @@ def canonicalize_metric_key(value: Any) -> str:
     if pass_match:
         return f"pass_at_{pass_match.group(1)}"
 
+    # Path 1: in-repo `metric_looking_strings.json`. This stays primary so
+    # existing canonical formats (underscore-form like `exact_match`) don't
+    # change shape — that would ripple through every published JSON's
+    # `metric_key` field.
     candidates = [
         raw,
         normalize_benchmark_key(raw),
@@ -854,6 +858,17 @@ def canonicalize_metric_key(value: Any) -> str:
     for candidate in candidates:
         if candidate and candidate in METRIC_REGISTRY_ALIAS_LOOKUP:
             return METRIC_REGISTRY_ALIAS_LOOKUP[candidate]
+
+    # Path 2: evalcard-registry fallback. Only fires when the in-repo
+    # lookup misses — extends metric coverage to entries the registry knows
+    # but `metric_looking_strings.json` doesn't yet (Phase 2.4 Session 5h).
+    # The registry returns hyphen-form (`exact-match`); we normalize to the
+    # underscore-form the in-repo path uses so the same conceptual metric
+    # doesn't split into two `metric_key` values across rows. If the registry
+    # later changes its canonical convention this normalization should follow.
+    registry_result = registry.resolve_metric(raw)
+    if registry_result and registry_result.get("canonical_id"):
+        return registry_result["canonical_id"].replace("-", "_")
 
     return normalize_benchmark_key(raw.split(".")[-1]) or normalize_benchmark_key(raw)
 
@@ -1838,12 +1853,37 @@ def normalize_model_info(model_info: dict) -> dict:
     version_date = match.group(2) if match else None
     qualifier = match.group(3) if match else None
 
+    developer_display = as_string(
+        model_info.get("developer") or humanize_slug(raw_developer)
+    )
+
+    # Phase 2.5 (Session 5h): registry-resolve the developer/org so JSON
+    # outputs carry the registry's canonical_org_id alongside the slug
+    # (slug stays for URL stability — `developer_slug` continues to
+    # drive `developers/{slug}.json` paths). `canonical_org_id` is
+    # populated only when the registry knows the org; downstream
+    # consumers fall back to `developer` (display name) or
+    # `developer_slug` (URL key) when None.
+    canonical_org_id = None
+    canonical_org_strategy = None
+    canonical_org_confidence = None
+    for candidate in (developer_display, raw_developer):
+        if not candidate:
+            continue
+        org_result = registry.resolve_org(candidate)
+        if org_result and org_result.get("canonical_id"):
+            canonical_org_id = org_result["canonical_id"]
+            canonical_org_strategy = org_result.get("strategy")
+            canonical_org_confidence = org_result.get("confidence")
+            break
+
     return {
         "raw_id": raw_id,
-        "developer": as_string(
-            model_info.get("developer") or humanize_slug(raw_developer)
-        ),
+        "developer": developer_display,
         "developer_slug": slugify_developer(raw_developer),
+        "canonical_org_id": canonical_org_id,
+        "canonical_org_resolution_strategy": canonical_org_strategy,
+        "canonical_org_resolution_confidence": canonical_org_confidence,
         "model_name": as_string(model_info.get("name") or humanize_slug(base_slug)),
         "raw_model_name": raw_model_name,
         "family_slug": slugify_model_segment(base_slug),
@@ -1854,7 +1894,7 @@ def normalize_model_info(model_info: dict) -> dict:
 
 def canonical_model_identity(model_info: dict) -> dict:
     normalized = normalize_model_info(model_info)
-    family_id = f"{normalized['developer_slug']}/{normalized['family_slug']}"
+    slug_family_id = f"{normalized['developer_slug']}/{normalized['family_slug']}"
     normalized_id = (
         f"{normalized['developer_slug']}/{normalized['raw_model_name']}"
         if "/" in normalized["raw_id"]
@@ -1866,14 +1906,46 @@ def canonical_model_identity(model_info: dict) -> dict:
     variant_key = "-".join(variant_parts) if variant_parts else "default"
     variant_label = " ".join(variant_parts) if variant_parts else "Default"
 
+    # Registry-resolve the model identity. We try the most-specific form
+    # (raw_id with original casing) first, then the slug-form normalized_id,
+    # then the slug family_id. First hit wins. The registry's canonical
+    # reflects size-aware identity (e.g. `openai/gpt-4-turbo` collapses
+    # `unknown/gpt-4-turbo`, `openai/gpt-4-turbo-preview`, etc. — see
+    # `notes/provenance-investigation.md` Session 5g/5h). Falls back to
+    # the slug-built family_id when the resolver is unavailable or the
+    # raw value isn't aliased.
+    canonical_family_id = slug_family_id
+    canonical_model_id = None
+    canonical_strategy = None
+    canonical_confidence = None
+    for candidate in (
+        normalized["raw_id"],
+        normalized_id,
+        slug_family_id,
+    ):
+        if not candidate:
+            continue
+        result = registry.resolve_model(candidate)
+        if result and result.get("canonical_id"):
+            canonical_model_id = result["canonical_id"]
+            canonical_family_id = canonical_model_id
+            canonical_strategy = result.get("strategy")
+            canonical_confidence = result.get("confidence")
+            break
+
     return {
         "normalized_id": normalized_id,
-        "family_id": family_id,
-        "family_slug": normalized["family_slug"],
+        "family_id": canonical_family_id,
+        "family_slug": canonical_family_id.split("/", 1)[-1] if "/" in canonical_family_id else normalized["family_slug"],
         "family_name": normalized["model_name"],
-        "model_route_id": family_id.replace("/", "__"),
+        "model_route_id": canonical_family_id.replace("/", "__"),
         "variant_key": variant_key,
         "variant_label": variant_label,
+        # Registry-derived fields — None when no canonical resolution.
+        # Frontend / parity outputs use these alongside model_route_id.
+        "canonical_model_id": canonical_model_id,
+        "canonical_resolution_strategy": canonical_strategy,
+        "canonical_resolution_confidence": canonical_confidence,
     }
 
 
@@ -2854,7 +2926,15 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
                 f"{model_path.name} model-card categories_covered mismatch: card={card_categories} actual={hierarchy_categories}"
             )
 
+    # Scan text outputs for accidental upstream-repo URL leakage (the
+    # published dataset shouldn't reference evaleval/EEE_datastore in
+    # rendered URLs). Parquet emissions are binary and outside this
+    # contract's scope; skipping them lets parity parquet files coexist
+    # with the validator.
+    text_extensions = (".json", ".md", ".txt", ".csv", ".tsv", ".html", ".jsonl")
     for relative_path in iter_output_relative_files(output_dir):
+        if not relative_path.endswith(text_extensions):
+            continue
         text = (output_dir / relative_path).read_text(encoding="utf-8")
         if EEE_DATASET_REPO in text:
             errors.append(f"{relative_path} still contains {EEE_DATASET_REPO}")
@@ -2892,8 +2972,23 @@ def delete_stale_remote_files(
         )
 
 
-def attach_comparability_signals(metric_summary: dict) -> None:
-    """Compute and attach comparability and provenance signals for one metric summary."""
+def attach_variant_signals(metric_summary: dict) -> None:
+    """Compute variant_divergence per metric_summary group (intra-summary).
+
+    Variant divergence asks: "for the same model+benchmark+metric, did
+    different generation_args (temperature, max_tokens, …) produce
+    different scores?". The natural unit is intra-source — comparing
+    runs from the same evaluator with different setup. Cross-source
+    comparison would conflate variant effects with cross-party effects,
+    so this signal stays at the per-metric_summary grouping.
+
+    Provenance and cross_party_divergence have moved to
+    ``attach_canonical_signals`` which groups by canonical_id (with
+    family_key fallback) — that's the (model, benchmark, metric)
+    unit the spec actually intends, and unlike per-metric_summary
+    grouping it can detect multi-source / cross-party divergence
+    across suites. Variant stays here.
+    """
     metric_summary_id = as_string(metric_summary.get("metric_summary_id"))
     metric_config = metric_summary.get("metric_config")
 
@@ -2906,8 +3001,7 @@ def attach_comparability_signals(metric_summary: dict) -> None:
             group_order.append(route)
         grouped[route].append(row)
 
-    # Store by group so that per-eval and per-model aggregates can count groups (not rows)
-    signal_groups: list[dict] = []
+    variant_signal_groups: list[dict] = []
     for route in group_order:
         group_rows = grouped[route]
         group_id = f"{route}__{metric_summary_id}"
@@ -2924,46 +3018,31 @@ def attach_comparability_signals(metric_summary: dict) -> None:
             for row in group_rows
         ]
 
-        provenance_per_row = signals.compute_provenance(projected)
         variant_signal = signals.compute_variant_divergence(
             projected, metric_config, group_id=group_id
         )
-        cross_party_signal = signals.compute_cross_party_divergence(
-            projected, metric_config, group_id=group_id
-        )
 
-        first_party_only_in_group = False
-        for row, prov in zip(group_rows, provenance_per_row):
+        for row in group_rows:
             annotations = row.setdefault("evalcards", {}).setdefault("annotations", {})
-            annotations["provenance"] = prov
             if variant_signal is None:
                 annotations["variant_divergence"] = None
             else:
                 row_variant = dict(variant_signal)
                 row_variant["this_triple_score"] = row.get("score")
                 annotations["variant_divergence"] = row_variant
-            annotations["cross_party_divergence"] = cross_party_signal
-            if prov.get("first_party_only"):
-                first_party_only_in_group = True
 
-        is_multi_source = (
-            bool(provenance_per_row[0]["is_multi_source"])
-            if provenance_per_row
-            else False
-        )
-
-        signal_groups.append(
+        variant_signal_groups.append(
             {
                 "group_id": group_id,
                 "model_route_id": route,
-                "is_multi_source": is_multi_source,
-                "first_party_only_in_group": first_party_only_in_group,
                 "variant_divergence": variant_signal,
-                "cross_party_divergence": cross_party_signal,
             }
         )
 
-    metric_summary["_signal_groups"] = signal_groups
+    metric_summary["_variant_signal_groups"] = variant_signal_groups
+
+
+# Backwards-compat alias removed in this refactor.
 
 
 def _iter_summary_metrics(summary: dict):
@@ -2975,67 +3054,163 @@ def _iter_summary_metrics(summary: dict):
             yield metric
 
 
-def attach_canonical_cross_party_signals(eval_summaries: list[dict]) -> None:
-    """Sidecar Signal 4 grouped by (canonical_benchmark_id, metric_key).
+def _summary_canonical_grouping_key(summary: dict) -> str:
+    """Return the most-specific identity key available for grouping
+    a summary's rows. Prefers the registry's canonical_benchmark_id —
+    that's what enables cross-suite collapse (e.g., the four
+    ``helm_*_mmlu`` summaries all share canonical ``mmlu`` and bucket
+    together). When the registry doesn't resolve this benchmark, fall
+    back to the eval_summary_id so rows stay grouped at the
+    (suite, leaf) granularity legacy used. The benchmark_family_key
+    is too coarse as a fallback (aggregator suites like ``llm-stats``
+    have many distinct benchmarks under one family_key — collapsing
+    them would invent multi_source where the data has none)."""
+    canonical_id = as_string(summary.get("canonical_benchmark_id"))
+    if canonical_id:
+        return canonical_id
+    eval_summary_id = as_string(summary.get("eval_summary_id"))
+    if eval_summary_id:
+        return f"summary:{eval_summary_id}"
+    family_key = as_string(summary.get("benchmark_family_key"))
+    if family_key:
+        return f"family:{family_key}"
+    return ""
 
-    The legacy ``attach_comparability_signals`` groups rows within a
-    single ``metric_summary_id`` (always suite-prefixed), so MMLU-on-GPT-4
-    rows from ``helm_classic_mmlu`` and ``helm_lite_mmlu`` never land in
-    the same cross-party group. This pass re-buckets metric_summaries
-    across all eval_summaries by their registry-resolved canonical
-    benchmark id and re-runs ``compute_cross_party_divergence`` on the
-    union of rows, attaching the result as a sidecar
-    ``cross_party_divergence_canonical`` annotation.
 
-    Field shape contract:
-      - Every row gets ``cross_party_divergence_canonical`` set (uniform
-        presence; None when no cross-suite duplicates exist).
-      - Each metric_summary gets ``_signal_groups_canonical`` (filtered
-        to model_route_ids that have rows in that specific
-        metric_summary, so per-eval and per-model rollups don't
-        double-count groups across summaries that share a canonical id).
-      - Buckets that span only 1 eval_summary are skipped — there is no
-        cross-suite comparison to make. Their rows keep
-        ``cross_party_divergence_canonical = None``.
+def attach_canonical_signals(eval_summaries: list[dict]) -> None:
+    """Compute provenance and cross_party_divergence under two
+    different (intentional) grouping schemes:
+
+    - **Provenance / multi_source** uses the (model, benchmark) unit:
+      ``(canonical_or_family_key, model_route_id)``. Counting parties
+      shouldn't depend on which metric they reported — if HELM measures
+      gpt-4o on MMLU with ``exact_match`` and HuggingFace measures the
+      same with ``accuracy``, that's still 2 parties on the same
+      benchmark and should count as multi-source. Frontend definition
+      ("(model, benchmark) groups have reports from more than one
+      party") matches this grouping.
+
+    - **Cross-party divergence** uses the (model, benchmark, metric)
+      unit: ``(canonical_or_family_key, metric_key, model_route_id)``.
+      Comparing scores across different metrics is apples-to-oranges;
+      keep metric_key in the grouping key.
+
+    Per-row annotations attached:
+      - ``provenance`` — from the (model, benchmark) provenance group
+      - ``cross_party_divergence`` — from the (model, benchmark, metric) group
+
+    Stashes:
+      - ``_signal_groups``: per-(canonical, metric_key, route) carrying
+        cross_party_divergence. One entry per metric_summary per route
+        (deduped), so per-eval / per-model rollups don't double-count.
+      - ``_provenance_signal_groups``: per-(canonical, route) carrying
+        is_multi_source / first_party_only_in_group. Multiple
+        metric_summaries within the same eval may share a provenance
+        group; group_id encodes (canonical, route) so rollups can
+        dedupe.
     """
-    # Bucket every metric_summary by (canonical_benchmark_id, metric_key).
-    buckets: dict[tuple[str, str], list[tuple[dict, dict]]] = defaultdict(list)
     for summary in eval_summaries:
-        canonical_id = as_string(summary.get("canonical_benchmark_id"))
-        if not canonical_id:
+        for metric in _iter_summary_metrics(summary):
+            metric["_signal_groups"] = []
+            metric["_provenance_signal_groups"] = []
+
+    # ------------------------------------------------------------------
+    # Pass 1 — provenance at (canonical_or_family, model_route_id)
+    # ------------------------------------------------------------------
+    provenance_buckets: dict[
+        tuple[str, str], list[tuple[dict, dict, dict]]
+    ] = defaultdict(list)
+    for summary in eval_summaries:
+        bucket_key = _summary_canonical_grouping_key(summary)
+        if not bucket_key:
+            continue
+        for metric in _iter_summary_metrics(summary):
+            for row in metric.get("model_results") or []:
+                route = as_string(row.get("model_route_id"))
+                if not route:
+                    continue
+                provenance_buckets[(bucket_key, route)].append((summary, metric, row))
+
+    multi_source_groups_count = 0
+    provenance_groups_emitted = 0
+
+    for (bucket_key, route), entries in provenance_buckets.items():
+        group_id = f"prov__{route}__{bucket_key}"
+        projected = [
+            {
+                "score": row.get("score"),
+                "evaluation_id": row.get("evaluation_id"),
+                "source_metadata": row.get("source_metadata"),
+                "generation_args": row.get("_generation_args"),
+                "variant_key": row.get("variant_key"),
+                "model_route_id": row.get("model_route_id"),
+            }
+            for _summary, _metric, row in entries
+        ]
+        provenance_per_row = signals.compute_provenance(projected)
+
+        is_multi_source = (
+            bool(provenance_per_row[0]["is_multi_source"])
+            if provenance_per_row
+            else False
+        )
+        first_party_only_in_group = False
+        for (_summary, _metric, row), prov in zip(entries, provenance_per_row):
+            annotations = row.setdefault("evalcards", {}).setdefault(
+                "annotations", {}
+            )
+            annotations["provenance"] = prov
+            if prov.get("first_party_only"):
+                first_party_only_in_group = True
+
+        canonical_id_field = (
+            None
+            if bucket_key.startswith("family:") or bucket_key.startswith("summary:")
+            else bucket_key
+        )
+        provenance_entry = {
+            "group_id": group_id,
+            "model_route_id": route,
+            "canonical_benchmark_id": canonical_id_field,
+            "is_multi_source": is_multi_source,
+            "first_party_only_in_group": first_party_only_in_group,
+        }
+        # Stash on every contributing metric_summary so per-eval rollups
+        # can collect; rollup-side dedup by group_id keeps the count
+        # correct when multiple metric_summaries share a provenance
+        # group (different metrics on the same model+benchmark).
+        seen_metric_ids: set[int] = set()
+        for _summary, metric, _row in entries:
+            if id(metric) in seen_metric_ids:
+                continue
+            seen_metric_ids.add(id(metric))
+            metric["_provenance_signal_groups"].append(provenance_entry)
+
+        provenance_groups_emitted += 1
+        if is_multi_source:
+            multi_source_groups_count += 1
+
+    # ------------------------------------------------------------------
+    # Pass 2 — cross_party at (canonical_or_family, metric_key, route)
+    # ------------------------------------------------------------------
+    cross_party_buckets: dict[
+        tuple[str, str], list[tuple[dict, dict]]
+    ] = defaultdict(list)
+    for summary in eval_summaries:
+        bucket_key = _summary_canonical_grouping_key(summary)
+        if not bucket_key:
             continue
         for metric in _iter_summary_metrics(summary):
             metric_key = as_string(metric.get("metric_key"))
             if not metric_key:
                 continue
-            buckets[(canonical_id, metric_key)].append((summary, metric))
+            cross_party_buckets[(bucket_key, metric_key)].append((summary, metric))
 
-    # Initialize annotation + signal_groups to defaults so the field
-    # shape is uniform across the corpus, regardless of canonical match.
-    for summary in eval_summaries:
-        for metric in _iter_summary_metrics(summary):
-            metric["_signal_groups_canonical"] = []
-            for row in metric.get("model_results") or []:
-                annotations = row.setdefault("evalcards", {}).setdefault(
-                    "annotations", {}
-                )
-                annotations.setdefault("cross_party_divergence_canonical", None)
+    cross_party_groups_emitted = 0
+    cross_party_eligible_count = 0
+    cross_party_divergent_count = 0
 
-    canonical_groups_emitted = 0
-    canonical_buckets_with_divergence = 0
-    cross_suite_buckets_count = 0
-
-    for (canonical_id, metric_key), entries in buckets.items():
-        # Identity (not key) comparison — two summaries with identical
-        # eval_summary_id can't exist post-construction, so id() is
-        # safe and avoids re-hashing the dict.
-        if len({id(s) for s, _ in entries}) < 2:
-            continue
-        cross_suite_buckets_count += 1
-
-        # The metric_config of the first entry drives lower_is_better /
-        # threshold. By construction (same canonical_id + metric_key),
-        # all entries SHOULD agree on these; pick arbitrarily.
+    for (bucket_key, metric_key), entries in cross_party_buckets.items():
         metric_config = entries[0][1].get("metric_config")
 
         rows_by_route: dict[str, list[tuple[dict, dict]]] = defaultdict(list)
@@ -3051,9 +3226,7 @@ def attach_canonical_cross_party_signals(eval_summaries: list[dict]) -> None:
 
         for route in route_order:
             group_rows = rows_by_route[route]
-            group_id = (
-                f"{route}__canonical__{canonical_id}__{metric_key}"
-            )
+            group_id = f"{route}__{bucket_key}__{metric_key}"
             projected = [
                 {
                     "score": row.get("score"),
@@ -3073,57 +3246,68 @@ def attach_canonical_cross_party_signals(eval_summaries: list[dict]) -> None:
                 annotations = row.setdefault("evalcards", {}).setdefault(
                     "annotations", {}
                 )
-                annotations["cross_party_divergence_canonical"] = (
-                    cross_party_signal
-                )
+                annotations["cross_party_divergence"] = cross_party_signal
 
-            # Stash a signal_group entry on each contributing
-            # metric_summary, but only once per metric_summary per route
-            # so per-eval rollups count groups correctly.
+            canonical_id_field = (
+                None
+                if bucket_key.startswith("family:") or bucket_key.startswith("summary:")
+                else bucket_key
+            )
             seen_metric_ids: set[int] = set()
             for metric, _row in group_rows:
                 if id(metric) in seen_metric_ids:
                     continue
                 seen_metric_ids.add(id(metric))
-                metric["_signal_groups_canonical"].append(
+                metric["_signal_groups"].append(
                     {
                         "group_id": group_id,
                         "model_route_id": route,
-                        "canonical_benchmark_id": canonical_id,
+                        "canonical_benchmark_id": canonical_id_field,
                         "metric_key": metric_key,
                         "cross_party_divergence": cross_party_signal,
                     }
                 )
 
-            canonical_groups_emitted += 1
-            if cross_party_signal and cross_party_signal.get(
-                "has_cross_party_divergence"
-            ):
-                canonical_buckets_with_divergence += 1
+            cross_party_groups_emitted += 1
+            if cross_party_signal and isinstance(cross_party_signal, dict):
+                cross_party_eligible_count += 1
+                if cross_party_signal.get("has_cross_party_divergence"):
+                    cross_party_divergent_count += 1
 
     print(
-        f"[pipeline] {json.dumps({'event': 'registry.canonical_signal_4', 'cross_suite_buckets': cross_suite_buckets_count, 'eligible_groups': canonical_groups_emitted, 'divergent_groups': canonical_buckets_with_divergence})}"
+        f"[pipeline] {json.dumps({'event': 'registry.canonical_signals', 'provenance_groups': provenance_groups_emitted, 'multi_source_groups': multi_source_groups_count, 'cross_party_groups': cross_party_groups_emitted, 'cross_party_eligible': cross_party_eligible_count, 'cross_party_divergent': cross_party_divergent_count})}"
     )
 
 
 def collect_signal_rollup_inputs(
     metrics: list[dict],
-) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict]]:
     """Walk metrics and aggregate row + group annotations.
 
-    Returns ``(row_repro, row_provenance, signal_groups, signal_groups_canonical)``.
-    The canonical list is the cross-suite Signal 4 groups stashed by
-    ``attach_canonical_cross_party_signals``; entries are filtered per
-    metric_summary so each (canonical bucket, model_route_id) appears at
-    most once across the metrics passed in.
+    Returns ``(row_repro, row_provenance, variant_groups, signal_groups, provenance_groups)``:
+      - ``row_repro`` / ``row_provenance``: per-row annotation dicts.
+      - ``variant_groups``: per-metric_summary intra-source groups
+        (carry ``variant_divergence``).
+      - ``signal_groups``: per-(canonical, metric_key, route) — carry
+        ``cross_party_divergence``. The (model, benchmark, metric) unit.
+      - ``provenance_groups``: per-(canonical, route) — carry
+        ``is_multi_source`` + ``first_party_only_in_group``. The (model,
+        benchmark) unit. May appear on multiple metric_summaries within
+        the same eval (one per metric); rollup-side de-duplication by
+        ``group_id`` is the caller's responsibility.
     """
     row_repro_annotations: list[dict] = []
     row_provenance_annotations: list[dict] = []
+    variant_signal_groups: list[dict] = []
     signal_groups: list[dict] = []
-    signal_groups_canonical: list[dict] = []
+    provenance_signal_groups_by_id: dict[str, dict] = {}
     for metric in metrics:
+        variant_signal_groups.extend(metric.get("_variant_signal_groups") or [])
         signal_groups.extend(metric.get("_signal_groups") or [])
-        signal_groups_canonical.extend(metric.get("_signal_groups_canonical") or [])
+        for entry in metric.get("_provenance_signal_groups") or []:
+            gid = entry.get("group_id")
+            if gid and gid not in provenance_signal_groups_by_id:
+                provenance_signal_groups_by_id[gid] = entry
         for row in metric.get("model_results", []):
             annotations = (row.get("evalcards") or {}).get("annotations") or {}
             repro = annotations.get("reproducibility_gap")
@@ -3135,12 +3319,21 @@ def collect_signal_rollup_inputs(
     return (
         row_repro_annotations,
         row_provenance_annotations,
+        variant_signal_groups,
         signal_groups,
-        signal_groups_canonical,
+        list(provenance_signal_groups_by_id.values()),
     )
 
 
-def build_benchmark_comparability(signal_groups: list[dict]) -> dict:
+def build_benchmark_comparability(
+    variant_groups: list[dict], signal_groups: list[dict]
+) -> dict:
+    """Build the ``benchmark_comparability`` annotation block for an
+    eval_summary header. Variant groups come from the per-metric_summary
+    pass (intra-source); signal_groups come from the canonical-or-family
+    pass (cross-source / cross-party). Output schema preserves the
+    original two-bucket shape (variant_divergence_groups +
+    cross_party_divergence_groups)."""
     variant_divergence_groups = [
         {
             "group_id": g["group_id"],
@@ -3150,7 +3343,7 @@ def build_benchmark_comparability(signal_groups: list[dict]) -> dict:
             "threshold_basis": g["variant_divergence"].get("threshold_basis"),
             "differing_setup_fields": g["variant_divergence"]["differing_setup_fields"],
         }
-        for g in signal_groups
+        for g in variant_groups
         if g.get("variant_divergence")
         and g["variant_divergence"].get("has_variant_divergence")
     ]
@@ -3158,6 +3351,8 @@ def build_benchmark_comparability(signal_groups: list[dict]) -> dict:
         {
             "group_id": g["group_id"],
             "model_route_id": g["model_route_id"],
+            "canonical_benchmark_id": g.get("canonical_benchmark_id"),
+            "metric_key": g.get("metric_key"),
             "divergence_magnitude": g["cross_party_divergence"]["divergence_magnitude"],
             "threshold_used": g["cross_party_divergence"]["threshold_used"],
             "threshold_basis": g["cross_party_divergence"].get("threshold_basis"),
@@ -3178,60 +3373,32 @@ def build_benchmark_comparability(signal_groups: list[dict]) -> dict:
     }
 
 
-def build_benchmark_comparability_canonical(
-    signal_groups_canonical: list[dict],
+def summarize_comparability_combined(
+    variant_groups: list[dict], signal_groups: list[dict]
 ) -> dict:
-    """Cross-suite view of Signal 4 only (no variant_divergence channel).
-
-    Sidecar to ``build_benchmark_comparability``; the canonical signal
-    groups by definition span eval_summaries with the same
-    ``canonical_benchmark_id`` + ``metric_key``, so each entry carries
-    those identity fields alongside the divergence dict for traceability.
-    """
-    cross_party_divergence_groups = [
-        {
-            "group_id": g["group_id"],
-            "model_route_id": g["model_route_id"],
-            "canonical_benchmark_id": g.get("canonical_benchmark_id"),
-            "metric_key": g.get("metric_key"),
-            "divergence_magnitude": g["cross_party_divergence"][
-                "divergence_magnitude"
-            ],
-            "threshold_used": g["cross_party_divergence"]["threshold_used"],
-            "threshold_basis": g["cross_party_divergence"].get("threshold_basis"),
-            "scores_by_organization": g["cross_party_divergence"][
-                "scores_by_organization"
-            ],
-            "differing_setup_fields": g["cross_party_divergence"][
-                "differing_setup_fields"
-            ],
-        }
-        for g in signal_groups_canonical
-        if g.get("cross_party_divergence")
-        and g["cross_party_divergence"].get("has_cross_party_divergence")
-    ]
-    return {"cross_party_divergence_groups": cross_party_divergence_groups}
-
-
-def summarize_comparability_canonical(
-    signal_groups_canonical: list[dict],
-) -> dict:
-    """Cross-suite-only Signal 4 rollup. Mirrors the cross-party fields
-    from ``signals.summarize_comparability`` but skips variant since
-    canonical groups don't carry it."""
-    total_groups = len(signal_groups_canonical)
-    groups_with_cross_party_check = 0
-    cross_party_divergent_count = 0
-    for entry in signal_groups_canonical:
-        cross = entry.get("cross_party_divergence") if isinstance(entry, dict) else None
-        if isinstance(cross, dict):
-            groups_with_cross_party_check += 1
-            if cross.get("has_cross_party_divergence"):
-                cross_party_divergent_count += 1
+    """Combined rollup over two grouping schemes. Variant counts come
+    from the intra-source per-metric_summary groups; cross-party counts
+    come from the canonical-or-summary-key groups. The two are
+    summarized separately and merged into one shape so the eval_summary
+    header keeps a single ``comparability_summary`` field. ``total_groups``
+    is the sum of both grouping schemes' counts (matches what
+    ``aggregate_comparability`` produces at the corpus level when given
+    the same combined input)."""
+    variant_summary = signals.summarize_comparability(variant_groups)
+    canonical_summary = signals.summarize_comparability(signal_groups)
     return {
-        "total_groups": total_groups,
-        "groups_with_cross_party_check": groups_with_cross_party_check,
-        "cross_party_divergent_count": cross_party_divergent_count,
+        "total_groups": variant_summary.get("total_groups", 0)
+        + canonical_summary.get("total_groups", 0),
+        "groups_with_variant_check": variant_summary.get(
+            "groups_with_variant_check", 0
+        ),
+        "variant_divergent_count": variant_summary.get("variant_divergent_count", 0),
+        "groups_with_cross_party_check": canonical_summary.get(
+            "groups_with_cross_party_check", 0
+        ),
+        "cross_party_divergent_count": canonical_summary.get(
+            "cross_party_divergent_count", 0
+        ),
     }
 
 
@@ -3259,6 +3426,18 @@ def filter_metric_summary_for_model(
         filtered["_signal_groups"] = [
             group
             for group in filtered.get("_signal_groups") or []
+            if as_string(group.get("model_route_id")) in model_route_ids
+        ]
+    if "_variant_signal_groups" in filtered:
+        filtered["_variant_signal_groups"] = [
+            group
+            for group in filtered.get("_variant_signal_groups") or []
+            if as_string(group.get("model_route_id")) in model_route_ids
+        ]
+    if "_provenance_signal_groups" in filtered:
+        filtered["_provenance_signal_groups"] = [
+            group
+            for group in filtered.get("_provenance_signal_groups") or []
             if as_string(group.get("model_route_id")) in model_route_ids
         ]
     filtered["models_count"] = len(model_results)
@@ -3337,26 +3516,23 @@ def filter_eval_summary_for_model(summary: dict, family_id: str) -> dict | None:
     (
         row_repro_annotations,
         row_provenance_annotations,
+        variant_signal_groups,
         signal_groups,
-        signal_groups_canonical,
+        provenance_signal_groups,
     ) = collect_signal_rollup_inputs(filtered_metrics)
     filtered["reproducibility_summary"] = signals.summarize_reproducibility(
         row_repro_annotations
     )
     filtered["provenance_summary"] = signals.summarize_provenance(
-        row_provenance_annotations, signal_groups
+        row_provenance_annotations, provenance_signal_groups
     )
-    filtered["comparability_summary"] = signals.summarize_comparability(signal_groups)
-    filtered["cross_party_summary_canonical"] = summarize_comparability_canonical(
-        signal_groups_canonical
+    filtered["comparability_summary"] = summarize_comparability_combined(
+        variant_signal_groups, signal_groups
     )
     original_annotations = (summary.get("evalcards") or {}).get("annotations") or {}
     filtered_annotations = dict(original_annotations)
     filtered_annotations["benchmark_comparability"] = build_benchmark_comparability(
-        signal_groups
-    )
-    filtered_annotations["benchmark_comparability_canonical"] = (
-        build_benchmark_comparability_canonical(signal_groups_canonical)
+        variant_signal_groups, signal_groups
     )
     filtered["evalcards"] = {"annotations": filtered_annotations}
 
@@ -4243,6 +4419,13 @@ def main() -> int:
                 "variant_key": display_identity["variant_key"],
                 "variant_label": display_identity["variant_label"],
                 "model_route_id": display_identity["model_route_id"],
+                "canonical_model_id": identity.get("canonical_model_id"),
+                "canonical_resolution_strategy": identity.get(
+                    "canonical_resolution_strategy"
+                ),
+                "canonical_resolution_confidence": identity.get(
+                    "canonical_resolution_confidence"
+                ),
             }
         )
         evaluation["model_info"] = model_info
@@ -4632,7 +4815,7 @@ def main() -> int:
                 # Compute provenance + variant_divergence + cross_party_divergence per group,
                 # and attach annotations to each row.
                 # Group-level summaries are stashed on the metric_summary for downstream aggregation
-                attach_comparability_signals(metric_summary)
+                attach_variant_signals(metric_summary)
 
                 metric_summaries.append(metric_summary)
                 total_metric_count += 1
@@ -4805,12 +4988,14 @@ def main() -> int:
         f"[pipeline] {json.dumps({'event': 'registry.eval_summaries_resolved', 'total': len(eval_summaries), 'resolved': canonical_resolution_count})}"
     )
 
-    # Cross-suite Signal 4: re-group metric_summaries by
-    # (canonical_benchmark_id, metric_key) and re-run cross_party
-    # divergence on the union of rows. Result is attached as a sidecar
-    # annotation (``cross_party_divergence_canonical``) so consumers can
-    # compare against the legacy per-suite scope before we deprecate it.
-    attach_canonical_cross_party_signals(eval_summaries)
+    # Compute provenance + cross_party_divergence at the
+    # (canonical_benchmark_id-or-family_key, metric_key, model_route_id)
+    # grouping. This is the (model, benchmark, metric) unit the spec
+    # intends — variant_divergence stays at the per-metric_summary
+    # grouping (it's an intra-source signal). Replaces the legacy
+    # canonical-only sidecar pattern; the per-row annotation field
+    # names no longer carry a ``_canonical`` suffix.
+    attach_canonical_signals(eval_summaries)
 
     # ------------------------------------------------------------------
     # HOTFIX (2026-04-30): the ABC cards for ``helm_capabilities`` and
@@ -4906,32 +5091,30 @@ def main() -> int:
         (
             row_repro_annotations,
             row_provenance_annotations,
+            variant_signal_groups,
             signal_groups,
-            signal_groups_canonical,
+            provenance_signal_groups,
         ) = collect_signal_rollup_inputs(all_metrics)
 
         repro_summary = signals.summarize_reproducibility(row_repro_annotations)
         provenance_summary = signals.summarize_provenance(
-            row_provenance_annotations, signal_groups
+            row_provenance_annotations, provenance_signal_groups
         )
-        comparability_summary = signals.summarize_comparability(signal_groups)
-        cross_party_summary_canonical = summarize_comparability_canonical(
-            signal_groups_canonical
+        comparability_summary = summarize_comparability_combined(
+            variant_signal_groups, signal_groups
         )
 
         summary["evalcards"] = {
             "annotations": {
                 "reporting_completeness": completeness,
-                "benchmark_comparability": build_benchmark_comparability(signal_groups),
-                "benchmark_comparability_canonical": (
-                    build_benchmark_comparability_canonical(signal_groups_canonical)
+                "benchmark_comparability": build_benchmark_comparability(
+                    variant_signal_groups, signal_groups
                 ),
             }
         }
         summary["reproducibility_summary"] = repro_summary
         summary["provenance_summary"] = provenance_summary
         summary["comparability_summary"] = comparability_summary
-        summary["cross_party_summary_canonical"] = cross_party_summary_canonical
 
     aggregated_model_family_groups: dict[str, list[dict]] = defaultdict(list)
     for family_evals in model_family_groups.values():
@@ -5138,19 +5321,29 @@ def main() -> int:
         # across this model's filtered hierarchy, and per-group signals
         model_repro_annotations: list[dict] = []
         model_provenance_annotations: list[dict] = []
+        model_variant_signal_groups: list[dict] = []
         model_signal_groups: list[dict] = []
-        model_signal_groups_canonical: list[dict] = []
+        # Provenance groups are de-duped by group_id — multiple
+        # metric_summaries within the same eval may carry the same
+        # entry (one per metric on that (model, benchmark) pair).
+        model_provenance_groups_by_id: dict[str, dict] = {}
         for filtered_summary in filtered_eval_summaries:
             filtered_metrics: list[dict] = list(filtered_summary.get("metrics", []))
             for subtask in filtered_summary.get("subtasks", []):
                 filtered_metrics.extend(subtask.get("metrics", []))
             for metric in filtered_metrics:
+                for entry in metric.get("_variant_signal_groups") or []:
+                    if as_string(entry.get("model_route_id")) == route_id:
+                        model_variant_signal_groups.append(entry)
                 for entry in metric.get("_signal_groups") or []:
                     if as_string(entry.get("model_route_id")) == route_id:
                         model_signal_groups.append(entry)
-                for entry in metric.get("_signal_groups_canonical") or []:
-                    if as_string(entry.get("model_route_id")) == route_id:
-                        model_signal_groups_canonical.append(entry)
+                for entry in metric.get("_provenance_signal_groups") or []:
+                    if as_string(entry.get("model_route_id")) != route_id:
+                        continue
+                    gid = entry.get("group_id")
+                    if gid and gid not in model_provenance_groups_by_id:
+                        model_provenance_groups_by_id[gid] = entry
                 for row in metric.get("model_results", []):
                     annotations = (row.get("evalcards") or {}).get("annotations") or {}
                     repro = annotations.get("reproducibility_gap")
@@ -5159,20 +5352,17 @@ def main() -> int:
                     prov = annotations.get("provenance")
                     if prov is not None:
                         model_provenance_annotations.append(prov)
+        model_provenance_groups = list(model_provenance_groups_by_id.values())
         model_repro_summary = signals.summarize_reproducibility(model_repro_annotations)
         model_provenance_summary = signals.summarize_provenance(
-            model_provenance_annotations, model_signal_groups
+            model_provenance_annotations, model_provenance_groups
         )
-        model_comparability_summary = signals.summarize_comparability(
-            model_signal_groups
-        )
-        model_cross_party_summary_canonical = summarize_comparability_canonical(
-            model_signal_groups_canonical
+        model_comparability_summary = summarize_comparability_combined(
+            model_variant_signal_groups, model_signal_groups
         )
         summary["reproducibility_summary"] = model_repro_summary
         summary["provenance_summary"] = model_provenance_summary
         summary["comparability_summary"] = model_comparability_summary
-        summary["cross_party_summary_canonical"] = model_cross_party_summary_canonical
         model_summaries.append(summary)
 
         if score_values:
@@ -5190,6 +5380,18 @@ def main() -> int:
                 "model_family_id": family_id,
                 "model_route_id": route_id,
                 "model_family_name": family_name,
+                # Registry-resolved canonical (None when no resolution).
+                # `family_id` and `model_route_id` are already canonical-derived
+                # via canonical_model_identity, but exposing the canonical id
+                # explicitly lets the frontend display "this card represents
+                # registry canonical X" without parsing route_id.
+                "canonical_model_id": display_identity.get("canonical_model_id"),
+                "canonical_resolution_strategy": display_identity.get(
+                    "canonical_resolution_strategy"
+                ),
+                "canonical_resolution_confidence": display_identity.get(
+                    "canonical_resolution_confidence"
+                ),
                 "developer": as_string(model_info.get("developer")),
                 "params_billions": params_billions,
                 "total_evaluations": len(family_evals),
@@ -5227,7 +5429,6 @@ def main() -> int:
                 "reproducibility_summary": model_repro_summary,
                 "provenance_summary": model_provenance_summary,
                 "comparability_summary": model_comparability_summary,
-                "cross_party_summary_canonical": model_cross_party_summary_canonical,
                 # ---- FIX 2 continued: include benchmark names and per-benchmark
                 # scores so the frontend compare dialog and domain pills work ----
                 "benchmark_names": sorted(benchmark_names_set),
@@ -5327,9 +5528,6 @@ def main() -> int:
                 "reproducibility_summary": s.get("reproducibility_summary"),
                 "provenance_summary": s.get("provenance_summary"),
                 "comparability_summary": s.get("comparability_summary"),
-                "cross_party_summary_canonical": s.get(
-                    "cross_party_summary_canonical"
-                ),
             }
             for s in eval_summaries
         ],
@@ -5375,8 +5573,18 @@ def main() -> int:
     # the strip pass since it reads `_signal_groups` off the metric_summaries.
     repro_inputs: list[tuple] = []
     provenance_row_inputs: list[tuple] = []
+    # Three grouping schemes flow into corpus rollups:
+    # - ``variant_group_inputs``: per-metric_summary intra-source groups,
+    #   carry variant_divergence
+    # - ``group_inputs``: per-(canonical, metric_key, route), carry
+    #   cross_party_divergence — the (model, benchmark, metric) unit
+    # - ``provenance_group_inputs``: per-(canonical, route), carry
+    #   is_multi_source/first_party_only flags — the (model, benchmark)
+    #   unit. May include duplicates across metrics in the same
+    #   (canonical, route) group; deduped by group_id below.
     group_inputs: list[tuple] = []
-    group_inputs_canonical: list[tuple] = []
+    variant_group_inputs: list[tuple] = []
+    provenance_group_inputs_by_id: dict[str, tuple] = {}
     completeness_inputs: list[tuple] = []
     base_field_count = len(signals.BASE_REPRODUCIBILITY_FIELDS)
 
@@ -5392,10 +5600,14 @@ def main() -> int:
         for subtask in eval_summary.get("subtasks", []):
             all_metrics.extend(subtask.get("metrics", []))
         for metric in all_metrics:
+            for group in metric.get("_variant_signal_groups") or []:
+                variant_group_inputs.append((group, category))
             for group in metric.get("_signal_groups") or []:
                 group_inputs.append((group, category))
-            for group in metric.get("_signal_groups_canonical") or []:
-                group_inputs_canonical.append((group, category))
+            for entry in metric.get("_provenance_signal_groups") or []:
+                gid = entry.get("group_id")
+                if gid and gid not in provenance_group_inputs_by_id:
+                    provenance_group_inputs_by_id[gid] = (entry, category)
             for row in metric.get("model_results", []):
                 annotations = (row.get("evalcards") or {}).get("annotations") or {}
                 repro = annotations.get("reproducibility_gap")
@@ -5415,6 +5627,15 @@ def main() -> int:
                 if isinstance(provenance, dict):
                     provenance_row_inputs.append((provenance, category))
 
+    # Comparability stratifies over a combined input so a single block
+    # carries both variant_* (intra-source) and cross_party_* (canonical
+    # /family grouping) counters. ``total_groups`` is the sum of both
+    # axes; the per-axis ``*_eligible_groups`` / ``*_divergent_groups``
+    # counts are correct because each entry contributes to at most one
+    # axis (variant entries don't carry cross_party; canonical entries
+    # don't carry variant).
+    combined_comparability_inputs = variant_group_inputs + group_inputs
+    provenance_group_inputs = list(provenance_group_inputs_by_id.values())
     corpus_aggregates = {
         "generated_at": started_at,
         "signal_version": signals.SIGNAL_VERSION,
@@ -5425,18 +5646,21 @@ def main() -> int:
         "completeness": signals.stratify(
             completeness_inputs, signals.aggregate_completeness
         ),
-        "provenance": signals.stratify_provenance(provenance_row_inputs, group_inputs),
-        "comparability": signals.stratify(
-            group_inputs, signals.aggregate_comparability
+        # Provenance uses the (model, benchmark) grouping — drops
+        # metric_key from the bucket so HELM-on-MMLU-with-exact_match
+        # and HF-on-MMLU-with-accuracy count as one (model, benchmark)
+        # pair with two parties → multi-source. Frontend definition
+        # ("(model, benchmark) groups have reports from more than one
+        # party") matches this grouping.
+        "provenance": signals.stratify_provenance(
+            provenance_row_inputs, provenance_group_inputs
         ),
-        # Cross-suite comparability: groups bucketed by registry-resolved
-        # canonical_benchmark_id rather than per-suite metric_summary_id.
-        # Sidecar to ``comparability``; surfaces multi-suite duplicates
-        # (e.g. helm_classic_mmlu vs helm_lite_mmlu) that the per-suite
-        # block cannot detect by construction. Variant fields will be
-        # null-rate (canonical groups carry only cross_party_divergence).
-        "comparability_canonical": signals.stratify(
-            group_inputs_canonical, signals.aggregate_comparability
+        # Comparability cross-party axis uses the (model, benchmark,
+        # metric) grouping — keeps metric_key in the bucket so cross-
+        # party divergence compares apples to apples. Variant axis is
+        # per-metric_summary intra-source.
+        "comparability": signals.stratify(
+            combined_comparability_inputs, signals.aggregate_comparability
         ),
     }
 
@@ -5496,17 +5720,25 @@ def main() -> int:
     # `apex_v1` + `apex_agents` etc.
     def _collect_eval_signal_data(
         eval_summary: dict,
-    ) -> tuple[list, list, list, list]:
+    ) -> tuple[list, list, list, list, dict]:
         repro_anns: list[dict] = []
         prov_anns: list[dict] = []
+        variant_groups: list[dict] = []
         sig_groups: list[dict] = []
-        sig_groups_canonical: list[dict] = []
+        # Provenance groups are de-duped by group_id within the
+        # collection — multiple metric_summaries within one eval may
+        # carry the same (canonical, route) provenance entry.
+        provenance_groups_by_id: dict[str, dict] = {}
         metrics_pool = list(eval_summary.get("metrics") or [])
         for subtask in eval_summary.get("subtasks") or []:
             metrics_pool.extend(subtask.get("metrics") or [])
         for metric in metrics_pool:
+            variant_groups.extend(metric.get("_variant_signal_groups") or [])
             sig_groups.extend(metric.get("_signal_groups") or [])
-            sig_groups_canonical.extend(metric.get("_signal_groups_canonical") or [])
+            for entry in metric.get("_provenance_signal_groups") or []:
+                gid = entry.get("group_id")
+                if gid and gid not in provenance_groups_by_id:
+                    provenance_groups_by_id[gid] = entry
             for row in metric.get("model_results") or []:
                 annotations = (row.get("evalcards") or {}).get("annotations") or {}
                 repro = annotations.get("reproducibility_gap")
@@ -5515,25 +5747,30 @@ def main() -> int:
                 prov = annotations.get("provenance")
                 if isinstance(prov, dict):
                     prov_anns.append(prov)
-        return repro_anns, prov_anns, sig_groups, sig_groups_canonical
+        return repro_anns, prov_anns, variant_groups, sig_groups, provenance_groups_by_id
 
     def _node_rollups(evals_for_node: list[dict]) -> dict:
         repro_all: list[dict] = []
         prov_all: list[dict] = []
+        variant_groups_all: list[dict] = []
         groups_all: list[dict] = []
-        groups_canonical_all: list[dict] = []
+        prov_groups_by_id: dict[str, dict] = {}
         for es in evals_for_node:
-            r, p, g, gc = _collect_eval_signal_data(es)
+            r, p, vg, g, pg = _collect_eval_signal_data(es)
             repro_all.extend(r)
             prov_all.extend(p)
+            variant_groups_all.extend(vg)
             groups_all.extend(g)
-            groups_canonical_all.extend(gc)
+            for gid, entry in pg.items():
+                if gid not in prov_groups_by_id:
+                    prov_groups_by_id[gid] = entry
         return {
             "reproducibility_summary": signals.summarize_reproducibility(repro_all),
-            "provenance_summary": signals.summarize_provenance(prov_all, groups_all),
-            "comparability_summary": signals.summarize_comparability(groups_all),
-            "cross_party_summary_canonical": summarize_comparability_canonical(
-                groups_canonical_all
+            "provenance_summary": signals.summarize_provenance(
+                prov_all, list(prov_groups_by_id.values())
+            ),
+            "comparability_summary": summarize_comparability_combined(
+                variant_groups_all, groups_all
             ),
         }
 
@@ -5714,9 +5951,17 @@ def main() -> int:
             all_metrics.extend(subtask.get("metrics", []))
         for metric in all_metrics:
             metric.pop("_signal_groups", None)
-            metric.pop("_signal_groups_canonical", None)
+            metric.pop("_variant_signal_groups", None)
+            metric.pop("_provenance_signal_groups", None)
             for row in metric.get("model_results", []):
                 row.pop("_generation_args", None)
+
+    def _strip_eval_obj_internals(eval_obj: dict) -> None:
+        # Models' ``evaluations_by_category`` carries raw eval_obj
+        # records. ``_eee_source_config`` (set at eval_obj construction
+        # for registry lookup) leaks into the published model JSONs
+        # via this path; strip it before serialization.
+        eval_obj.pop("_eee_source_config", None)
 
     for summary in eval_summaries:
         _strip_signals_internals(summary)
@@ -5724,6 +5969,9 @@ def main() -> int:
         for category_summaries in summary.get("hierarchy_by_category", {}).values():
             for filtered_summary in category_summaries:
                 _strip_signals_internals(filtered_summary)
+        for category_evals in summary.get("evaluations_by_category", {}).values():
+            for eval_obj in category_evals:
+                _strip_eval_obj_internals(eval_obj)
 
     for summary in model_summaries:
         write_json(OUTPUT_DIR / "models" / f"{summary['model_route_id']}.json", summary)

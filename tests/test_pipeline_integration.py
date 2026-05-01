@@ -244,8 +244,8 @@ def test_no_internal_underscore_fields_leak_to_evals_json(pipeline_output):
         for metric in _walk_metric_summaries(summary):
             if "_signal_groups" in metric:
                 leaks.append(f"{path.name}::metric._signal_groups")
-            if "_signal_groups_canonical" in metric:
-                leaks.append(f"{path.name}::metric._signal_groups_canonical")
+            if "_variant_signal_groups" in metric:
+                leaks.append(f"{path.name}::metric._variant_signal_groups")
             for row in metric.get("model_results", []):
                 if "_generation_args" in row:
                     leaks.append(f"{path.name}::row._generation_args")
@@ -263,9 +263,9 @@ def test_no_internal_underscore_fields_leak_to_models_json(pipeline_output):
                 for metric in _walk_metric_summaries(summary):
                     if "_signal_groups" in metric:
                         leaks.append(f"{path.name}::metric._signal_groups")
-                    if "_signal_groups_canonical" in metric:
+                    if "_variant_signal_groups" in metric:
                         leaks.append(
-                            f"{path.name}::metric._signal_groups_canonical"
+                            f"{path.name}::metric._variant_signal_groups"
                         )
                     for row in metric.get("model_results", []):
                         if "_generation_args" in row:
@@ -279,19 +279,25 @@ def test_no_internal_underscore_fields_leak_to_models_json(pipeline_output):
 
 
 def test_per_eval_provenance_summary_counts_match_underlying_data(pipeline_output):
-    """provenance_summary.total_results == row count;
-    provenance_summary.total_groups == sum-over-metrics of distinct
-    model_route_ids."""
+    """provenance_summary.total_results == row count.
+    Provenance groups are at the (model, benchmark) unit (drops
+    metric_key from the bucket), so total_groups == distinct
+    model_route_ids in the eval, NOT distinct (route, metric) pairs."""
     for path in (pipeline_output / "evals").glob("*.json"):
         summary = _read(path)
         ps = summary["provenance_summary"]
         rows = _walk_rows(summary)
         assert ps["total_results"] == len(rows), f"{path.name}: row mismatch"
-        expected_groups = sum(
-            len({row["model_route_id"] for row in metric.get("model_results", [])})
-            for metric in _walk_metric_summaries(summary)
+        all_routes: set[str] = set()
+        for metric in _walk_metric_summaries(summary):
+            for row in metric.get("model_results", []):
+                if row.get("model_route_id"):
+                    all_routes.add(row["model_route_id"])
+        assert ps["total_groups"] == len(all_routes), (
+            f"{path.name}: groups mismatch; under (model,benchmark) "
+            f"grouping expected {len(all_routes)} (distinct routes), "
+            f"got {ps['total_groups']}"
         )
-        assert ps["total_groups"] == expected_groups, f"{path.name}: groups mismatch"
 
 
 def test_per_eval_source_type_distribution_sums_to_total_results(pipeline_output):
@@ -308,10 +314,12 @@ def test_per_eval_source_type_distribution_sums_to_total_results(pipeline_output
 
 
 def test_per_eval_comparability_summary_counts_match_signal_attachments(pipeline_output):
-    """variant_divergent_count == # groups where variant_divergence is non-null
-    AND has_variant_divergence: true. Same for cross_party. Walking rows
-    undercounts (same group on multiple rows) — instead enumerate groups by
-    (model_route_id, metric_summary_id)."""
+    """variant_divergent_count counts distinct (model_route_id,
+    metric_summary_id) groups where variant_divergence fires;
+    cross_party_divergent_count counts distinct (model_route_id,
+    metric_summary_id) groups where cross_party_divergence fires.
+    total_groups is the SUM of both grouping schemes' counts (variant
+    intra-source + cross-party canonical-or-summary)."""
     for path in (pipeline_output / "evals").glob("*.json"):
         summary = _read(path)
         cs = summary["comparability_summary"]
@@ -335,28 +343,48 @@ def test_per_eval_comparability_summary_counts_match_signal_attachments(pipeline
                     cross_party_eligible += 1
                     if ann["cross_party_divergence"]["has_cross_party_divergence"]:
                         cross_party_divergent += 1
-        assert cs["total_groups"] == len(seen_groups), f"{path.name}: total_groups"
+        # total_groups = sum of variant + cross_party group counts.
+        # Each (route, metric_summary_id) contributes ONE entry per
+        # axis to the rollup (regardless of how many rows in that
+        # group), so sum-of-axes = 2 × distinct (route, metric_summary).
+        assert cs["total_groups"] == 2 * len(seen_groups), (
+            f"{path.name}: total_groups expected {2 * len(seen_groups)} "
+            f"(variant + cross_party for {len(seen_groups)} distinct groups), "
+            f"got {cs['total_groups']}"
+        )
         assert cs["groups_with_variant_check"] == variant_eligible
         assert cs["variant_divergent_count"] == variant_divergent
         assert cs["groups_with_cross_party_check"] == cross_party_eligible
         assert cs["cross_party_divergent_count"] == cross_party_divergent
 
 
-def test_per_model_total_groups_equals_appearance_count(pipeline_output):
-    """For each model JSON, provenance_summary.total_groups equals the number
-    of metric_summaries this model appears in (each contributes one group)."""
+def test_per_model_total_groups_equals_distinct_canonical_count(pipeline_output):
+    """Provenance groups by (model, benchmark) where ``benchmark``
+    uses canonical_benchmark_id when registry resolves else
+    eval_summary_id. Per-model total_groups equals the number of
+    DISTINCT (canonical-or-summary, route) pairs the model appears in.
+    Multiple eval_summaries that share a canonical_id collapse to one
+    provenance group, so this can be smaller than the eval-appearance
+    count."""
     for path in (pipeline_output / "models").glob("*.json"):
         model = _read(path)
         route = model["model_route_id"]
-        appearance_count = sum(
-            1
-            for cat_summaries in model.get("hierarchy_by_category", {}).values()
-            for summary in cat_summaries
-            for metric in _walk_metric_summaries(summary)
-            if any(row["model_route_id"] == route for row in metric.get("model_results", []))
-        )
-        assert model["provenance_summary"]["total_groups"] == appearance_count, (
-            f"{path.name}: per-model total_groups mismatch"
+        distinct_buckets: set[str] = set()
+        for cat_summaries in model.get("hierarchy_by_category", {}).values():
+            for summary in cat_summaries:
+                if not any(
+                    row["model_route_id"] == route
+                    for metric in _walk_metric_summaries(summary)
+                    for row in metric.get("model_results", [])
+                ):
+                    continue
+                canonical = summary.get("canonical_benchmark_id")
+                bucket = canonical or f"summary:{summary.get('eval_summary_id')}"
+                distinct_buckets.add(bucket)
+        assert model["provenance_summary"]["total_groups"] == len(distinct_buckets), (
+            f"{path.name}: per-model total_groups mismatch — expected "
+            f"{len(distinct_buckets)} distinct (canonical-or-summary, route) "
+            f"buckets, got {model['provenance_summary']['total_groups']}"
         )
 
 
@@ -370,15 +398,35 @@ def test_model_detail_nested_rollups_are_model_scoped(pipeline_output):
                 rows = _walk_rows(summary)
                 assert rows, f"{path.name} {summary.get('eval_summary_id')} has no rows"
                 assert all(row["model_route_id"] == route for row in rows)
-                group_count = sum(
+                metric_group_count = sum(
                     1
                     for metric in _walk_metric_summaries(summary)
                     if metric.get("model_results")
                 )
                 assert summary["reproducibility_summary"]["results_total"] == len(rows)
                 assert summary["provenance_summary"]["total_results"] == len(rows)
-                assert summary["provenance_summary"]["total_groups"] == group_count
-                assert summary["comparability_summary"]["total_groups"] == group_count
+                # Provenance is at (model, benchmark) — one group per eval
+                # regardless of metric count. With model-scoped filter,
+                # each eval contributes 1 provenance group for this route.
+                assert summary["provenance_summary"]["total_groups"] == 1, (
+                    f"{path.name}: filtered model scope should have exactly "
+                    f"one provenance group; got {summary['provenance_summary']['total_groups']}"
+                )
+                # Comparability total_groups is the SUM of two grouping
+                # schemes (variant intra-source + canonical-or-summary
+                # cross_party). Variant adds 1 entry per metric-with-rows
+                # × this route. Cross_party adds 1 entry per metric × route
+                # within the same canonical bucket. With one route filter,
+                # both axes contribute metric_group_count entries each.
+                assert (
+                    summary["comparability_summary"]["total_groups"]
+                    == metric_group_count * 2
+                ), (
+                    f"{path.name} {summary.get('eval_summary_id')}: "
+                    f"expected {metric_group_count * 2} (variant + "
+                    f"cross_party for {metric_group_count} metrics), "
+                    f"got {summary['comparability_summary']['total_groups']}"
+                )
                 assert sum(
                     summary["provenance_summary"]["source_type_distribution"].values()
                 ) == len(rows)
@@ -1036,11 +1084,15 @@ def test_setup_alias_suffixes_collapse_to_same_family(pipeline_output):
 def test_setup_alias_rows_share_one_signal_group(pipeline_output):
     """Both setup-alias rows are in the same model_route_id, so signals 3+4
     treat them as ONE group (size 2). This is a real-world consequence of
-    the collapse: variant divergence may fire across call-style variants."""
+    the collapse: variant divergence may fire across call-style variants.
+    Under the post-refactor grouping, total_groups = sum of two grouping
+    schemes (variant intra-source + cross_party canonical-or-summary), so
+    one model_route × one metric_summary contributes 2 entries to the
+    combined rollup."""
     summary = _read(pipeline_output / "evals" / "bench_setupalias.json")
     cs = summary["comparability_summary"]
-    # One model_route_id → one group
-    assert cs["total_groups"] == 1
+    # 1 variant entry + 1 cross_party entry = 2 total entries
+    assert cs["total_groups"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1189,6 +1241,11 @@ def test_parity_artifacts_emitted_by_default(pipeline_output):
     pytest.importorskip("pyarrow.parquet")
     parity_dir = pipeline_output / "duckdb" / "v1"
     assert parity_dir.is_dir(), "duckdb/v1 not emitted"
+    emitted = {path.name for path in parity_dir.glob("*.parquet")}
+    assert emitted == set(PARITY_DUCKDB_TABLES), (
+        "duckdb/v1 should contain only frontend-consumed parity parquet "
+        f"tables; extras={sorted(emitted - set(PARITY_DUCKDB_TABLES))}"
+    )
     for name in PARITY_DUCKDB_TABLES:
         path = parity_dir / name
         assert path.exists(), f"missing parity table: {name}"
@@ -1217,6 +1274,23 @@ def test_parity_model_cards_carry_canonical_columns(pipeline_output):
     assert openai_payload["source_types"] == ["documentation"]
     assert openai_payload["reproducibility_status"] == "partial"
     assert openai_payload["evaluator_count"] == 0
+
+
+def test_parity_model_cards_emit_canonical_model_id_column(pipeline_output):
+    """Phase 2.3 — registry-resolved canonical_model_id surfaces as a
+    distinct column (and inside the payload_json) on model_cards.parquet.
+    None for rows with no registry hit; populated for rows where the
+    registry resolved the model identity. Registry runs against the
+    fixtures/aliases.parquet that the test conftest provisions."""
+    import pyarrow.parquet as pq
+
+    pytest.importorskip("pyarrow.parquet")
+    table = pq.read_table(pipeline_output / "duckdb" / "v1" / "model_cards.parquet")
+    columns = set(table.column_names)
+    assert "canonical_model_id" in columns, (
+        "model_cards.parquet missing canonical_model_id column "
+        f"(present columns: {sorted(columns)})"
+    )
 
 
 def test_parity_model_summaries_carry_ts_shape(pipeline_output):
@@ -1420,73 +1494,76 @@ def test_canonical_benchmark_id_appears_in_comparison_index(pipeline_output):
 
 
 def test_cross_suite_signal_4_fires_on_canonical_duplicates(pipeline_output):
-    """The whole point of this PR: two suites with the same canonical
-    benchmark must produce a cross_party_divergence_canonical annotation
-    that the legacy per-suite cross_party_divergence cannot, by
-    construction, surface."""
+    """Two suites with the same canonical benchmark must produce a
+    cross_party_divergence annotation. The legacy per-suite grouping
+    couldn't fire here by construction; the canonical-or-family
+    grouping that replaced it does."""
     for eid in ("bench_canonical_a_mmlu", "bench_canonical_b_mmlu"):
         summary = _eval_by_id(pipeline_output, eid)
         rows = list(_walk_rows(summary))
         assert rows, f"{eid} should have at least one row"
         for row in rows:
             ann = (row.get("evalcards") or {}).get("annotations") or {}
-            canonical = ann.get("cross_party_divergence_canonical")
-            assert canonical is not None, (
-                f"{eid} row missing canonical Signal 4 — registry "
-                "stamping or cross-suite pass did not run"
+            cross_party = ann.get("cross_party_divergence")
+            assert cross_party is not None, (
+                f"{eid} row missing cross_party_divergence — canonical "
+                "grouping pass did not run"
             )
-            # Per-suite annotation should also be set (not replaced),
-            # confirming sidecar shape.
-            assert "cross_party_divergence" in ann
 
 
 def test_canonical_signal_4_detects_score_divergence(pipeline_output):
     """Scores 0.85 and 0.55 are 0.30 apart — well above the 0.05
-    absolute threshold — so has_cross_party_divergence must be True."""
+    absolute threshold — so has_cross_party_divergence must be True
+    once the canonical grouping unifies the two-suite rows."""
     summary = _eval_by_id(pipeline_output, "bench_canonical_a_mmlu")
     rows = list(_walk_rows(summary))
     assert rows
-    canonical = rows[0]["evalcards"]["annotations"][
-        "cross_party_divergence_canonical"
-    ]
-    assert canonical["has_cross_party_divergence"] is True
-    # group_id should encode the canonical bucket key, not the suite-prefixed
-    # metric_summary_id used by the legacy version.
-    assert "canonical" in canonical["group_id"]
-    assert "mmlu" in canonical["group_id"]
+    cross_party = rows[0]["evalcards"]["annotations"]["cross_party_divergence"]
+    assert cross_party["has_cross_party_divergence"] is True
+    # group_id encodes the canonical bucket key (canonical_benchmark_id).
+    assert "mmlu" in cross_party["group_id"]
 
 
-def test_legacy_cross_party_does_not_fire_within_each_suite(pipeline_output):
-    """Each suite has a single row for gpt-5, so the legacy per-suite
-    Signal 4 has no cross-org comparison to make. This test confirms the
-    surfacing-failure mode the canonical pass fixes."""
-    for eid in ("bench_canonical_a_mmlu", "bench_canonical_b_mmlu"):
-        summary = _eval_by_id(pipeline_output, eid)
-        rows = list(_walk_rows(summary))
-        legacy = rows[0]["evalcards"]["annotations"].get("cross_party_divergence")
-        # Legacy may be None (single-row group) or has_cross_party_divergence=False —
-        # in either case it cannot surface the cross-suite divergence.
-        if isinstance(legacy, dict):
-            assert legacy.get("has_cross_party_divergence") is False
-
-
-def test_corpus_aggregates_emits_canonical_block(pipeline_output):
+def test_corpus_aggregates_comparability_fires_under_canonical_grouping(pipeline_output):
+    """Post-refactor, the single ``comparability`` block in
+    corpus-aggregates uses canonical-or-family grouping for cross-party,
+    so cross_party_eligible_groups > 0 for our fixture."""
     aggs = _read(pipeline_output / "corpus-aggregates.json")
-    assert "comparability_canonical" in aggs
-    canonical = aggs["comparability_canonical"]
-    overall = canonical.get("overall", {})
-    # Our fixture produces exactly 1 cross-suite eligible group
-    # (gpt-5 × canonical mmlu × accuracy).
+    assert "comparability_canonical" not in aggs, (
+        "comparability_canonical block should be removed; merged into comparability"
+    )
+    overall = aggs["comparability"]["overall"]
+    # Fixture has bench_canonical_a/_b sharing canonical mmlu with two distinct
+    # orgs (OpenAI, Scale AI) → exactly 1 cross-party eligible group there;
+    # bench_multiorg also fires (2 orgs in 1 suite) → at least 1 more.
     assert overall.get("cross_party_eligible_groups", 0) >= 1
     assert overall.get("cross_party_divergent_groups", 0) >= 1
 
 
-def test_per_eval_cross_party_summary_canonical_emitted(pipeline_output):
+def test_corpus_aggregates_provenance_multi_source_fires(pipeline_output):
+    """multi_source_rate was 0% under legacy grouping (each metric_summary
+    is single-source by construction). Under canonical grouping it
+    fires for any (model, benchmark, metric) triple that spans suites
+    with different orgs."""
+    aggs = _read(pipeline_output / "corpus-aggregates.json")
+    overall = aggs["provenance"]["overall"]
+    assert overall.get("multi_source_groups", 0) >= 1, (
+        f"expected multi_source to fire under canonical grouping; got {overall}"
+    )
+    assert overall.get("multi_source_rate", 0) > 0
+
+
+def test_per_eval_comparability_summary_carries_cross_party_counts(pipeline_output):
+    """eval_summary.comparability_summary should carry cross_party
+    counts directly (no separate cross_party_summary_canonical field
+    after the refactor)."""
     summary = _eval_by_id(pipeline_output, "bench_canonical_a_mmlu")
-    canonical_summary = summary.get("cross_party_summary_canonical")
-    assert canonical_summary is not None
-    assert canonical_summary.get("groups_with_cross_party_check", 0) >= 1
-    assert canonical_summary.get("cross_party_divergent_count", 0) >= 1
+    cs = summary.get("comparability_summary")
+    assert cs is not None
+    assert cs.get("groups_with_cross_party_check", 0) >= 1
+    assert cs.get("cross_party_divergent_count", 0) >= 1
+    # Sidecar fields removed in this refactor.
+    assert "cross_party_summary_canonical" not in summary
 
 
 def test_eval_hierarchy_carries_canonical_benchmark_ids(pipeline_output):
