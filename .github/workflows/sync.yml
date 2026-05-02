@@ -49,6 +49,10 @@ jobs:
           CONFIG_BATCH_SIZE: "3"
           EEE_LOCAL_DATASET_DIR: .cache/eee_datastore
           PARTY_OVERRIDE_LLM_STATS_FIX: "1"
+          # Frontend still reads model-cards.json, eval-list.json,
+          # developers.json, and per-detail JSONs from HF. Keep emitting
+          # them until the frontend cuts over to duckdb/v1/*.parquet.
+          EMIT_LEGACY_JSON: "1"
         run: python -m scripts.pipeline
 
       - name: Upload manifest as artifact
