@@ -929,15 +929,15 @@ def test_hierarchy_artifact_top_level_structure(pipeline_output):
 
 
 def test_hierarchy_schema_note_documents_registry_deferral(pipeline_output):
-    """The published artifact must surface the family-collapse-deferred
-    caveat in its schema_note so downstream consumers understand why
-    helm_classic / helm_lite / helm_air_bench don't roll up under `helm`.
-    Catches a regression that drops the migration breadcrumb."""
+    """The published artifact must surface the family-collapse caveat in its
+    schema_note so downstream consumers understand why helm_classic /
+    helm_lite / helm_air_bench don't roll up under `helm`. Catches a
+    regression that drops the migration breadcrumb."""
     h = _read(pipeline_output / "eval-hierarchy.json")
     note = h["schema_note"]
     # Don't pin the exact wording; check the load-bearing concepts are mentioned
     assert "family" in note.lower()
-    assert "registry" in note.lower() or "evalcard" in note.lower()
+    assert "helm" in note.lower()
 
 
 def test_hierarchy_every_family_carries_three_rollups(pipeline_output):

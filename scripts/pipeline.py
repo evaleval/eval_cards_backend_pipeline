@@ -5118,30 +5118,53 @@ def main() -> int:
             "τ-bench (Tool-Agent-User Interaction Benchmark)",
             "Tau2-Bench",
         ),
-        "tau_bench_2_airline": ("tau_bench_2_airline", "Tau2-Bench Airline"),
-        "tau_bench_2_retail": ("tau_bench_2_retail", "Tau2-Bench Retail"),
-        "tau_bench_2_telecom": ("tau_bench_2_telecom", "Tau2-Bench Telecom"),
     }
     for summary in eval_summaries:
         family_key = as_string(summary.get("benchmark_family_key"))
         override = _ABC_FAMILY_NAME_OVERRIDES.get(family_key)
-        if not override:
+        if override:
+            from_string, replacement = override
+            # Gate on benchmark_family_name (where the ABC card's umbrella string
+            # lands). display_name carries the leaf form (e.g., "Capabilities")
+            # so it's the wrong field to gate on.
+            if as_string(summary.get("benchmark_family_name")) == from_string:
+                for field in (
+                    "benchmark_family_name",
+                    "benchmark_parent_name",
+                    "benchmark_leaf_name",
+                    "canonical_display_name",
+                    "display_name",
+                ):
+                    if as_string(summary.get(field)) == from_string:
+                        summary[field] = replacement
+
+    # For canonical-resolved leaves on leaderboard-aggregator suites (hfopenllm_v2,
+    # vals_ai, llm_stats, openeval, artificial_analysis_llms), the upstream ABC card
+    # name often pollutes benchmark_family_name (e.g., "MMLU-Pro leaderboard
+    # submissions (TIGER-Lab)"). Override to the registry's canonical display_name
+    # so detail pages and parquets show "MMLU-Pro" / "GPQA" / etc.
+    # Curated suites (HELM Classic / Capabilities / Instruct / etc., tau-bench)
+    # legitimately own their leaves and keep their suite-named family.
+    _LEADERBOARD_AGGREGATOR_FAMILY_KEYS = {
+        "hfopenllm_v2",
+        "hfopenllm",
+        "artificial_analysis_llms",
+        "llm_stats",
+        "openeval",
+        "vals_ai",
+    }
+    for summary in eval_summaries:
+        family_key = as_string(summary.get("benchmark_family_key"))
+        if family_key not in _LEADERBOARD_AGGREGATOR_FAMILY_KEYS:
             continue
-        from_string, replacement = override
-        # Gate on benchmark_family_name (where the ABC card's umbrella string
-        # lands). display_name carries the leaf form (e.g., "Capabilities")
-        # so it's the wrong field to gate on.
-        if as_string(summary.get("benchmark_family_name")) != from_string:
+        canonical_id = as_string(summary.get("canonical_benchmark_id"))
+        if not canonical_id:
             continue
-        for field in (
-            "benchmark_family_name",
-            "benchmark_parent_name",
-            "benchmark_leaf_name",
-            "canonical_display_name",
-            "display_name",
-        ):
-            if as_string(summary.get(field)) == from_string:
-                summary[field] = replacement
+        canonical_display = registry.get_canonical_display_name(canonical_id)
+        if not canonical_display:
+            continue
+        if as_string(summary.get("benchmark_family_name")) != canonical_display:
+            summary["benchmark_family_name"] = canonical_display
 
     eval_summaries.sort(
         key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id")))
@@ -5917,16 +5940,49 @@ def main() -> int:
             ),
         }
 
+    # AA's leaderboard is a rebroadcast aggregator, not a benchmark family of its
+    # own (unlike HELM, which owns its sub-evaluations). Lift its canonical-resolved
+    # named-benchmark leaves (gpqa, mmlu-pro, scicode, ...) out of AA into their
+    # canonical's family. Keep AA-native canonicals (indices, pricing-via-no-canonical,
+    # AA-LCR) under AA.
+    _AA_NATIVE_CANONICALS = {
+        "artificial-analysis-coding-index",
+        "artificial-analysis-intelligence-index",
+        "artificial-analysis-math-index",
+        "aa-lcr",
+    }
+
+    def _hierarchy_family_keys(eval_summary: dict) -> tuple[str, str]:
+        """Return (family_key, family_display_name) for hierarchy bucketing.
+
+        Default: take the EEE family_key/family_name. AA leaves with canonical
+        outside the AA-native set re-route to a canonical-driven family.
+        """
+        raw_family_key = (
+            as_string(eval_summary.get("benchmark_family_key")) or "unknown"
+        )
+        raw_family_display = (
+            as_string(eval_summary.get("benchmark_family_name")) or raw_family_key
+        )
+        if raw_family_key != "artificial_analysis_llms":
+            return raw_family_key, raw_family_display
+        canonical_id = as_string(eval_summary.get("canonical_benchmark_id"))
+        if not canonical_id or canonical_id in _AA_NATIVE_CANONICALS:
+            return raw_family_key, raw_family_display
+        canonical_display = registry.get_canonical_display_name(canonical_id)
+        if not canonical_display:
+            return raw_family_key, raw_family_display
+        # Use the canonical id as the lifted family_key (already slug-safe).
+        return canonical_id, canonical_display
+
     families_in_progress: dict[str, dict] = {}
     for eval_summary in eval_summaries:
-        family_key = as_string(eval_summary.get("benchmark_family_key")) or "unknown"
+        family_key, family_display = _hierarchy_family_keys(eval_summary)
         family = families_in_progress.setdefault(
             family_key,
             {
                 "key": family_key,
-                "display_name": (
-                    as_string(eval_summary.get("benchmark_family_name")) or family_key
-                ),
+                "display_name": family_display,
                 "category": as_string(eval_summary.get("category")) or "other",
                 "_evals": [],
                 "_leaves": {},
@@ -5946,9 +6002,10 @@ def main() -> int:
             "Replaces the previously-shipped static reports/eval_hierarchy.json snapshot. "
             "Family keys are uncollapsed runtime values: `helm_classic`, `helm_lite`, "
             "`helm_air_bench` etc. each appear as separate top-level families instead "
-            "of as composites under one `helm` family. Family-collapse is deferred to "
-            "the planned evalcard-registry integration sweep so all artifacts in this "
-            "directory share a single canonical-identity scheme."
+            "of as composites under one `helm` family. AA leaderboard leaves are an "
+            "exception: canonical-resolved leaves under `artificial_analysis_llms` are "
+            "lifted to their canonical's family (e.g. `gpqa`, `mmlu-pro`) since AA "
+            "rebroadcasts external benchmarks rather than owning them."
         ),
         "families": [],
     }
