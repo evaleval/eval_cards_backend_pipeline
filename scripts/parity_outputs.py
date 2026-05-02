@@ -371,10 +371,8 @@ _PAYLOAD_TABLE_COLUMNS: list[tuple[str, str]] = [
     ("record_type", "VARCHAR"),
     ("model_route_id", "VARCHAR"),
     ("model_family_id", "VARCHAR"),
-    # Phase 2.3 (Session 5h): registry-resolved canonical model id, distinct
-    # from `model_family_id` (which is slug-derived from the TS adapter).
-    # None on rows where no registry hit; populated when the upstream
-    # pipeline.canonical_model_identity resolved the model.
+    # Registry-resolved canonical id, distinct from model_family_id
+    # (which is slug-derived from the TS adapter). None on no registry hit.
     ("canonical_model_id", "VARCHAR"),
     ("eval_summary_id", "VARCHAR"),
     ("developer_route_id", "VARCHAR"),

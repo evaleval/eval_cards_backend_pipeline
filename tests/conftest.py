@@ -629,6 +629,7 @@ def pipeline_output(tmp_path_factory) -> Path:
             "GITHUB_ACTIONS",
             "REGISTRY_LOCAL_PARQUET_DIR",
             "REGISTRY_DISABLE",
+            "EMIT_LEGACY_JSON",
         )
     }
     try:
@@ -656,6 +657,11 @@ def pipeline_output(tmp_path_factory) -> Path:
             REPO_ROOT / "tests" / "fixtures" / "registry_aliases"
         )
         os.environ.pop("REGISTRY_DISABLE", None)
+        # Production runs lean (parquet-only); the integration suite still
+        # asserts on the legacy JSON shapes, so opt back in here. Migrating
+        # the assertions to read from duckdb/v1/*.parquet would let us drop
+        # this flag.
+        os.environ["EMIT_LEGACY_JSON"] = "1"
         # Reset the resolver module state so each session sees a clean
         # cache and re-loads from REGISTRY_LOCAL_PARQUET_DIR.
         from scripts import registry as registry_module

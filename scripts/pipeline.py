@@ -59,6 +59,23 @@ def reload_dataset_target() -> None:
     )
 CONFIG_VERSION = 1
 OUTPUT_DIR = Path("output")
+
+
+def emit_legacy_json() -> bool:
+    """Whether to emit the per-detail JSON artifacts the frontend stopped reading.
+
+    Default off. The frontend reads everything from `duckdb/v1/*.parquet`
+    plus a small set of top-level JSONs (manifest, eval-hierarchy,
+    benchmark-metadata, comparison-index, corpus-aggregates, peer-ranks).
+    The per-model/per-eval/per-developer JSON dirs and their list-view
+    aggregators (model-cards*, eval-list*, developers.json) are dead in
+    that mode and add ~340 MB + thousands of files to every upload.
+
+    Tests set EMIT_LEGACY_JSON=1 in conftest to preserve their JSON-based
+    assertions until they're migrated to read from parquet.
+    """
+    return os.environ.get("EMIT_LEGACY_JSON", "").strip() == "1"
+
 DEFAULT_LOCAL_DATASET_DIR = ".cache/eee_datastore"
 DEFAULT_LOCAL_BENCHMARK_METADATA_DIR = ".cache/auto_benchmarkcards"
 DEFAULT_METRIC_REGISTRY_PATH = Path("registry/metric_looking_strings.json")
@@ -859,13 +876,10 @@ def canonicalize_metric_key(value: Any) -> str:
         if candidate and candidate in METRIC_REGISTRY_ALIAS_LOOKUP:
             return METRIC_REGISTRY_ALIAS_LOOKUP[candidate]
 
-    # Path 2: evalcard-registry fallback. Only fires when the in-repo
-    # lookup misses — extends metric coverage to entries the registry knows
-    # but `metric_looking_strings.json` doesn't yet (Phase 2.4 Session 5h).
-    # The registry returns hyphen-form (`exact-match`); we normalize to the
+    # Registry fallback for metrics the in-repo lookup doesn't cover.
+    # Registry returns hyphen-form (e.g. `exact-match`); normalize to the
     # underscore-form the in-repo path uses so the same conceptual metric
-    # doesn't split into two `metric_key` values across rows. If the registry
-    # later changes its canonical convention this normalization should follow.
+    # doesn't split into two metric_key values across rows.
     registry_result = registry.resolve_metric(raw)
     if registry_result and registry_result.get("canonical_id"):
         return registry_result["canonical_id"].replace("-", "_")
@@ -1857,13 +1871,9 @@ def normalize_model_info(model_info: dict) -> dict:
         model_info.get("developer") or humanize_slug(raw_developer)
     )
 
-    # Phase 2.5 (Session 5h): registry-resolve the developer/org so JSON
-    # outputs carry the registry's canonical_org_id alongside the slug
-    # (slug stays for URL stability — `developer_slug` continues to
-    # drive `developers/{slug}.json` paths). `canonical_org_id` is
-    # populated only when the registry knows the org; downstream
-    # consumers fall back to `developer` (display name) or
-    # `developer_slug` (URL key) when None.
+    # Registry-resolve the developer/org. Slug stays primary for URL
+    # stability (`developer_slug` drives `developers/{slug}.json` paths);
+    # `canonical_org_id` is the registry's canonical for analysis grouping.
     canonical_org_id = None
     canonical_org_strategy = None
     canonical_org_confidence = None
@@ -1906,14 +1916,12 @@ def canonical_model_identity(model_info: dict) -> dict:
     variant_key = "-".join(variant_parts) if variant_parts else "default"
     variant_label = " ".join(variant_parts) if variant_parts else "Default"
 
-    # Registry-resolve the model identity. We try the most-specific form
-    # (raw_id with original casing) first, then the slug-form normalized_id,
-    # then the slug family_id. First hit wins. The registry's canonical
-    # reflects size-aware identity (e.g. `openai/gpt-4-turbo` collapses
-    # `unknown/gpt-4-turbo`, `openai/gpt-4-turbo-preview`, etc. — see
-    # `notes/provenance-investigation.md` Session 5g/5h). Falls back to
-    # the slug-built family_id when the resolver is unavailable or the
-    # raw value isn't aliased.
+    # Registry-resolve the model identity. Try most-specific form (raw_id
+    # with original casing) → slug-form normalized_id → slug family_id;
+    # first hit wins. Registry canonical reflects size-aware identity
+    # (e.g. `openai/gpt-4-turbo` absorbs `unknown/gpt-4-turbo`,
+    # `openai/gpt-4-turbo-preview`). Falls back to slug-built family_id
+    # when the resolver is unavailable or the raw value isn't aliased.
     canonical_family_id = slug_family_id
     canonical_model_id = None
     canonical_strategy = None
@@ -2202,11 +2210,13 @@ def get_metric_summary_id(evaluation: dict, result: dict) -> str:
 def clean_output_dir() -> None:
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
-    (OUTPUT_DIR / "models").mkdir(parents=True, exist_ok=True)
-    (OUTPUT_DIR / "evals").mkdir(parents=True, exist_ok=True)
-    (OUTPUT_DIR / "developers").mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / "instances").mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / "records").mkdir(parents=True, exist_ok=True)
+    if emit_legacy_json():
+        (OUTPUT_DIR / "models").mkdir(parents=True, exist_ok=True)
+        (OUTPUT_DIR / "evals").mkdir(parents=True, exist_ok=True)
+        (OUTPUT_DIR / "developers").mkdir(parents=True, exist_ok=True)
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -3658,22 +3668,32 @@ Generated by the [eval-cards backend pipeline](https://github.com/evaleval/eval_
 ├── README.md                        # This file
 ├── manifest.json                    # Pipeline metadata & generation timestamp
 ├── eval-hierarchy.json              # Full benchmark hierarchy with card status
-├── model-cards.json                 # Array of all model summaries
-├── eval-list.json                   # Array of all evaluation summaries
 ├── peer-ranks.json                  # Per-benchmark model rankings (averaged across metrics)
 ├── benchmark-metadata.json          # Benchmark cards (methodology, ethics, etc.)
-├── developers.json                  # Developer index with model counts
+├── comparison-index.json            # Per-(eval, metric) leaderboards
+├── corpus-aggregates.json           # Corpus-level interpretive-signal aggregates
+├── duckdb/v1/                       # Primary read surface — query via DuckDB / Parquet
+│   ├── model_cards.parquet          # All model summaries (replaces model-cards.json)
+│   ├── model_cards_lite.parquet
+│   ├── eval_list.parquet            # All evaluation summaries (replaces eval-list.json)
+│   ├── eval_list_lite.parquet
+│   ├── eval_summaries.parquet       # Per-benchmark detail rows (one per eval_summary_id)
+│   ├── aggregate_eval_summaries.parquet
+│   ├── matrix_eval_summaries.parquet
+│   ├── model_summaries.parquet      # Per-model detail rows (one per model_route_id)
+│   ├── developers.parquet
+│   ├── developer_summaries.parquet
+│   └── evaluations.parquet          # Flat row-level analytics table (schema evolving)
 ├── instances/
 │   └── {{model_route_id}}/{{evaluation_id}}.jsonl  # Pipeline-owned instance artifacts with hierarchy keys
-├── records/
-│   └── {{model_route_id}}/{{evaluation_id}}.json   # Pipeline-owned source record artifacts
-├── models/
-│   └── {{model_route_id}}.json      # Per-model detail  ({model_count:,} files)
-├── evals/
-│   └── {{eval_summary_id}}.json     # Per-eval detail with full model results ({eval_count} files)
-└── developers/
-    └── {{slug}}.json                # Per-developer model list
+└── records/
+    └── {{model_route_id}}/{{evaluation_id}}.json   # Pipeline-owned source record artifacts
 ```
+
+The legacy per-detail JSON directories (`models/`, `evals/`, `developers/`)
+and their list-view aggregators (`model-cards*.json`, `eval-list*.json`,
+`developers.json`) are no longer published — the same data lives in
+`duckdb/v1/*.parquet` under the same row shape.
 
 ---
 
@@ -3689,33 +3709,33 @@ https://huggingface.co/datasets/{DATASET_REPO}/resolve/main/
 
 ### Access Patterns
 
-**1. Bootstrap — load the manifest and eval list**
+**1. Bootstrap — load the manifest and metadata JSONs**
 
 ```
 GET /manifest.json           → pipeline metadata, generation timestamp
-GET /eval-list.json          → all evaluations with summary stats
-GET /model-cards.json        → all models with summary stats
 GET /eval-hierarchy.json     → benchmark taxonomy tree
+GET /benchmark-metadata.json → benchmark cards keyed by normalized name
+GET /comparison-index.json   → per-(eval, metric) leaderboards
+GET /corpus-aggregates.json  → corpus-level interpretive-signal aggregates
 ```
 
-**2. Drill into a specific evaluation**
+**2. Query model / eval / developer data via DuckDB**
 
 ```
-GET /evals/{{eval_summary_id}}.json
+duckdb/v1/model_cards.parquet         → all model summaries
+duckdb/v1/eval_list.parquet           → all evaluation summaries
+duckdb/v1/eval_summaries.parquet      → per-benchmark detail (one row per eval_summary_id)
+duckdb/v1/model_summaries.parquet     → per-model detail (one row per model_route_id)
+duckdb/v1/developers.parquet          → developer index
+duckdb/v1/developer_summaries.parquet → per-developer model list
 ```
 
-The `eval_summary_id` comes from `eval-list.json → evals[].eval_summary_id`.
+Each parquet row carries a `payload_json` column holding the same shape that
+the legacy `model-cards.json` / `eval-list.json` / `models/{{id}}.json` /
+`evals/{{id}}.json` / `developers/{{slug}}.json` files used to expose. Read
+with DuckDB or any Parquet client.
 
-**3. Drill into a specific model**
-
-```
-GET /models/{{model_route_id}}.json
-```
-
-The `model_route_id` comes from `model-cards.json → [].model_route_id`.
-Route IDs use double-underscore as separator: `anthropic__claude-opus-4-5`.
-
-**4. Get benchmark metadata card**
+**3. Get benchmark metadata card**
 
 ```
 GET /benchmark-metadata.json → full dictionary keyed by normalized benchmark name
@@ -3723,15 +3743,7 @@ GET /benchmark-metadata.json → full dictionary keyed by normalized benchmark n
 
 Lookup key: use the `benchmark_leaf_key` from any eval summary.
 
-**5. Get developer model list**
-
-```
-GET /developers/{{slug}}.json
-```
-
-The slug comes from `developers.json → [].developer` (lowercased, special chars replaced).
-
-**6. Get peer rankings**
+**4. Get peer rankings**
 
 ```
 GET /peer-ranks.json → {{ eval_summary_id: {{ model_id: {{ position, total }} }} }}
@@ -3741,13 +3753,13 @@ Rankings are keyed by `eval_summary_id` (single benchmark level, not metric leve
 Each metric within a benchmark is ranked independently (respecting `lower_is_better`),
 then ranks are **averaged across all metrics** to produce a single position per model per benchmark.
 
-**7. Access instance-level data**
+**5. Access instance-level data**
 
 Instance-level data (individual test examples, model responses, and per-instance scores)
 is available for many benchmarks. To check and access it:
 
-1. Check `eval-list.json → evals[].instance_data.available` to see if a benchmark has instance data
-2. Load the eval detail: `GET /evals/{{eval_summary_id}}.json`
+1. Check `instance_data.available` on a row of `duckdb/v1/eval_list.parquet` to see if a benchmark has instance data
+2. Load the eval detail: query `duckdb/v1/eval_summaries.parquet` filtered by `eval_summary_id`
 3. Each `model_results[]` entry has these fields:
     - `detailed_evaluation_results`: URL to the pipeline-owned JSONL file under `instances/...` when materialized, otherwise `null`
     - `source_record_url`: URL to the pipeline-owned source record JSON under `records/...`
@@ -3883,6 +3895,11 @@ Treat these fields as compatibility/fallback only:
 ---
 
 ## Key Schemas
+
+> The schemas below document row shapes that now live in the corresponding
+> `duckdb/v1/*.parquet` files (under each row's `payload_json` column or as
+> top-level columns), not in standalone JSON files. The legacy filenames are
+> retained as section labels for continuity with prior consumers.
 
 ### model-cards.json (array)
 
@@ -4490,6 +4507,7 @@ def main() -> int:
                     canonical_benchmark_family_key(evaluation.get("benchmark")),
                     shared_dataset_name,
                 )
+
         enriched_results = []
         for result in evaluation.get("evaluation_results") or []:
             enriched = dict(result)
@@ -4653,6 +4671,34 @@ def main() -> int:
                         normalized.get("benchmark_family_key"),
                     ),
                 )
+
+                # Last-resort: ABC card slugs match registry canonical_ids,
+                # so when name/key/family/dataset_name lookups all miss, the
+                # registry's canonical may identify the right card. E.g.
+                # `vals_ai`'s benchmark_leaf_name "MMLU-Pro - Health" doesn't
+                # match any direct ABC key but resolves to canonical
+                # `mmlu-pro` which matches the `mmlu-pro.json` card.
+                if _card is None:
+                    leaf_candidates = [
+                        normalized.get("benchmark_leaf_name"),
+                        normalized.get("benchmark_leaf_key"),
+                        normalized.get("benchmark_family_key"),
+                    ]
+                    src = evaluation.get("_eee_source_config")
+                    for candidate in leaf_candidates:
+                        if not candidate:
+                            continue
+                        registry_result = registry.resolve_benchmark(
+                            candidate, src
+                        )
+                        canonical_id = (registry_result or {}).get("canonical_id")
+                        if canonical_id:
+                            _card = lookup_benchmark_card(
+                                metadata_lookup, canonical_id
+                            )
+                            if _card:
+                                break
+
                 if _card:
                     group["benchmark_card"] = _card
                     group["tags"] = extract_benchmark_tags(_card)
@@ -5273,6 +5319,15 @@ def main() -> int:
             "model_family_id": family_id,
             "model_route_id": route_id,
             "model_family_name": family_name,
+            # Registry-resolved canonical id, mirroring what model-cards.json
+            # carries. None when no registry hit on this model.
+            "canonical_model_id": display_identity.get("canonical_model_id"),
+            "canonical_resolution_strategy": display_identity.get(
+                "canonical_resolution_strategy"
+            ),
+            "canonical_resolution_confidence": display_identity.get(
+                "canonical_resolution_confidence"
+            ),
             "raw_model_ids": raw_model_ids,
             "evaluations_by_category": dict(by_category),
             "evaluation_summaries_by_category": {},
@@ -5681,25 +5736,32 @@ def main() -> int:
         "skipped_configs": skipped_configs,
         "source_config_count": len(all_configs),
         "summary_artifacts": {
-            "model_cards": "model-cards.json",
-            "model_cards_lite": "model-cards-lite.json",
-            "eval_list": "eval-list.json",
-            "eval_list_lite": "eval-list-lite.json",
             "comparison_index": "comparison-index.json",
             "corpus_aggregates": "corpus-aggregates.json",
             "eval_hierarchy": "eval-hierarchy.json",
+            **(
+                {
+                    "model_cards": "model-cards.json",
+                    "model_cards_lite": "model-cards-lite.json",
+                    "eval_list": "eval-list.json",
+                    "eval_list_lite": "eval-list-lite.json",
+                }
+                if emit_legacy_json()
+                else {}
+            ),
         },
     }
 
     write_json(OUTPUT_DIR / "corpus-aggregates.json", corpus_aggregates)
-    write_json(OUTPUT_DIR / "model-cards.json", model_cards)
-    write_json(OUTPUT_DIR / "model-cards-lite.json", lite_model_cards)
-    write_json(OUTPUT_DIR / "eval-list.json", eval_list)
-    write_json(OUTPUT_DIR / "eval-list-lite.json", lite_eval_list)
     write_json(OUTPUT_DIR / "peer-ranks.json", peer_ranks)
     write_json(OUTPUT_DIR / "comparison-index.json", comparison_index)
     write_json(OUTPUT_DIR / "benchmark-metadata.json", benchmark_metadata)
-    write_json(OUTPUT_DIR / "developers.json", developers)
+    if emit_legacy_json():
+        write_json(OUTPUT_DIR / "model-cards.json", model_cards)
+        write_json(OUTPUT_DIR / "model-cards-lite.json", lite_model_cards)
+        write_json(OUTPUT_DIR / "eval-list.json", eval_list)
+        write_json(OUTPUT_DIR / "eval-list-lite.json", lite_eval_list)
+        write_json(OUTPUT_DIR / "developers.json", developers)
 
     # eval-hierarchy.json: regenerate at runtime from current eval_summaries
     # (replaces a previous shutil.copy2 of `reports/eval_hierarchy.json`,
@@ -5973,15 +6035,16 @@ def main() -> int:
             for eval_obj in category_evals:
                 _strip_eval_obj_internals(eval_obj)
 
-    for summary in model_summaries:
-        write_json(OUTPUT_DIR / "models" / f"{summary['model_route_id']}.json", summary)
-    for summary in eval_summaries:
-        write_json(OUTPUT_DIR / "evals" / f"{summary['eval_summary_id']}.json", summary)
-    for summary in dev_summaries:
-        write_json(
-            OUTPUT_DIR / "developers" / f"{summary['slug']}.json",
-            {"developer": summary["developer"], "models": summary["models"]},
-        )
+    if emit_legacy_json():
+        for summary in model_summaries:
+            write_json(OUTPUT_DIR / "models" / f"{summary['model_route_id']}.json", summary)
+        for summary in eval_summaries:
+            write_json(OUTPUT_DIR / "evals" / f"{summary['eval_summary_id']}.json", summary)
+        for summary in dev_summaries:
+            write_json(
+                OUTPUT_DIR / "developers" / f"{summary['slug']}.json",
+                {"developer": summary["developer"], "models": summary["models"]},
+            )
 
     validate_output_contract(OUTPUT_DIR)
 
