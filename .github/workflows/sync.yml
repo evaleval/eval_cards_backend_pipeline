@@ -15,7 +15,7 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
@@ -30,6 +30,16 @@ jobs:
           python -m pip install --upgrade pip huggingface_hub datasets pytest pandas pyarrow
           python -m pip install 'eval-entity-resolver @ git+https://github.com/evaleval/evalcard-registry.git#subdirectory=packages/eval-entity-resolver'
 
+      - name: Cache HF dataset snapshots
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/eee_datastore
+            .cache/auto_benchmarkcards
+          key: hf-snapshots-${{ github.run_id }}
+          restore-keys: |
+            hf-snapshots-
+
       - name: Run tests
         run: python -m pytest tests/
 
@@ -38,6 +48,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           CONFIG_BATCH_SIZE: "3"
           EEE_LOCAL_DATASET_DIR: .cache/eee_datastore
+          PARTY_OVERRIDE_LLM_STATS_FIX: "1"
         run: python -m scripts.pipeline
 
       - name: Upload manifest as artifact
