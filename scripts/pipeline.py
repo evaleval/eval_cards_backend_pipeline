@@ -5141,8 +5141,14 @@ def main() -> int:
     # For canonical-resolved leaves on leaderboard-aggregator suites (hfopenllm_v2,
     # vals_ai, llm_stats, openeval, artificial_analysis_llms), the upstream ABC card
     # name often pollutes benchmark_family_name (e.g., "MMLU-Pro leaderboard
-    # submissions (TIGER-Lab)"). Override to the registry's canonical display_name
-    # so detail pages and parquets show "MMLU-Pro" / "GPQA" / etc.
+    # submissions (TIGER-Lab)") and the leaf-level display fields carry the raw EEE
+    # form (e.g., "artificial_analysis.aime_25"). Override the display-surface
+    # fields (family_name + display_name + canonical_display_name, at summary and
+    # metric level) to the registry's canonical display_name so detail pages, list
+    # views, model drill-downs and parquets show "MMLU-Pro" / "AIME 2025" instead.
+    # Internal key-ish fields (benchmark_leaf_name, benchmark_component_name,
+    # evaluation_name, metric_id) are intentionally left raw — consumers should
+    # read the display fields for labels.
     # Curated suites (HELM Classic / Capabilities / Instruct / etc., tau-bench)
     # legitimately own their leaves and keep their suite-named family.
     _LEADERBOARD_AGGREGATOR_FAMILY_KEYS = {
@@ -5163,8 +5169,16 @@ def main() -> int:
         canonical_display = registry.get_canonical_display_name(canonical_id)
         if not canonical_display:
             continue
-        if as_string(summary.get("benchmark_family_name")) != canonical_display:
-            summary["benchmark_family_name"] = canonical_display
+        summary["benchmark_family_name"] = canonical_display
+        summary["display_name"] = canonical_display
+        summary["canonical_display_name"] = canonical_display
+        for metric in summary.get("metrics") or []:
+            metric["display_name"] = join_display_name_parts(
+                canonical_display, metric.get("metric_name")
+            )
+            metric["canonical_display_name"] = join_display_name_parts(
+                canonical_display, metric.get("slice_name"), metric.get("metric_name")
+            )
 
     eval_summaries.sort(
         key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id")))
@@ -6039,7 +6053,9 @@ def main() -> int:
                     ),
                     "canonical_benchmark_ids": leaf_canonical_ids,
                     "display_name": (
-                        as_string(leaf_evals[0].get("benchmark_leaf_name")) or leaf_key
+                        as_string(leaf_evals[0].get("canonical_display_name"))
+                        or as_string(leaf_evals[0].get("benchmark_leaf_name"))
+                        or leaf_key
                     ),
                     "category": as_string(leaf_evals[0].get("category")) or "other",
                     "evals_count": len(leaf_evals),
