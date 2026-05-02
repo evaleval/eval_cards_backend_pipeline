@@ -4341,6 +4341,23 @@ def main() -> int:
                     detailed_meta = normalize_detailed_eval_meta(
                         record.get("detailed_evaluation_results")
                     )
+                    # TEMPORARY: upstream-data-quality fix — `evaluator_relationship`
+                    # is mis-tagged on many EEE records. While upstream is being
+                    # corrected, when PARTY_OVERRIDE_LLM_STATS_FIX=1 is set we
+                    # override every llm-stats row to first_party (it's a
+                    # self-reported aggregator) and every other row to
+                    # third_party. Affects per-row provenance.source_type and
+                    # third_party_ratio aggregates, but NOT V5 multi-source
+                    # rate (which is keyed on source_organization_name, not
+                    # relationship). Remove this block once upstream is fixed.
+                    raw_source_metadata = record.get("source_metadata")
+                    if os.environ.get("PARTY_OVERRIDE_LLM_STATS_FIX") == "1":
+                        sm_override = dict(raw_source_metadata or {})
+                        sm_override["evaluator_relationship"] = (
+                            "first_party" if config == "llm-stats" else "third_party"
+                        )
+                        raw_source_metadata = sm_override
+
                     eval_obj = {
                         "schema_version": as_string(record.get("schema_version")),
                         "evaluation_id": as_string(record.get("evaluation_id")),
@@ -4349,7 +4366,7 @@ def main() -> int:
                         ),
                         "benchmark": benchmark,
                         "source_data": (first_result or {}).get("source_data"),
-                        "source_metadata": record.get("source_metadata"),
+                        "source_metadata": raw_source_metadata,
                         "eval_library": record.get("eval_library"),
                         "model_info": record.get("model_info") or {},
                         "generation_config": (first_result or {}).get(
