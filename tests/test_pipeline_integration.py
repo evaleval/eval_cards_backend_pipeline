@@ -671,7 +671,14 @@ def test_manifest_counts_match_published_artifacts(pipeline_output):
     model_cards = _read(pipeline_output / "model-cards.json")
     eval_list = _read(pipeline_output / "eval-list.json")
     assert manifest["model_count"] == len(model_cards)
-    assert manifest["eval_count"] == len(eval_list["evals"])
+    # eval_list rows are collapsed by canonical_benchmark_id (one row per
+    # canonical with the others in reporting_sources). manifest["eval_count"]
+    # counts the underlying eval_summaries, so reconstruct via reporting_sources.
+    collapsed_eval_count = sum(
+        max(1, len(item.get("reporting_sources") or []))
+        for item in eval_list["evals"]
+    )
+    assert manifest["eval_count"] == collapsed_eval_count
     eval_files = list((pipeline_output / "evals").glob("*.json"))
     assert manifest["eval_count"] == len(eval_files)
     model_files = list((pipeline_output / "models").glob("*.json"))
@@ -1477,14 +1484,14 @@ def test_canonical_benchmark_id_stamped_on_cross_suite_summaries(pipeline_output
 
 def test_canonical_benchmark_id_appears_in_eval_list(pipeline_output):
     eval_list = _read(pipeline_output / "eval-list.json")
-    a_entry = next(
-        e for e in eval_list["evals"] if e["eval_summary_id"] == "bench_canonical_a_mmlu"
-    )
-    b_entry = next(
-        e for e in eval_list["evals"] if e["eval_summary_id"] == "bench_canonical_b_mmlu"
-    )
-    assert a_entry["canonical_benchmark_id"] == "mmlu"
-    assert b_entry["canonical_benchmark_id"] == "mmlu"
+    # eval_list rows are collapsed by canonical_benchmark_id, so the two
+    # bench_canonical_{a,b}_mmlu summaries fold into ONE row. Verify the
+    # collapsed row carries canonical=mmlu and lists both source ids.
+    mmlu_rows = [e for e in eval_list["evals"] if e.get("canonical_benchmark_id") == "mmlu"]
+    assert len(mmlu_rows) == 1, f"expected 1 collapsed row for canonical=mmlu, got {len(mmlu_rows)}"
+    sources = mmlu_rows[0].get("reporting_sources") or [mmlu_rows[0]["eval_summary_id"]]
+    assert "bench_canonical_a_mmlu" in sources
+    assert "bench_canonical_b_mmlu" in sources
 
 
 def test_canonical_benchmark_id_appears_in_comparison_index(pipeline_output):

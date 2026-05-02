@@ -1590,12 +1590,29 @@ def build_single_metric_suite_matrix_summary(
     }
 
 
-def create_model_family_summary(evaluations: list[dict]) -> dict:
-    """Port of ``createModelFamilySummary`` (lib/eval-processing.ts:336)."""
+def create_model_family_summary(
+    evaluations: list[dict],
+    *,
+    family_identity_override: dict | None = None,
+) -> dict:
+    """Port of ``createModelFamilySummary`` (lib/eval-processing.ts:336).
+
+    ``family_identity_override`` lets the caller supply a pre-resolved
+    identity (e.g. registry-canonical) instead of having the TS-port
+    derive one from ``evaluations[0].model_info``. The TS adapter is
+    registry-unaware by design — it parses the raw model handle. After
+    the pipeline registry-canonicalizes ``model_route_id`` /
+    ``model_family_id`` upstream, that re-derivation diverges (it would
+    re-route ``openai/gpt-3.5-turbo-0613`` instead of the canonical
+    ``openai/gpt-3.5-turbo``). Override at the boundary, keep the
+    adapter pure.
+    """
     if not evaluations:
         raise ValueError("No evaluations provided")
 
-    family_identity = parity.get_canonical_model_identity(evaluations[0].get("model_info") or {})
+    family_identity = family_identity_override or parity.get_canonical_model_identity(
+        evaluations[0].get("model_info") or {}
+    )
 
     variant_groups: dict[str, dict] = {}
     for evaluation in evaluations:

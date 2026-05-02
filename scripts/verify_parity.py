@@ -23,6 +23,20 @@ field-level diff. The parity emitter (v3) writes ``payload_json`` as
 exactly the canonical TS-adapter shape — routing keys live in scalar
 parquet columns only, never duplicated in the payload — so this
 verifier diffs raw payloads with no per-surface "ignore list."
+
+Known divergences (deliberate):
+- ``model_summaries`` ``model_route_id`` / ``model_family_id``: the
+  pipeline routes by registry-canonical id; the TS port re-derives
+  from raw ``model_info`` (registry-unaware). See
+  ``parity_outputs.build_model_summary_payload``. Mirroring the
+  override on the TS side is intentionally skipped — see "Lifecycle".
+
+Lifecycle: this whole layer (``parity_*.py``, ``verify_parity.py``,
+``general-eval-card/scripts/dump-adapter-outputs.mts``, the TS
+adapters in ``general-eval-card/lib/``) is migration-only. Once the
+frontend reads parquet exclusively, all of it is dead code — drop
+together, rename ``parity_outputs`` → ``outputs``, and the
+``family_identity_override`` plumbing disappears with it.
 """
 from __future__ import annotations
 

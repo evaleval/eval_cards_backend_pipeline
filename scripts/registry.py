@@ -33,6 +33,8 @@ _resolver: Any = None
 _resolver_init_attempted = False
 _resolver_init_error: str | None = None
 
+_canonical_benchmark_displays: dict[str, str] | None = None
+
 
 def _log(event: str, **fields: Any) -> None:
     print(f"[pipeline] {json.dumps({'event': event, **fields})}")
@@ -110,6 +112,66 @@ def _resolve_cached(
         return (None, "registry_unavailable", 0.0)
     result = resolver.resolve(raw_value, "benchmark", source_config)
     return (result.canonical_id, result.strategy, float(result.confidence))
+
+
+def _load_canonical_benchmark_displays() -> dict[str, str]:
+    """Load canonical_id → display_name map from the registry's benchmarks table.
+
+    Source: ``canonical_benchmarks/part-0.parquet`` on the registry HF dataset
+    (sibling of ``aliases/part-0.parquet``). Resolver only loads aliases, so
+    we read the entity table separately for display_name lookup.
+
+    Honors REGISTRY_LOCAL_PARQUET_DIR. Returns empty dict on failure (matches
+    the alias-store fallback policy).
+    """
+    global _canonical_benchmark_displays
+    if _canonical_benchmark_displays is not None:
+        return _canonical_benchmark_displays
+
+    if os.environ.get("REGISTRY_DISABLE") == "1":
+        _canonical_benchmark_displays = {}
+        return _canonical_benchmark_displays
+
+    try:
+        import pandas as pd
+
+        local_dir = (os.environ.get("REGISTRY_LOCAL_PARQUET_DIR") or "").strip()
+        if local_dir:
+            from pathlib import Path
+
+            path = Path(local_dir) / "canonical_benchmarks.parquet"
+            if not path.exists():
+                path = Path(local_dir) / "canonical_benchmarks" / "part-0.parquet"
+            df = pd.read_parquet(path)
+        else:
+            from huggingface_hub import hf_hub_download
+
+            local = hf_hub_download(
+                repo_id=REGISTRY_HF_DATASET,
+                filename="canonical_benchmarks/part-0.parquet",
+                repo_type="dataset",
+            )
+            df = pd.read_parquet(local)
+        _canonical_benchmark_displays = {
+            str(row["id"]): str(row["display_name"])
+            for _, row in df.iterrows()
+            if row.get("id") and row.get("display_name")
+        }
+        _log(
+            "registry.canonical_displays_loaded",
+            count=len(_canonical_benchmark_displays),
+        )
+    except Exception as error:
+        _log("registry.canonical_displays_failed", error=str(error))
+        _canonical_benchmark_displays = {}
+    return _canonical_benchmark_displays
+
+
+def get_canonical_display_name(canonical_id: str | None) -> str | None:
+    """Return the registry display_name for a canonical benchmark id, or None."""
+    if not canonical_id:
+        return None
+    return _load_canonical_benchmark_displays().get(canonical_id)
 
 
 def resolve_benchmark(
