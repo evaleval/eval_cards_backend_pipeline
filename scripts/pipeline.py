@@ -5169,7 +5169,9 @@ def main() -> int:
         canonical_display = registry.get_canonical_display_name(canonical_id)
         if not canonical_display:
             continue
-        summary["benchmark_family_name"] = canonical_display
+        # benchmark_family_name is intentionally NOT set here — see family-display
+        # normalization below; per-row leaf canonicals would break the
+        # per-family agreement that eval-hierarchy bucketing depends on.
         summary["display_name"] = canonical_display
         summary["canonical_display_name"] = canonical_display
         for metric in summary.get("metrics") or []:
@@ -5179,6 +5181,66 @@ def main() -> int:
             metric["canonical_display_name"] = join_display_name_parts(
                 canonical_display, metric.get("slice_name"), metric.get("metric_name")
             )
+
+    # Normalize benchmark_family_name once per family_key. Without this,
+    # per-row computation in classify_evaluation_result lets per-leaf signals
+    # (ABC card name, dataset_name) bleed into a field that must be uniform
+    # across the family — eval-hierarchy bucketing picks the first row's value
+    # via setdefault, so divergent rows produce non-deterministic, leaf-named
+    # family headers (e.g. OpenEval family rendered as "BBQ").
+    #
+    # Source ranking per family_key:
+    #   1. registry canonical display (try snake → kebab forms)
+    #   2. suite-aggregate row's benchmark_family_name (post-_ABC_OVERRIDES,
+    #      which already cleans suite-row family_name for HELM-style curated
+    #      suites). Read family_name not display_name — display_name on the
+    #      suite-row is leaf-derived (e.g. "Classic" not "HELM Classic").
+    #   3. humanize_token_key fallback
+    suite_row_family_name_by_family: dict[str, str] = {}
+    for summary in eval_summaries:
+        family_key = as_string(summary.get("benchmark_family_key"))
+        if not family_key:
+            continue
+        if as_string(summary.get("eval_summary_id")) == family_key:
+            suite_family_name = as_string(summary.get("benchmark_family_name"))
+            if suite_family_name:
+                suite_row_family_name_by_family[family_key] = suite_family_name
+
+    family_display_by_key: dict[str, str] = {}
+    for summary in eval_summaries:
+        family_key = as_string(summary.get("benchmark_family_key"))
+        if not family_key:
+            continue
+        if family_key not in family_display_by_key:
+            display = registry.get_canonical_display_name(family_key)
+            if not display and "_" in family_key:
+                display = registry.get_canonical_display_name(
+                    family_key.replace("_", "-")
+                )
+            if not display:
+                display = suite_row_family_name_by_family.get(family_key)
+            if not display:
+                display = humanize_token_key(family_key)
+            family_display_by_key[family_key] = display
+        summary["benchmark_family_name"] = family_display_by_key[family_key]
+
+    family_name_check: dict[str, set[str]] = defaultdict(set)
+    for summary in eval_summaries:
+        family_key = as_string(summary.get("benchmark_family_key"))
+        family_name = as_string(summary.get("benchmark_family_name"))
+        if family_key and family_name:
+            family_name_check[family_key].add(family_name)
+    divergent_family_names = {
+        family_key: sorted(names)
+        for family_key, names in family_name_check.items()
+        if len(names) > 1
+    }
+    if divergent_family_names:
+        raise RuntimeError(
+            "benchmark_family_name divergence within benchmark_family_key — "
+            "eval-hierarchy bucketing requires per-family agreement. "
+            f"Divergent families: {divergent_family_names}"
+        )
 
     eval_summaries.sort(
         key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id")))
