@@ -195,6 +195,32 @@ def build_eval_summary_payload(eval_summary: dict, card_map: dict[str, dict]) ->
     return parity_adapters.hf_eval_detail_to_summary(enriched)
 
 
+def _family_identity_from_summary(summary: dict) -> dict | None:
+    """Build the family-identity dict shape that
+    ``create_model_family_summary`` accepts as an override, sourced from
+    the pipeline's already-resolved per-model JSON. Registry-canonical
+    routing keys (``model_route_id``, ``model_family_id``,
+    ``canonical_model_id``) are stamped upstream by
+    ``pipeline.canonical_model_identity``; this helper just lifts them
+    into the TS-port's identity shape so the adapter doesn't re-derive
+    from raw EEE strings."""
+    family_id = summary.get("model_family_id")
+    if not family_id:
+        return None
+    namespace, _, family_slug = family_id.partition("/")
+    return {
+        "namespace": namespace,
+        "familySlug": family_slug,
+        "familyId": family_id,
+        "familyName": summary.get("model_family_name") or family_slug,
+        # Variant-level fields (variantKey / variantLabel /
+        # variantDisplayName / versionDate / versionQualifier) stay
+        # per-evaluation — they're computed by
+        # `_aggregated_variant_descriptor` over each row's raw model_info,
+        # and the override only fixes the family-level routing keys.
+    }
+
+
 def build_model_summary_payload(summary: dict) -> dict | None:
     """Run ``flatten_model_evaluations`` + ``create_model_family_summary``
     against the per-model JSON detail to produce the exact TS shape, or
@@ -207,7 +233,24 @@ def build_model_summary_payload(summary: dict) -> dict | None:
     evaluations = parity_adapters.flatten_model_evaluations(summary)
     if not evaluations:
         return None
-    return parity_adapters.create_model_family_summary(evaluations)
+    # Override produces a documented verifier divergence vs. the TS
+    # port — see verify_parity.py top-of-file "Known divergences".
+    # Internal seam: the override only fixes top-level routing keys
+    # (model_route_id / model_family_id). variants[i].family_id and
+    # variants[i].variant_id remain raw-derived (e.g.
+    # openai/gpt-3.5-turbo-0613) because _aggregated_variant_descriptor
+    # parses each row's raw model_info. No frontend consumer reads
+    # variants[i].family_id; variant_id is only used as a React key /
+    # tab state, never cross-referenced with top-level. Unifying needs
+    # registry-aware variant grouping — deferred to the parity-layer
+    # cleanup.
+    payload = parity_adapters.create_model_family_summary(
+        evaluations,
+        family_identity_override=_family_identity_from_summary(summary),
+    )
+    if summary.get("canonical_model_id") is not None:
+        payload["canonical_model_id"] = summary["canonical_model_id"]
+    return payload
 
 
 # ---------------------------------------------------------------------------

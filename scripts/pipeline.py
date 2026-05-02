@@ -2782,11 +2782,16 @@ def validate_output_contract(output_dir: Path = OUTPUT_DIR) -> None:
     eval_summary_ids: set[str] = set()
     if eval_list_path.exists():
         eval_list = json.loads(eval_list_path.read_text(encoding="utf-8"))
-        eval_summary_ids = {
-            as_string(item.get("eval_summary_id"))
-            for item in (eval_list.get("evals") or [])
-            if as_string(item.get("eval_summary_id"))
-        }
+        for item in eval_list.get("evals") or []:
+            primary = as_string(item.get("eval_summary_id"))
+            if primary:
+                eval_summary_ids.add(primary)
+            # Demoted siblings of canonical-collapsed rows are still emitted
+            # as evals/<id>.json for drill-down; track them so the
+            # files-vs-list parity check passes.
+            for source in item.get("reporting_sources") or []:
+                if as_string(source):
+                    eval_summary_ids.add(as_string(source))
 
     published_eval_files = {
         path.stem for path in evals_dir.glob("*.json") if path.is_file()
@@ -5083,47 +5088,59 @@ def main() -> int:
     # The proper fix is either (a) the deferred family-collapse work
     # that uses registry parent_benchmark_id to collapse helm_* siblings
     # into one HELM family node, or (b) fixing the ABC cards upstream.
-    # This hotfix is a targeted post-processing rename: it touches ONLY
-    # the two eval_summaries whose ``display_name`` matches the
-    # umbrella string AND whose ``benchmark_family_key`` is
-    # ``helm_capabilities`` / ``helm_instruct``. Sub-benchmark
-    # eval_summaries under those families (helm_capabilities_mmlu_pro,
-    # helm_instruct_vicuna, etc.) keep their existing display names
-    # because the rename is gated on the umbrella string match.
+    # Targeted post-processing rename gated on the (family_key, current
+    # display_name) pair so sub-benchmark rows that share a family_key
+    # but already have specific display names (e.g.
+    # helm_capabilities_mmlu_pro → "MMLU-Pro") aren't touched.
     #
-    # Earlier attempt: adding ``helm_capabilities`` /
-    # ``helm_instruct`` to PREFERRED_BENCHMARK_DISPLAY_NAMES caused a
-    # 60-field regression — that lookup is consulted from many call
-    # sites including child-row leaf-name resolution. Hotfix lives
-    # here, post-construction, where it can be applied surgically to
-    # exactly the two affected summaries. Remove this block when the
-    # family-collapse work lands.
-    _HELM_UMBRELLA_DISPLAY = "Holistic Evaluation of Language Models (HELM)"
-    _HELM_HOTFIX_DISPLAYS = {
-        "helm_capabilities": "HELM Capabilities",
-        "helm_instruct": "HELM Instruct",
+    # Earlier attempt: adding helm_capabilities / helm_instruct to
+    # PREFERRED_BENCHMARK_DISPLAY_NAMES caused a 60-field regression —
+    # that lookup is consulted from many call sites. Override lives
+    # here post-construction so it applies surgically.
+    #
+    # See notes/upstream-data-issues.md for upstream defect tracking.
+    _ABC_FAMILY_NAME_OVERRIDES = {
+        # family_key: (from_string_gate, to_string)
+        "helm_classic": ("Helm classic", "HELM Classic"),
+        "helm_capabilities": (
+            "Holistic Evaluation of Language Models (HELM)",
+            "HELM Capabilities",
+        ),
+        "helm_instruct": (
+            "Holistic Evaluation of Language Models (HELM)",
+            "HELM Instruct",
+        ),
+        "helm_lite": ("Helm lite", "HELM Lite"),
+        "helm_safety": ("Helm safety", "HELM Safety"),
+        "helm_air_bench": ("Helm air bench", "HELM AIR-Bench"),
+        # ABC card describes V1 mechanics under V2 canonical IDs.
+        "tau_bench_2": (
+            "τ-bench (Tool-Agent-User Interaction Benchmark)",
+            "Tau2-Bench",
+        ),
+        "tau_bench_2_airline": ("tau_bench_2_airline", "Tau2-Bench Airline"),
+        "tau_bench_2_retail": ("tau_bench_2_retail", "Tau2-Bench Retail"),
+        "tau_bench_2_telecom": ("tau_bench_2_telecom", "Tau2-Bench Telecom"),
     }
     for summary in eval_summaries:
         family_key = as_string(summary.get("benchmark_family_key"))
-        replacement = _HELM_HOTFIX_DISPLAYS.get(family_key)
-        if not replacement:
+        override = _ABC_FAMILY_NAME_OVERRIDES.get(family_key)
+        if not override:
             continue
-        if as_string(summary.get("display_name")) != _HELM_UMBRELLA_DISPLAY:
+        from_string, replacement = override
+        # Gate on benchmark_family_name (where the ABC card's umbrella string
+        # lands). display_name carries the leaf form (e.g., "Capabilities")
+        # so it's the wrong field to gate on.
+        if as_string(summary.get("benchmark_family_name")) != from_string:
             continue
-        summary["display_name"] = replacement
-        # Keep the four name fields aligned so downstream artifacts
-        # (eval-hierarchy family display, comparison-index entry,
-        # eval-list summary header) all show the disambiguated label.
-        # Only overwrite when the existing value is the umbrella
-        # string — a sub-benchmark row that escaped the gate would
-        # have its own distinct value here.
         for field in (
             "benchmark_family_name",
             "benchmark_parent_name",
             "benchmark_leaf_name",
             "canonical_display_name",
+            "display_name",
         ):
-            if as_string(summary.get(field)) == _HELM_UMBRELLA_DISPLAY:
+            if as_string(summary.get(field)) == from_string:
                 summary[field] = replacement
 
     eval_summaries.sort(
@@ -5615,6 +5632,43 @@ def main() -> int:
         ],
         "totalModels": len(model_cards),
     }
+
+    # Collapse eval-list rows by canonical_benchmark_id so the catalog shows
+    # one row per canonical (e.g., one "MMLU-Pro" row instead of 21). Per-suite
+    # eval_summary JSONs at output/evals/<id>.json survive untouched for
+    # drill-down and parquet emission; this only affects eval-list.json's
+    # ``evals`` array. Rows without a canonical_benchmark_id are kept as-is.
+    # The primary row is the one with the most models in its group; other
+    # group members are listed in ``reporting_sources`` for discovery.
+    by_canonical: dict[str, list[dict]] = defaultdict(list)
+    standalone: list[dict] = []
+    for row in eval_list["evals"]:
+        canonical = as_string(row.get("canonical_benchmark_id"))
+        if canonical:
+            by_canonical[canonical].append(row)
+        else:
+            standalone.append(row)
+    collapsed: list[dict] = []
+    for canonical, rows in by_canonical.items():
+        primary = max(rows, key=lambda r: r.get("models_count") or 0)
+        if len(rows) > 1:
+            primary["reporting_sources"] = sorted(
+                {as_string(r.get("eval_summary_id")) for r in rows if r.get("eval_summary_id")}
+            )
+        # Use the registry's canonical display_name (e.g. "MMLU-Pro",
+        # "Tau2-Bench") for the catalog row label so the catalog doesn't
+        # inherit upstream-suite labels like "Artificial Analysis LLM API"
+        # just because that source happened to have the most models.
+        canonical_display = registry.get_canonical_display_name(canonical)
+        if canonical_display:
+            primary["benchmark_family_name"] = canonical_display
+            primary["display_name"] = canonical_display
+            primary["canonical_display_name"] = canonical_display
+        collapsed.append(primary)
+    eval_list["evals"] = standalone + collapsed
+    eval_list["evals"].sort(
+        key=lambda r: (-(r.get("models_count") or 0), as_string(r.get("eval_summary_id")))
+    )
 
     lite_eval_list = build_lightweight_eval_list(eval_list)
 
