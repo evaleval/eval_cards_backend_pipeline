@@ -92,6 +92,10 @@ EVAL_DESCRIPTION_METRIC_REGEX = re.compile(
 BENCHMARK_DEFAULT_METRICS = {
     "global_mmlu_lite": ("Accuracy", "accuracy"),
 }
+# EEE configs to drop entirely — upstream data-quality issues mean these
+# rows shouldn't be ingested at all. Filter both discovered and explicit
+# `CONFIGS=` overrides so production can never accidentally publish them.
+IGNORED_CONFIGS = {"alphaxiv"}
 # Leaf-key values that indicate a score is a summary across all sub-benchmarks
 # rather than an independent benchmark of its own.
 SUMMARY_SCORE_LEAF_KEYS = {"overall", "aggregate", "total", "all"}
@@ -4275,6 +4279,12 @@ def main() -> int:
     )
 
     all_configs = explicit_configs or discover_configs(local_dataset_dir, hf_token)
+    ignored_present = [c for c in all_configs if c in IGNORED_CONFIGS]
+    if ignored_present:
+        print(
+            f"[pipeline] {json.dumps({'event': 'config.ignored', 'configs': ignored_present, 'reason': 'upstream_data_quality'})}"
+        )
+        all_configs = [c for c in all_configs if c not in IGNORED_CONFIGS]
     if config_limit:
         all_configs = all_configs[
             : max(
