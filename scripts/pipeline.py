@@ -6541,7 +6541,14 @@ def main() -> int:
         # Per-source detail JSONs survive as drilldowns from canonical pages
         # and as direct destinations for model_summaries' top_benchmark_scores
         # references (which carry per-source eval_summary_ids).
+        # ``example://`` fixture rows are excluded from the catalog upstream;
+        # mirroring that filter here keeps ``validate_output_contract``'s
+        # files-vs-list parity check happy (otherwise the orphan JSON has no
+        # primary catalog row and no ``reporting_sources`` entry to authorize
+        # it, and the validator raises).
         for summary in eval_summaries:
+            if _is_example_eval_summary(summary):
+                continue
             write_json(OUTPUT_DIR / "evals" / f"{summary['eval_summary_id']}.json", summary)
         # Canonical-union detail JSONs: the catalog tile points here for
         # multi-source canonicals (e.g. /evals/canonical__gpqa). Filename
