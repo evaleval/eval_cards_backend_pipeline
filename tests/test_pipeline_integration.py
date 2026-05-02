@@ -629,11 +629,19 @@ def test_higher_is_better_metric_top_score_is_maximum(pipeline_output):
 def test_model_card_score_summary_aggregates_across_all_benchmarks(pipeline_output):
     """The score_summary on a model card aggregates across every score
     seen for that model in every evaluation_results. We compute the same
-    aggregate from the per-eval JSONs and assert equality."""
+    aggregate from the per-eval JSONs and assert equality.
+
+    Skip ``canonical__<id>.json`` files: their ``model_results`` are the
+    union of the contributing per-source files' rows, so iterating both
+    would double-count. Model cards aggregate from per-source eval_summaries
+    only.
+    """
     model_cards = _read(pipeline_output / "model-cards.json")
     card = next(c for c in model_cards if c["model_route_id"] == "openai__gpt-5")
     expected_scores: list[float] = []
     for path in (pipeline_output / "evals").glob("*.json"):
+        if path.stem.startswith("canonical__"):
+            continue
         for row in _walk_rows(_read(path)):
             if row["model_route_id"] == "openai__gpt-5":
                 expected_scores.append(row["score"])
@@ -671,14 +679,18 @@ def test_manifest_counts_match_published_artifacts(pipeline_output):
     model_cards = _read(pipeline_output / "model-cards.json")
     eval_list = _read(pipeline_output / "eval-list.json")
     assert manifest["model_count"] == len(model_cards)
-    # eval_list rows are collapsed by canonical_benchmark_id (one row per
-    # canonical with the others in reporting_sources). manifest["eval_count"]
-    # counts the underlying eval_summaries, so reconstruct via reporting_sources.
-    collapsed_eval_count = sum(
-        max(1, len(item.get("reporting_sources") or []))
+    # Each eval_list row corresponds to one or more on-disk per-eval JSONs:
+    #  - canonical-union rows: one ``canonical__<id>.json`` + one drilldown
+    #    file per ``reporting_sources`` entry (the per-source contributors).
+    #  - non-canonical rows: one file (themselves).
+    # manifest["eval_count"] counts every per-eval JSON file on disk.
+    expected_eval_files = sum(
+        1 + len(item.get("reporting_sources") or [])
+        if item.get("reporting_sources")
+        else 1
         for item in eval_list["evals"]
     )
-    assert manifest["eval_count"] == collapsed_eval_count
+    assert manifest["eval_count"] == expected_eval_files
     eval_files = list((pipeline_output / "evals").glob("*.json"))
     assert manifest["eval_count"] == len(eval_files)
     model_files = list((pipeline_output / "models").glob("*.json"))
@@ -827,10 +839,18 @@ def test_corpus_aggregates_each_signal_has_overall_plus_by_category(pipeline_out
 
 def test_corpus_reproducibility_totals_match_row_sum_across_evals(pipeline_output):
     """Hard invariant: reproducibility.overall.total_triples must equal
-    the actual count of rows across all per-eval JSONs."""
+    the actual count of rows across all per-source per-eval JSONs.
+
+    Canonical-union files (``canonical__<id>.json``) re-publish the same
+    rows from their contributing sources, so they're skipped here to avoid
+    double-counting. Corpus aggregates iterate the per-source eval_summaries
+    upstream for the same reason.
+    """
     ca = _read(pipeline_output / "corpus-aggregates.json")
     total_rows = 0
     for path in (pipeline_output / "evals").glob("*.json"):
+        if path.stem.startswith("canonical__"):
+            continue
         total_rows += len(_walk_rows(_read(path)))
     assert ca["reproducibility"]["overall"]["total_triples"] == total_rows
 
@@ -897,9 +917,14 @@ def test_corpus_comparability_rates_use_eligibility_denominator(pipeline_output)
 
 def test_corpus_completeness_total_matches_eval_count(pipeline_output):
     """completeness.overall.total_benchmarks must equal the number of
-    per-eval JSONs we emit (one completeness annotation per eval)."""
+    per-source eval_summaries (corpus aggregates iterate eval_summaries
+    upstream and don't include canonical-union records to avoid
+    double-counting their contributing sources)."""
     ca = _read(pipeline_output / "corpus-aggregates.json")
-    eval_files = list((pipeline_output / "evals").glob("*.json"))
+    eval_files = [
+        p for p in (pipeline_output / "evals").glob("*.json")
+        if not p.stem.startswith("canonical__")
+    ]
     assert ca["completeness"]["overall"]["total_benchmarks"] == len(eval_files)
 
 
@@ -975,11 +1000,14 @@ def test_hierarchy_family_evals_count_equals_sum_of_leaf_evals(pipeline_output):
 
 
 def test_hierarchy_total_evals_match_manifest(pipeline_output):
-    """Sum of evals_count across all families equals the published eval_count."""
+    """Sum of evals_count across all families equals the published catalog
+    size (i.e., the eval-list row count). Hierarchy and eval-list share
+    the same catalog-level grain — canonical-union records replace their
+    source contributors in both — so they must agree."""
     h = _read(pipeline_output / "eval-hierarchy.json")
-    manifest = _read(pipeline_output / "manifest.json")
+    eval_list = _read(pipeline_output / "eval-list.json")
     total = sum(fam["evals_count"] for fam in h["families"])
-    assert total == manifest["eval_count"]
+    assert total == len(eval_list["evals"])
 
 
 def test_hierarchy_each_eval_summary_id_appears_in_exactly_one_family(pipeline_output):
@@ -1579,18 +1607,22 @@ def test_eval_hierarchy_carries_canonical_benchmark_ids(pipeline_output):
         f for f in hierarchy["families"] if f.get("canonical_benchmark_ids")
     ]
     assert families_with_canonical, "no family carries canonical_benchmark_ids"
-    # bench_canonical_a + bench_canonical_b each become their own family at
-    # the runtime level (family-collapse is deferred); both should report
-    # canonical_benchmark_ids=["mmlu"].
+    # bench_canonical_a + bench_canonical_b share canonical=mmlu and union
+    # into a single ``canonical__mmlu`` eval_summary in both eval-list and
+    # eval-hierarchy. The contributing per-source eval_summaries are
+    # excluded from the catalog (they survive on disk as drilldowns), so
+    # exactly one hierarchy family carries canonical_benchmark_ids=['mmlu'].
     matching = [
         f
         for f in hierarchy["families"]
         if "mmlu" in (f.get("canonical_benchmark_ids") or [])
     ]
-    assert len(matching) >= 2, (
-        "both bench_canonical_a and bench_canonical_b should expose "
-        "canonical_benchmark_ids=['mmlu']"
+    assert len(matching) == 1, (
+        "canonical=mmlu should appear in exactly one hierarchy family "
+        "(the canonical__mmlu union record); per-source contributors are "
+        "drilldown-only after canonical-union"
     )
+    assert matching[0]["eval_summary_ids"] == ["canonical__mmlu"]
 
 
 # ---------------------------------------------------------------------------

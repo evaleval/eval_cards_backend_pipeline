@@ -34,6 +34,7 @@ _resolver_init_attempted = False
 _resolver_init_error: str | None = None
 
 _canonical_benchmark_displays: dict[str, str] | None = None
+_canonical_benchmark_parents: dict[str, str] | None = None
 
 
 def _log(event: str, **fields: Any) -> None:
@@ -172,6 +173,83 @@ def get_canonical_display_name(canonical_id: str | None) -> str | None:
     if not canonical_id:
         return None
     return _load_canonical_benchmark_displays().get(canonical_id)
+
+
+def _load_canonical_benchmark_parents() -> dict[str, str]:
+    """Load canonical_id → parent_benchmark_id map (only entries with non-null
+    parent). Used by ``get_canonical_benchmark_root`` to roll per-domain sub-
+    benchmarks (e.g. ``tau2-airline``, ``tau2-retail``, ``tau2-telecom``) up to
+    their parent canonical (``tau2-bench``) for catalog tile aggregation.
+
+    Reads the same ``canonical_benchmarks/part-0.parquet`` table as
+    ``_load_canonical_benchmark_displays`` and follows the same fallback
+    policy (REGISTRY_LOCAL_PARQUET_DIR → HF download → empty on failure).
+    """
+    global _canonical_benchmark_parents
+    if _canonical_benchmark_parents is not None:
+        return _canonical_benchmark_parents
+
+    if os.environ.get("REGISTRY_DISABLE") == "1":
+        _canonical_benchmark_parents = {}
+        return _canonical_benchmark_parents
+
+    try:
+        import pandas as pd
+
+        local_dir = (os.environ.get("REGISTRY_LOCAL_PARQUET_DIR") or "").strip()
+        if local_dir:
+            from pathlib import Path
+
+            path = Path(local_dir) / "canonical_benchmarks.parquet"
+            if not path.exists():
+                path = Path(local_dir) / "canonical_benchmarks" / "part-0.parquet"
+            df = pd.read_parquet(path)
+        else:
+            from huggingface_hub import hf_hub_download
+
+            local = hf_hub_download(
+                repo_id=REGISTRY_HF_DATASET,
+                filename="canonical_benchmarks/part-0.parquet",
+                repo_type="dataset",
+            )
+            df = pd.read_parquet(local)
+        parents: dict[str, str] = {}
+        for _, row in df.iterrows():
+            child = row.get("id")
+            parent = row.get("parent_benchmark_id")
+            if child and parent and not (isinstance(parent, float) and parent != parent):
+                parents[str(child)] = str(parent)
+        _canonical_benchmark_parents = parents
+        _log("registry.canonical_parents_loaded", count=len(parents))
+    except Exception as error:
+        _log("registry.canonical_parents_failed", error=str(error))
+        _canonical_benchmark_parents = {}
+    return _canonical_benchmark_parents
+
+
+def get_canonical_benchmark_root(canonical_id: str | None) -> str | None:
+    """Walk the ``parent_benchmark_id`` chain to return the root canonical id.
+
+    A root has no parent (e.g. ``tau2-bench``), so this collapses
+    ``tau2-airline`` → ``tau2-bench`` and ``tau2-retail`` → ``tau2-bench``.
+    Used so multi-domain sibling sub-benchmarks roll up into a single
+    canonical-union tile in the catalog.
+
+    Cycle-safe: aborts after 16 hops if the registry has a cycle (shouldn't
+    happen, but parent_benchmark_id is a free-form FK in the registry seed).
+    Returns the input unchanged when there's no parent or the registry isn't
+    reachable.
+    """
+    if not canonical_id:
+        return None
+    parents = _load_canonical_benchmark_parents()
+    current = canonical_id
+    for _ in range(16):
+        parent = parents.get(current)
+        if not parent or parent == current:
+            return current
+        current = parent
+    return current
 
 
 def resolve_benchmark(
@@ -322,9 +400,12 @@ def resolve_org(
 def reset_for_tests() -> None:
     """Clear the module-level resolver and the lru_cache. Test-only."""
     global _resolver, _resolver_init_attempted, _resolver_init_error
+    global _canonical_benchmark_displays, _canonical_benchmark_parents
     _resolver = None
     _resolver_init_attempted = False
     _resolver_init_error = None
+    _canonical_benchmark_displays = None
+    _canonical_benchmark_parents = None
     _resolve_cached.cache_clear()
     _resolve_model_cached.cache_clear()
     _resolve_metric_cached.cache_clear()

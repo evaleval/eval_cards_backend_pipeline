@@ -13,6 +13,7 @@ from typing import Any
 from huggingface_hub import HfApi, HfFileSystem, hf_hub_download, snapshot_download
 
 from scripts import registry, signals
+from scripts.helpers.slug_utils import humanize_slug
 from scripts.helpers.benchmark_identity import (
     canonical_benchmark_family_key,
     is_agentic_benchmark_name,
@@ -277,22 +278,6 @@ def slugify_model_segment(value: Any) -> str:
 _V_VERSION_TOKEN_RE = re.compile(r"^v\d", re.IGNORECASE)
 
 
-def humanize_slug(value: Any) -> str:
-    parts = [p for p in re.split(r"[-_/]+", as_string(value)) if p]
-    out = []
-    for part in parts:
-        # v/V version tokens (e.g. `v3`, `v0.1`) — keep `v` lowercase per
-        # spec 01 Group B. This rule predates the digit-uppercase rule
-        # below; without it, model names like `Deepseek v3` regress to
-        # `Deepseek V3` (1,253 cards in the production corpus).
-        if _V_VERSION_TOKEN_RE.match(part):
-            out.append("v" + part[1:])
-            continue
-        if len(part) <= 3 and any(c.isdigit() for c in part):
-            out.append(part.upper())
-        else:
-            out.append(part[:1].upper() + part[1:])
-    return " ".join(out)
 
 
 def normalize_setup_alias_qualifier(value: Any) -> str:
@@ -489,6 +474,7 @@ def max_iso(left: str | None, right: str | None) -> str | None:
 def load_benchmark_metadata(
     metadata_cache_dir: str,
 ) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
+    # TODO replace
     return load_benchmark_metadata_from_dir(Path(metadata_cache_dir))
 
 
@@ -826,38 +812,6 @@ def load_metric_registry(path: Path = DEFAULT_METRIC_REGISTRY_PATH) -> None:
     )
 
 
-def humanize_metric_key(value: Any) -> str:
-    text = normalize_benchmark_key(value)
-    if not text:
-        return ""
-    pass_match = re.match(r"pass_at_(\d+)$", text)
-    if pass_match:
-        return f"Pass@{pass_match.group(1)}"
-
-    special = {
-        "ast": "AST",
-        "kv": "KV",
-        "ndcg": "NDCG",
-        "arc": "ARC",
-        "ifeval": "IFEval",
-        "cot": "CoT",
-        "bleu": "BLEU",
-        "rouge": "ROUGE",
-        "elo": "Elo",
-        "ms": "(ms)",
-        "p95": "95th Percentile",
-    }
-    parts = []
-    for part in text.split("_"):
-        if part in special:
-            parts.append(special[part])
-        elif part.isdigit():
-            parts.append(part)
-        else:
-            parts.append(part[:1].upper() + part[1:])
-    label = " ".join(parts).replace(" (ms)", " (ms)")
-    return re.sub(r"\s+", " ", label).strip()
-
 
 def canonicalize_metric_key(value: Any) -> str:
     raw = as_string(value).strip()
@@ -926,6 +880,39 @@ def preferred_metric_display(metric_key: str, raw_label: Any = None) -> str:
     ):
         return as_string(raw_label).strip()
     return humanize_metric_key(metric_key)
+
+
+def humanize_metric_key(value: Any) -> str:
+    text = normalize_benchmark_key(value)
+    if not text:
+        return ""
+    pass_match = re.match(r"pass_at_(\d+)$", text)
+    if pass_match:
+        return f"Pass@{pass_match.group(1)}"
+
+    special = {
+        "ast": "AST",
+        "kv": "KV",
+        "ndcg": "NDCG",
+        "arc": "ARC",
+        "ifeval": "IFEval",
+        "cot": "CoT",
+        "bleu": "BLEU",
+        "rouge": "ROUGE",
+        "elo": "Elo",
+        "ms": "(ms)",
+        "p95": "95th Percentile",
+    }
+    parts = []
+    for part in text.split("_"):
+        if part in special:
+            parts.append(special[part])
+        elif part.isdigit():
+            parts.append(part)
+        else:
+            parts.append(part[:1].upper() + part[1:])
+    label = " ".join(parts).replace(" (ms)", " (ms)")
+    return re.sub(r"\s+", " ", label).strip()
 
 
 def infer_metric_from_value(
@@ -3421,6 +3408,302 @@ def summarize_comparability_combined(
     }
 
 
+def _dedup_signal_groups(
+    group_lists: list[list[dict]],
+    key_fields: tuple[str, ...] = ("group_id",),
+) -> list[dict]:
+    """Concat signal-group lists and dedup by the join of ``key_fields``.
+
+    Cross-party (Signal 4) and provenance (Signal 2) groups are keyed by
+    ``group_id`` — already canonical-scoped, so the same ``group_id``
+    appearing in multiple contributing sources represents the same group
+    and should fold to one. Variant (Signal 3) groups are per-source
+    (per-metric_summary intra-source); their ``group_id`` differs across
+    sources but their ``model_route_id`` is what matters for the merged
+    canonical view, so dedup by route.
+    """
+    seen: dict[str, dict] = {}
+    counter = 0
+    for groups in group_lists:
+        for entry in groups or []:
+            parts = [as_string(entry.get(field)) for field in key_fields]
+            key = "::".join(parts) if any(parts) else f"_anon::{counter}"
+            counter += 1
+            if key not in seen:
+                seen[key] = entry
+    return list(seen.values())
+
+
+def _merge_metrics_by_key(metric_groups: list[list[dict]]) -> list[dict]:
+    """Union metrics across sources, keying by ``metric_key``.
+
+    Same ``metric_key`` from different sources (e.g. both report ``acc`` for
+    GPQA) gets concatenated ``model_results`` — no dedup; each evaluator's
+    measurement is a real, distinct data point. Different ``metric_key``s
+    (e.g. ``acc_cot`` vs ``acc_no_cot``) stay as separate metrics in the
+    canonical record so Signal 3 (variant divergence) surfaces them.
+    """
+    by_key: dict[str, list[dict]] = defaultdict(list)
+    for metrics in metric_groups:
+        for metric in metrics or []:
+            key = (
+                as_string(metric.get("metric_key"))
+                or as_string(metric.get("metric_id"))
+                or as_string(metric.get("metric_name"))
+                or "?"
+            )
+            by_key[key].append(metric)
+
+    merged: list[dict] = []
+    for key, contributors in by_key.items():
+        # Use first contributor as the structural template; only the per-row
+        # data varies by source.
+        sample = dict(contributors[0])
+        union_results: list[dict] = []
+        for metric in contributors:
+            union_results.extend(metric.get("model_results") or [])
+        sample["model_results"] = union_results
+        unique_routes = {
+            as_string(r.get("model_route_id"))
+            for r in union_results
+            if as_string(r.get("model_route_id"))
+        }
+        sample["models_count"] = len(unique_routes)
+        scores = [r.get("score") for r in union_results if r.get("score") is not None]
+        sample["top_score"] = max(scores) if scores else None
+        sample["_variant_signal_groups"] = _dedup_signal_groups(
+            [m.get("_variant_signal_groups") or [] for m in contributors],
+            key_fields=("model_route_id",),
+        )
+        sample["_signal_groups"] = _dedup_signal_groups(
+            [m.get("_signal_groups") or [] for m in contributors]
+        )
+        sample["_provenance_signal_groups"] = _dedup_signal_groups(
+            [m.get("_provenance_signal_groups") or [] for m in contributors]
+        )
+        merged.append(sample)
+    return merged
+
+
+def _merge_subtasks_by_key(subtask_groups: list[list[dict]]) -> list[dict]:
+    """Union subtasks across sources by ``subtask_key``. Within each matched
+    subtask, recursively union its metrics."""
+    by_key: dict[str, list[dict]] = defaultdict(list)
+    for subtasks in subtask_groups:
+        for subtask in subtasks or []:
+            key = (
+                as_string(subtask.get("subtask_key"))
+                or as_string(subtask.get("subtask_name"))
+                or as_string(subtask.get("display_name"))
+                or "?"
+            )
+            by_key[key].append(subtask)
+
+    merged: list[dict] = []
+    for key, contributors in by_key.items():
+        sample = dict(contributors[0])
+        sample["metrics"] = _merge_metrics_by_key(
+            [st.get("metrics") or [] for st in contributors]
+        )
+        merged.append(sample)
+    return merged
+
+
+def _is_example_eval_summary(summary: dict) -> bool:
+    """Mirror ``parity_outputs._is_example_eval_entry``: treat any record
+    whose ``source_data.hf_repo`` starts with ``example://`` as a demo
+    fixture (not real eval data). The parity layer has always filtered
+    these out of ``eval_list.parquet`` / ``eval_list_lite.parquet`` at
+    emission time; we apply the same filter once upstream at
+    ``catalog_eval_summaries`` construction so eval-hierarchy and the
+    catalog parquets share one view (otherwise hierarchy includes
+    fixture rows the catalog can't render → ghost families like
+    ``theory_of_mind``)."""
+    source_data = summary.get("source_data") or {}
+    hf_repo = source_data.get("hf_repo")
+    return isinstance(hf_repo, str) and hf_repo.startswith("example://")
+
+
+def build_canonical_union_eval_summaries(
+    eval_summaries: list[dict],
+) -> tuple[list[dict], dict[str, str]]:
+    """Build canonical-union eval_summaries and a source→canonical id map.
+
+    For each ``canonical_benchmark_id`` with two or more contributing source
+    eval_summaries, emit one merged eval_summary record whose ``model_results``
+    are the union of all contributing rows (no dedup — each source is a real,
+    distinct measurement) and whose signal rollups are recomputed over that
+    union. Single-source canonicals don't need merging — there's only one
+    contributor — so they're skipped.
+
+    The catalog (``eval-list.json``, ``eval_list.parquet``, the standalone
+    ``GPQA``-style tile) reads the canonical-union record. Per-source records
+    survive in ``output/evals/<source_id>.json`` for drilldowns and in
+    ``model_summaries`` so model cards keep per-source attribution.
+
+    Returns ``(canonical_records, source_to_canonical_id_map)``.
+    """
+    by_canonical: dict[str, list[dict]] = defaultdict(list)
+    for summary in eval_summaries:
+        if _is_example_eval_summary(summary):
+            # ``example://`` fixtures shouldn't pollute the canonical-union
+            # of a real benchmark. Skip them as canonical contributors.
+            continue
+        canonical_id = as_string(summary.get("canonical_benchmark_id"))
+        if canonical_id:
+            by_canonical[canonical_id].append(summary)
+
+    canonical_records: list[dict] = []
+    source_to_canonical_id: dict[str, str] = {}
+    for canonical_id, contributors in by_canonical.items():
+        if len(contributors) < 2:
+            continue
+
+        # Use the contributor with the most models as a structural template
+        # (carries plausible defaults for benchmark_card, source_data, tags,
+        # category, etc.) and overlay the merged data on top.
+        base = max(contributors, key=lambda s: s.get("models_count", 0) or 0)
+        canonical_summary_id = f"canonical__{canonical_id}"
+        display = (
+            registry.get_canonical_display_name(canonical_id)
+            or as_string(base.get("display_name"))
+            or canonical_id
+        )
+
+        merged_metrics = _merge_metrics_by_key(
+            [s.get("metrics") or [] for s in contributors]
+        )
+        merged_subtasks = _merge_subtasks_by_key(
+            [s.get("subtasks") or [] for s in contributors]
+        )
+
+        all_routes: set[str] = set()
+        all_scores: list[float] = []
+        for metric in merged_metrics:
+            for row in metric.get("model_results") or []:
+                rid = as_string(row.get("model_route_id"))
+                if rid:
+                    all_routes.add(rid)
+                if row.get("score") is not None:
+                    all_scores.append(row["score"])
+        for subtask in merged_subtasks:
+            for metric in subtask.get("metrics") or []:
+                for row in metric.get("model_results") or []:
+                    rid = as_string(row.get("model_route_id"))
+                    if rid:
+                        all_routes.add(rid)
+
+        all_metric_pool: list[dict] = list(merged_metrics)
+        for subtask in merged_subtasks:
+            all_metric_pool.extend(subtask.get("metrics") or [])
+        (
+            row_repro,
+            row_provenance,
+            variant_groups,
+            signal_groups,
+            provenance_groups,
+        ) = collect_signal_rollup_inputs(all_metric_pool)
+
+        canonical = dict(base)
+        canonical["eval_summary_id"] = canonical_summary_id
+        canonical["benchmark"] = display
+
+        # Family-key routing: cross-source canonicals (rebroadcast by 2+ EEE
+        # configs — gpqa, mmlu-pro, finance-agent) lift to their canonical id
+        # as a standalone family, since no single suite "owns" them. Single-
+        # source canonicals (vals-index, sage-vals, vals-multimodal-index —
+        # all contributors come from one EEE config) stay routed under that
+        # source's suite family so the catalog presents them in their natural
+        # context (Vals Index belongs under Vals AI, not as a sibling of GPQA).
+        contributor_source_configs = {
+            normalize_benchmark_key(as_string(c.get("_eee_source_config")))
+            for c in contributors
+            if as_string(c.get("_eee_source_config"))
+        }
+        if len(contributor_source_configs) == 1:
+            source_family_key = contributor_source_configs.pop()
+            source_family_name = (
+                as_string(base.get("benchmark_family_name"))
+                if as_string(base.get("benchmark_family_key"))
+                == source_family_key
+                else humanize_slug(source_family_key)
+            )
+            canonical["benchmark_family_key"] = source_family_key
+            canonical["benchmark_family_name"] = (
+                source_family_name or humanize_slug(source_family_key)
+            )
+        else:
+            canonical["benchmark_family_key"] = canonical_id
+            canonical["benchmark_family_name"] = display
+        canonical["benchmark_parent_key"] = canonical_id
+        canonical["benchmark_parent_name"] = display
+        canonical["benchmark_leaf_key"] = canonical_id
+        canonical["benchmark_leaf_name"] = display
+        canonical["benchmark_component_key"] = canonical_id
+        canonical["benchmark_component_name"] = display
+        canonical["evaluation_name"] = display
+        canonical["display_name"] = display
+        canonical["canonical_display_name"] = display
+        canonical["canonical_benchmark_id"] = canonical_id
+        canonical["metrics"] = merged_metrics
+        canonical["subtasks"] = merged_subtasks
+        # ``metrics_count`` matches the source-side semantic: total metrics
+        # across root + every subtask. Counting only ``len(merged_metrics)``
+        # produced 0 for canonicals whose contributors only carried subtask
+        # metrics (e.g. canonical__swe-polybench-leaderboard), making the
+        # tile render with "0 metrics" while still listing model_results.
+        canonical["metrics_count"] = len(merged_metrics) + sum(
+            len(st.get("metrics") or []) for st in merged_subtasks
+        )
+        canonical["subtasks_count"] = len(merged_subtasks)
+        canonical["models_count"] = len(all_routes)
+        canonical["top_score"] = max(all_scores) if all_scores else None
+        canonical["metric_names"] = [
+            as_string(m.get("metric_name")) for m in merged_metrics if m.get("metric_name")
+        ]
+        canonical["source_eval_summary_ids"] = sorted(
+            as_string(s.get("eval_summary_id"))
+            for s in contributors
+            if s.get("eval_summary_id")
+        )
+        canonical["reporting_sources"] = canonical["source_eval_summary_ids"]
+        canonical["reproducibility_summary"] = signals.summarize_reproducibility(row_repro)
+        canonical["provenance_summary"] = signals.summarize_provenance(
+            row_provenance, provenance_groups
+        )
+        canonical["comparability_summary"] = summarize_comparability_combined(
+            variant_groups, signal_groups
+        )
+        # ``reporting_completeness`` is benchmark-card-driven and source-
+        # invariant within a canonical (the card content is the same), so
+        # carry the base contributor's value through unchanged. Downstream
+        # consumers iterate every eval_summary and read this field
+        # unconditionally; without it the canonical record would crash
+        # callers expecting the full annotations contract.
+        base_annotations = (base.get("evalcards") or {}).get("annotations") or {}
+        canonical["evalcards"] = {
+            "annotations": {
+                "reporting_completeness": base_annotations.get(
+                    "reporting_completeness"
+                ),
+                "benchmark_comparability": build_benchmark_comparability(
+                    variant_groups, signal_groups
+                ),
+            }
+        }
+        # source_data is per-source upstream; clear it on the canonical so
+        # consumers don't read a misleading single-source attribution.
+        canonical["source_data"] = None
+
+        canonical_records.append(canonical)
+        for contributor in contributors:
+            src_id = as_string(contributor.get("eval_summary_id"))
+            if src_id:
+                source_to_canonical_id[src_id] = canonical_summary_id
+
+    return canonical_records, source_to_canonical_id
+
+
 def filter_metric_summary_for_model(
     metric_summary: dict, family_id: str
 ) -> dict | None:
@@ -5049,6 +5332,7 @@ def main() -> int:
     # the pipeline-normalized ``benchmark_family_key`` would miss
     # hyphenated suites like ``tau-bench-2_airline``.
     canonical_resolution_count = 0
+    canonical_root_rolled_up = 0
     for summary in eval_summaries:
         raw_value = (
             as_string(summary.get("benchmark_leaf_name"))
@@ -5058,12 +5342,28 @@ def main() -> int:
         resolution = registry.resolve_benchmark(
             raw_value, summary.get("_eee_source_config")
         )
-        summary["canonical_benchmark_id"] = resolution["canonical_id"]
+        canonical_id = resolution["canonical_id"]
+        # Roll per-domain sub-benchmarks up to their parent canonical for
+        # catalog aggregation. The registry models multi-domain benchmarks
+        # like Tau2-Bench as a parent (tau2-bench) with per-domain children
+        # (tau2-airline, tau2-retail, tau2-telecom). Without rollup the
+        # catalog renders 4 unconnected tiles ("Tau2-Bench" from AA's
+        # umbrella score + 3 separate "Tau2-Bench Airline/Retail/Telecom"
+        # tiles from llm_stats's per-domain rows). Rolling up lets the
+        # canonical-union merge them all into one Tau2-Bench tile whose
+        # detail page exposes the per-domain breakdown via its grouped
+        # ``model_results``.
+        if canonical_id:
+            root_id = registry.get_canonical_benchmark_root(canonical_id)
+            if root_id and root_id != canonical_id:
+                canonical_id = root_id
+                canonical_root_rolled_up += 1
+        summary["canonical_benchmark_id"] = canonical_id
         summary["canonical_benchmark_resolution"] = resolution
-        if resolution["canonical_id"]:
+        if canonical_id:
             canonical_resolution_count += 1
     print(
-        f"[pipeline] {json.dumps({'event': 'registry.eval_summaries_resolved', 'total': len(eval_summaries), 'resolved': canonical_resolution_count})}"
+        f"[pipeline] {json.dumps({'event': 'registry.eval_summaries_resolved', 'total': len(eval_summaries), 'resolved': canonical_resolution_count, 'rolled_up_to_root': canonical_root_rolled_up})}"
     )
 
     # Compute provenance + cross_party_divergence at the
@@ -5304,6 +5604,38 @@ def main() -> int:
         summary["reproducibility_summary"] = repro_summary
         summary["provenance_summary"] = provenance_summary
         summary["comparability_summary"] = comparability_summary
+
+    # Build canonical-union eval_summaries: for canonicals reported by 2+
+    # sources, union their model_results and recompute signal rollups over the
+    # merged set. Must run AFTER the per-source signal annotation loop above
+    # so the canonical merge can carry forward the contributors' completed
+    # ``evalcards.annotations`` and recompute group rollups from each metric's
+    # ``_*_signal_groups``. The catalog (eval-list) and detail-page emission
+    # read these canonical records; per-source records survive in
+    # eval_summaries for model_summaries / model_cards (which need per-source
+    # attribution) and for output/evals/<source_id>.json drilldowns.
+    canonical_eval_summaries, source_to_canonical_id = (
+        build_canonical_union_eval_summaries(eval_summaries)
+    )
+    canonical_eval_summaries.sort(
+        key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id")))
+    )
+    sources_in_canonical: set[str] = set(source_to_canonical_id.keys())
+    # ``example://`` fixture rows are kept in ``eval_summaries`` (so per-source
+    # JSON drilldowns still serve them if someone deep-links) but excluded
+    # from the catalog and from eval-hierarchy. parity_outputs already drops
+    # them at eval_list parquet emission; mirroring that filter here keeps
+    # eval-hierarchy in sync with the catalog (without it, hierarchy renders
+    # ghost families like ``theory_of_mind`` that the catalog can't back).
+    catalog_eval_summaries: list[dict] = [
+        s
+        for s in eval_summaries
+        if as_string(s.get("eval_summary_id")) not in sources_in_canonical
+        and not _is_example_eval_summary(s)
+    ] + canonical_eval_summaries
+    catalog_eval_summaries.sort(
+        key=lambda s: (-s.get("models_count", 0), as_string(s.get("eval_summary_id")))
+    )
 
     aggregated_model_family_groups: dict[str, list[dict]] = defaultdict(list)
     for family_evals in model_family_groups.values():
@@ -5726,45 +6058,24 @@ def main() -> int:
                 "reproducibility_summary": s.get("reproducibility_summary"),
                 "provenance_summary": s.get("provenance_summary"),
                 "comparability_summary": s.get("comparability_summary"),
+                # ``reporting_sources`` lists the per-source eval_summary_ids
+                # whose data was unioned into a ``canonical__<id>`` row. For
+                # non-canonical rows this is None. ``validate_output_contract``
+                # uses this list to authorize per-source ``evals/<id>.json``
+                # drilldown files that don't have a primary catalog row.
+                "reporting_sources": s.get("source_eval_summary_ids"),
             }
-            for s in eval_summaries
+            for s in catalog_eval_summaries
         ],
         "totalModels": len(model_cards),
     }
 
-    # Collapse eval-list rows by canonical_benchmark_id so the catalog shows
-    # one row per canonical (e.g., one "MMLU-Pro" row instead of 21). Per-suite
-    # eval_summary JSONs at output/evals/<id>.json survive untouched for
-    # drill-down and parquet emission; this only affects eval-list.json's
-    # ``evals`` array. Rows without a canonical_benchmark_id are kept as-is.
-    # The primary row is the one with the most models in its group; other
-    # group members are listed in ``reporting_sources`` for discovery.
-    by_canonical: dict[str, list[dict]] = defaultdict(list)
-    standalone: list[dict] = []
-    for row in eval_list["evals"]:
-        canonical = as_string(row.get("canonical_benchmark_id"))
-        if canonical:
-            by_canonical[canonical].append(row)
-        else:
-            standalone.append(row)
-    collapsed: list[dict] = []
-    for canonical, rows in by_canonical.items():
-        primary = max(rows, key=lambda r: r.get("models_count") or 0)
-        if len(rows) > 1:
-            primary["reporting_sources"] = sorted(
-                {as_string(r.get("eval_summary_id")) for r in rows if r.get("eval_summary_id")}
-            )
-        # Use the registry's canonical display_name (e.g. "MMLU-Pro",
-        # "Tau2-Bench") for the catalog row label so the catalog doesn't
-        # inherit upstream-suite labels like "Artificial Analysis LLM API"
-        # just because that source happened to have the most models.
-        canonical_display = registry.get_canonical_display_name(canonical)
-        if canonical_display:
-            primary["benchmark_family_name"] = canonical_display
-            primary["display_name"] = canonical_display
-            primary["canonical_display_name"] = canonical_display
-        collapsed.append(primary)
-    eval_list["evals"] = standalone + collapsed
+    # Catalog already reflects canonical-union semantics: rows that
+    # contributed to a multi-source canonical were excluded from
+    # catalog_eval_summaries upstream and replaced with the canonical-union
+    # record (whose model_results are the cross-source union and whose
+    # signal rollups were recomputed over that union). Sort the catalog
+    # for deterministic ordering.
     eval_list["evals"].sort(
         key=lambda r: (-(r.get("models_count") or 0), as_string(r.get("eval_summary_id")))
     )
@@ -5902,7 +6213,11 @@ def main() -> int:
     manifest = {
         "generated_at": started_at,
         "model_count": len(model_cards),
-        "eval_count": len(eval_summaries),
+        # eval_count = total per-eval JSON files on disk = per-source records
+        # + canonical-union records. Each canonical-union row in the catalog
+        # gets its own ``canonical__<id>.json`` and its source contributors
+        # also keep their per-source JSONs as drilldowns.
+        "eval_count": len(eval_summaries) + len(canonical_eval_summaries),
         "metric_eval_count": sum(
             len(summary.get("metrics", []))
             + sum(
@@ -6016,44 +6331,14 @@ def main() -> int:
             ),
         }
 
-    # AA's leaderboard is a rebroadcast aggregator, not a benchmark family of its
-    # own (unlike HELM, which owns its sub-evaluations). Lift its canonical-resolved
-    # named-benchmark leaves (gpqa, mmlu-pro, scicode, ...) out of AA into their
-    # canonical's family. Keep AA-native canonicals (indices, pricing-via-no-canonical,
-    # AA-LCR) under AA.
-    _AA_NATIVE_CANONICALS = {
-        "artificial-analysis-coding-index",
-        "artificial-analysis-intelligence-index",
-        "artificial-analysis-math-index",
-        "aa-lcr",
-    }
-
-    def _hierarchy_family_keys(eval_summary: dict) -> tuple[str, str]:
-        """Return (family_key, family_display_name) for hierarchy bucketing.
-
-        Default: take the EEE family_key/family_name. AA leaves with canonical
-        outside the AA-native set re-route to a canonical-driven family.
-        """
-        raw_family_key = (
+    families_in_progress: dict[str, dict] = {}
+    for eval_summary in catalog_eval_summaries:
+        family_key = (
             as_string(eval_summary.get("benchmark_family_key")) or "unknown"
         )
-        raw_family_display = (
-            as_string(eval_summary.get("benchmark_family_name")) or raw_family_key
+        family_display = (
+            as_string(eval_summary.get("benchmark_family_name")) or family_key
         )
-        if raw_family_key != "artificial_analysis_llms":
-            return raw_family_key, raw_family_display
-        canonical_id = as_string(eval_summary.get("canonical_benchmark_id"))
-        if not canonical_id or canonical_id in _AA_NATIVE_CANONICALS:
-            return raw_family_key, raw_family_display
-        canonical_display = registry.get_canonical_display_name(canonical_id)
-        if not canonical_display:
-            return raw_family_key, raw_family_display
-        # Use the canonical id as the lifted family_key (already slug-safe).
-        return canonical_id, canonical_display
-
-    families_in_progress: dict[str, dict] = {}
-    for eval_summary in eval_summaries:
-        family_key, family_display = _hierarchy_family_keys(eval_summary)
         family = families_in_progress.setdefault(
             family_key,
             {
@@ -6078,10 +6363,7 @@ def main() -> int:
             "Replaces the previously-shipped static reports/eval_hierarchy.json snapshot. "
             "Family keys are uncollapsed runtime values: `helm_classic`, `helm_lite`, "
             "`helm_air_bench` etc. each appear as separate top-level families instead "
-            "of as composites under one `helm` family. AA leaderboard leaves are an "
-            "exception: canonical-resolved leaves under `artificial_analysis_llms` are "
-            "lifted to their canonical's family (e.g. `gpqa`, `mmlu-pro`) since AA "
-            "rebroadcasts external benchmarks rather than owning them."
+            "of as composites under one `helm` family."
         ),
         "families": [],
     }
@@ -6243,6 +6525,8 @@ def main() -> int:
 
     for summary in eval_summaries:
         _strip_signals_internals(summary)
+    for summary in canonical_eval_summaries:
+        _strip_signals_internals(summary)
     for summary in model_summaries:
         for category_summaries in summary.get("hierarchy_by_category", {}).values():
             for filtered_summary in category_summaries:
@@ -6254,7 +6538,15 @@ def main() -> int:
     if emit_legacy_json():
         for summary in model_summaries:
             write_json(OUTPUT_DIR / "models" / f"{summary['model_route_id']}.json", summary)
+        # Per-source detail JSONs survive as drilldowns from canonical pages
+        # and as direct destinations for model_summaries' top_benchmark_scores
+        # references (which carry per-source eval_summary_ids).
         for summary in eval_summaries:
+            write_json(OUTPUT_DIR / "evals" / f"{summary['eval_summary_id']}.json", summary)
+        # Canonical-union detail JSONs: the catalog tile points here for
+        # multi-source canonicals (e.g. /evals/canonical__gpqa). Filename
+        # matches the eval_summary_id verbatim.
+        for summary in canonical_eval_summaries:
             write_json(OUTPUT_DIR / "evals" / f"{summary['eval_summary_id']}.json", summary)
         for summary in dev_summaries:
             write_json(
@@ -6278,12 +6570,27 @@ def main() -> int:
         lite_model_cards=lite_model_cards,
         eval_list=eval_list,
         lite_eval_list=lite_eval_list,
-        eval_summaries=eval_summaries,
+        # Pass per-source AND canonical-union eval_summaries so the
+        # eval_summaries.parquet detail-page surface contains both source
+        # drilldowns (referenced by model_summaries.top_benchmark_scores) and
+        # canonical-union records (referenced by the catalog tile).
+        eval_summaries=eval_summaries + canonical_eval_summaries,
         model_summaries=model_summaries,
         dev_summaries=dev_summaries,
         benchmark_metadata=benchmark_metadata,
         output_dir=OUTPUT_DIR,
     )
+
+    # Corpus-level invariant audit. Catches the bug classes that
+    # ``validate_output_contract`` doesn't (per-row file/list parity is
+    # different from cross-row consistency): zero-count tiles, hierarchy
+    # families that won't render because no eval-list row matches their
+    # ``benchmark_family_key``, dangling eval_summary_ids in hierarchy,
+    # un-collapsed canonicals, and duplicate display names within a
+    # family. Runs AFTER parity_outputs because it reads the parquet.
+    from scripts import audit_output
+
+    audit_output.audit_output(OUTPUT_DIR)
 
     manifest["artifact_sizes"] = collect_artifact_sizes(OUTPUT_DIR)
     write_json(OUTPUT_DIR / "manifest.json", manifest)
