@@ -64,6 +64,7 @@ def _materialise_views_and_sidecars(out_dir: Path):
     sidecars.write_hierarchy(con, out_dir, snap)
     sidecars.write_comparison_index(con, out_dir, snap)
     sidecars.write_benchmark_index(con, out_dir, snap)
+    sidecars.write_peer_ranks(con, out_dir, snap)
     return con
 
 
@@ -784,3 +785,76 @@ def test_benchmark_index_appearances_sorted_by_composite(tmp_path, monkeypatch):
     for entry in bi["benchmarks"].values():
         slugs = [a["composite_slug"] for a in entry["appearances"]]
         assert slugs == sorted(slugs)
+
+
+# ---------------------------------------------------------------------------
+# peer-ranks.json
+# ---------------------------------------------------------------------------
+
+
+def test_peer_ranks_top_level_shape(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    _materialise_views_and_sidecars(out)
+    pr = json.loads((out / "peer-ranks.json").read_text())
+    assert {"generated_at", "config_version", "ranks"} <= pr.keys()
+    assert isinstance(pr["ranks"], dict)
+
+
+def test_peer_ranks_entries_have_position_total(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    _materialise_views_and_sidecars(out)
+    pr = json.loads((out / "peer-ranks.json").read_text())
+    assert pr["ranks"], "no eval keys in peer-ranks.json"
+    for eval_id, models in pr["ranks"].items():
+        assert isinstance(models, dict), f"{eval_id} not a model dict"
+        assert models, f"{eval_id} has no model entries"
+        for mid, rank in models.items():
+            assert {"position", "total"} == rank.keys()
+            assert isinstance(rank["position"], int)
+            assert isinstance(rank["total"], int)
+            assert 1 <= rank["position"] <= rank["total"]
+
+
+def test_peer_ranks_uses_primary_metric(tmp_path, monkeypatch):
+    """Each (eval, model) entry must come from the eval's primary metric.
+    Catches any reshape that ranks across all metrics instead of pinning
+    to primary_metric_id."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    con = _materialise_views_and_sidecars(out)
+    pr = json.loads((out / "peer-ranks.json").read_text())
+    expected_rows = con.execute(
+        """
+        SELECT
+            erv.evaluation_id,
+            erv.model_route_id,
+            erv.position,
+            erv.total
+        FROM eval_results_view erv
+        JOIN evals_view ev
+          ON  ev.evaluation_id      = erv.evaluation_id
+          AND ev.primary_metric_id  = erv.metric_id
+        WHERE erv.score          IS NOT NULL
+          AND erv.position       IS NOT NULL
+          AND erv.total          IS NOT NULL
+          AND erv.model_route_id IS NOT NULL
+        """
+    ).fetchall()
+    expected = {
+        (eid, mid): (int(pos), int(tot))
+        for (eid, mid, pos, tot) in expected_rows
+    }
+    seen: set[tuple[str, str]] = set()
+    for eval_id, models in pr["ranks"].items():
+        for mid, rank in models.items():
+            key = (eval_id, mid)
+            assert key in expected, f"unexpected entry {key}"
+            pos, tot = expected[key]
+            # Same eval × model can have multiple primary-metric rows in
+            # principle (shouldn't, post-stage-J), so we allow the entry
+            # to match any of them.
+            assert (rank["position"], rank["total"]) == (pos, tot)
+            seen.add(key)
+    assert seen == set(expected.keys()), "missing entries vs. eval_results_view"

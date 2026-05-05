@@ -2216,6 +2216,67 @@ def write_benchmark_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# peer-ranks.json
+# ---------------------------------------------------------------------------
+
+
+def write_peer_ranks(con, out_dir: Path, snapshot_meta: dict) -> Path:
+    """Per-(eval, model) peer rank using each eval's primary metric.
+
+    Frontend shape — `Record<eval_summary_id, Record<model_route_id,
+    {position, total}>>`. Used by the model-detail page to attach a
+    peer-rank badge to every benchmark cell. Comparison-index already
+    carries per-metric ranks under `by_model`, but peer-ranks.json
+    is a much smaller, primary-metric-only roll-up the model-detail
+    grid loads as a single fetch (rather than scanning every cell's
+    metric histograms).
+
+    Pre-v3 the producer published this only at the dataset root and
+    unversioned, so consumers that pinned a `warehouse/<snapshot>/`
+    URL still hit the live `main`-branch ranks and could drift from
+    the pinned views. Emitting it as a sidecar fixes that drift —
+    peer-ranks.json now travels with the snapshot.
+    """
+    rows = con.execute(
+        """
+        SELECT
+            erv.evaluation_id,
+            erv.model_route_id,
+            erv.position,
+            erv.total
+        FROM eval_results_view erv
+        JOIN evals_view ev
+          ON  ev.evaluation_id      = erv.evaluation_id
+          AND ev.primary_metric_id  = erv.metric_id
+        WHERE erv.score          IS NOT NULL
+          AND erv.position       IS NOT NULL
+          AND erv.total          IS NOT NULL
+          AND erv.model_route_id IS NOT NULL
+        """
+    ).fetchall()
+
+    by_eval: dict[str, dict[str, dict]] = defaultdict(dict)
+    for evaluation_id, model_route_id, position, total in rows:
+        # If a model appears more than once in the primary-metric set
+        # for the same eval (shouldn't happen — eval_results_view is
+        # collapsed to one row per (model, benchmark, metric)), keep
+        # the better rank.
+        existing = by_eval[evaluation_id].get(model_route_id)
+        rank_entry = {"position": int(position), "total": int(total)}
+        if existing is None or rank_entry["position"] < existing["position"]:
+            by_eval[evaluation_id][model_route_id] = rank_entry
+
+    payload = {
+        "generated_at":   snapshot_meta["snapshot_id"],
+        "config_version": CONFIG_VERSION,
+        "ranks":          by_eval,
+    }
+    path = out_dir / "peer-ranks.json"
+    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    return path
+
+
+# ---------------------------------------------------------------------------
 # JSON helpers
 # ---------------------------------------------------------------------------
 

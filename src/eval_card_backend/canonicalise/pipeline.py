@@ -478,9 +478,10 @@ def run(
         sidecars.write_hierarchy(con, out_dir, meta)
         sidecars.write_comparison_index(con, out_dir, meta)
         sidecars.write_benchmark_index(con, out_dir, meta)
+        sidecars.write_peer_ranks(con, out_dir, meta)
         log.info(
             "Stage J: wrote sidecars (manifest, headline, hierarchy, "
-            "comparison-index, benchmark_index) to %s",
+            "comparison-index, benchmark_index, peer-ranks) to %s",
             out_dir,
         )
 
@@ -563,7 +564,7 @@ def _build_snapshot_meta(
         ]
         sidecars = [
             "manifest.json", "headline.json", "hierarchy.json",
-            "benchmark_index.json",
+            "benchmark_index.json", "peer-ranks.json",
         ]
 
     # Single HTTP call per upstream — captures both sha and last_modified
