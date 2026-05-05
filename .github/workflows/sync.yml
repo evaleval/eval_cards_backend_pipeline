@@ -14,9 +14,7 @@ on:
       - ".github/workflows/sync.yml"
 
 env:
-  # Target HF dataset for the published warehouse. Currently a scratch
-  # repo; flip to the production target when the schema is locked.
-  HF_TARGET_DATASET: j-chim/temp_evalcard_backend
+  HF_TARGET_DATASET: evaleval/card_backend
   # Pin the registry resolver source for reproducible CI builds. Bump
   # when registry semantics change and we want CI to pick them up.
   RESOLVER_REF: main

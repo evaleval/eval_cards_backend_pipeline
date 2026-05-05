@@ -1,6 +1,6 @@
 """CI helper: upload the latest warehouse snapshot to a HF dataset.
 
-Reads `HF_TARGET_DATASET` (e.g. `j-chim/temp_evalcard_backend`) and
+Reads `HF_TARGET_DATASET` (e.g. `evaleval/card_backend`) and
 `HF_TOKEN` from env. Picks the most-recent snapshot under `warehouse/`
 and uploads it twice:
 

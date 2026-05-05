@@ -119,10 +119,9 @@ HF credentials.
 ## Continuous integration
 
 `.github/workflows/sync.yml` runs the pipeline daily, then publishes the
-warehouse snapshot tree to a target HF dataset (today:
-`j-chim/temp_evalcard_backend`; flip `HF_TARGET_DATASET` env at the
-workflow level to point elsewhere). The `HF_TOKEN` secret must be set on
-the repo.
+warehouse snapshot tree to `evaleval/card_backend` on HF. Override via
+the `HF_TARGET_DATASET` env at the workflow level. The `HF_TOKEN` secret
+must be set on the repo.
 
 ## Design notes
 
