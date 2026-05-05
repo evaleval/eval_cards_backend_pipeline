@@ -475,11 +475,20 @@ def run(
     if j_in_slice:
         sidecars.write_manifest(con, out_dir, meta)
         sidecars.write_headline(con, out_dir, meta)
-        sidecars.write_hierarchy(con, out_dir, meta)
+        # Hierarchy is now emitted by the v2 module (port of
+        # scripts/build_hierarchy_v2.py). It reads directly from the EEE
+        # datastore rather than the warehouse — model resolution stays
+        # registry-driven for the rest of the pipeline (models_view,
+        # comparison-index, benchmark_index parquet); only the navigation
+        # tree is v2-shaped now. The legacy registry-driven
+        # `sidecars.write_hierarchy` is no longer wired in but remains in
+        # the codebase as fallback. Drop it once v2 is the only path.
+        from eval_card_backend.canonicalise.hierarchy_v2 import write_hierarchy_v2
+        write_hierarchy_v2(out_dir, meta)
         sidecars.write_comparison_index(con, out_dir, meta)
         sidecars.write_benchmark_index(con, out_dir, meta)
         log.info(
-            "Stage J: wrote sidecars (manifest, headline, hierarchy, "
+            "Stage J: wrote sidecars (manifest, headline, hierarchy [v2], "
             "comparison-index, benchmark_index) to %s",
             out_dir,
         )
