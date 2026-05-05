@@ -1,0 +1,51 @@
+{
+  "evaluation_id": "ev_08a",
+  "schema_version": "0.2.2",
+  "retrieved_timestamp": "2026-04-30T00:00:00Z",
+  "evaluation_timestamp": "2026-04-29T00:00:00Z",
+  "model_info": {
+    "developer": "openai",
+    "name": "GPT-4o",
+    "id": "openai/gpt-4o",
+    "inference_platform": "test"
+  },
+  "source_metadata": {
+    "source_name": "OpenAI",
+    "source_type": "evaluation_run",
+    "source_organization_name": "OpenAI",
+    "evaluator_relationship": "first_party"
+  },
+  "eval_library": {
+    "name": "minibench",
+    "version": "1.0"
+  },
+  "evaluation_results": [
+    {
+      "evaluation_name": "Anatomy",
+      "source_data": {
+        "dataset_name": "Anatomy",
+        "source_type": "other"
+      },
+      "metric_config": {
+        "metric_id": "mmlu.acc",
+        "metric_name": "Accuracy",
+        "evaluation_description": "Accuracy on Anatomy",
+        "metric_kind": null,
+        "metric_unit": null,
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 1.0,
+        "lower_is_better": false
+      },
+      "score_details": {
+        "score": 0.85
+      },
+      "generation_config": {
+        "generation_args": {
+          "temperature": 0.0,
+          "max_tokens": 1024
+        }
+      }
+    }
+  ]
+}

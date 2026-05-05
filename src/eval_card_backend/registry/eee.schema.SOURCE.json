@@ -1,0 +1,11 @@
+{
+  "upstream_repo": "evaleval/every_eval_ever",
+  "upstream_commit_sha": "621088566633c290b896497a14fa43f75af5d2fd",
+  "schema_version": "0.2.2",
+  "fetched_at": "2026-05-03",
+  "files": {
+    "eee.schema.json": "every_eval_ever/schemas/eval.schema.json",
+    "eee_types.py": "every_eval_ever/eval_types.py"
+  },
+  "refresh_with": "uv run python scripts/refresh_eee_schema.py"
+}
