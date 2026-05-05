@@ -77,7 +77,9 @@ materialisation) · I (canonical-warehouse emit) · J (view-layer emit).
 ```
 warehouse/<snapshot_id>/
 ├── fact_results.parquet           # one row per atomic score, all signal columns
-├── benchmarks.parquet             # one row per resolved benchmark
+├── benchmarks.parquet             # one row per (composite, benchmark) appearance
+├── composites.parquet             # one row per composite_slug
+├── families.parquet               # one row per benchmark family
 ├── models.parquet                 # one row per resolved model
 ├── canonical_metrics.parquet      # the registry's metric dim (snapshot-stamped)
 ├── eval_results_view.parquet      # one row per (model, benchmark, metric) triple
@@ -87,12 +89,14 @@ warehouse/<snapshot_id>/
 ├── headline.json                  # corpus signal aggregates (overall + by_category)
 ├── hierarchy.json                 # top-level composites[] tree + flat families[] lookup
 ├── comparison-index.json          # per-(eval, metric) leaderboards + inverse model→peer index
+├── benchmark_index.json           # per-benchmark coverage / signal rollups
+├── peer-ranks.json                # per-model peer rankings
 └── snapshot_meta.json             # pipeline run metadata (tables, sidecars, row counts)
 ```
 
-The four canonical parquets are the source of truth (audit/debug);
-`*_view.parquet` + the four JSON sidecars are pre-baked for the
-frontend to read without GROUP BYs.
+The six canonical parquets are the source of truth (audit/debug);
+`*_view.parquet` + the JSON sidecars are pre-baked for the frontend to
+read without GROUP BYs.
 
 ## Environment variables
 
