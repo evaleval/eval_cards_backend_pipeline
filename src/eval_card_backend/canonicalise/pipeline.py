@@ -484,7 +484,9 @@ def run(
         # `sidecars.write_hierarchy` is no longer wired in but remains in
         # the codebase as fallback. Drop it once v2 is the only path.
         from eval_card_backend.canonicalise.hierarchy_v2 import write_hierarchy_v2
-        write_hierarchy_v2(out_dir, meta)
+        # Pass the connection so the v2 emit can align summary_eval_ids
+        # with the warehouse's evaluation_id values from evals_view.
+        write_hierarchy_v2(out_dir, meta, con=con)
         sidecars.write_comparison_index(con, out_dir, meta)
         sidecars.write_benchmark_index(con, out_dir, meta)
         log.info(

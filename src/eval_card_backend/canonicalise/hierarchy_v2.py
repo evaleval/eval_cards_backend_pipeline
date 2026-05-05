@@ -1207,10 +1207,133 @@ def build() -> dict:
     }
 
 
+def _align_summary_eval_ids(payload: dict, con: Any,
+                            drop_unmatched: bool = False) -> None:
+    """Replace each benchmark's `summary_eval_ids` with the warehouse's
+    evaluation_id values so the frontend can look up the same row in
+    evals_view.parquet.
+
+    Warehouse format: `url_encode(composite_slug + "/" + benchmark_id)`.
+    v2's bench_key isn't always the warehouse's benchmark_id (warehouse
+    strips the composite prefix; v2 keeps it), so we query evals_view
+    at emit time and match by composite_slug + display name / key.
+    Also reports unmatched benchmarks for debugging.
+    """
+    rows = con.execute(
+        "SELECT composite_slug, benchmark_id, evaluation_id FROM evals_view"
+    ).fetchall()
+    by_composite_bench: dict[tuple[str, str], str] = {}
+    by_composite: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for cs, bid, eid in rows:
+        if cs and bid and eid:
+            by_composite_bench[(cs, bid)] = eid
+            by_composite[cs].append((bid, eid))
+
+    matched = 0
+    unmatched: list[str] = []
+
+    def _lookup(composite_slug: str, bench_key: str,
+                bench_display: str | None) -> str | None:
+        # Exact (composite, bench_key) match.
+        eid = by_composite_bench.get((composite_slug, bench_key))
+        if eid:
+            return eid
+        # Try the bench_key with the composite-slug prefix stripped
+        # (v2 keeps "helm-mmlu-abstract-algebra"; warehouse has "abstract-algebra").
+        prefix = composite_slug + "-"
+        if bench_key.startswith(prefix):
+            stripped = bench_key[len(prefix):]
+            eid = by_composite_bench.get((composite_slug, stripped))
+            if eid:
+                return eid
+        # Display-name match (slugified) within the composite.
+        if bench_display:
+            disp_slug = slugify(bench_display)
+            for bid, eid in by_composite.get(composite_slug, []):
+                if bid == disp_slug:
+                    return eid
+        return None
+
+    from urllib.parse import quote
+
+    def _process(composite_slug: str, benches: list[dict]) -> list[dict]:
+        nonlocal matched
+        kept: list[dict] = []
+        for b in benches:
+            eid = _lookup(composite_slug, b["key"], b.get("raw_display_name"))
+            if eid:
+                b["summary_eval_ids"] = [eid]
+                matched += 1
+                kept.append(b)
+            elif drop_unmatched:
+                unmatched.append(f"{composite_slug}/{b['key']}")
+                # skip — don't include the benchmark
+            else:
+                unmatched.append(f"{composite_slug}/{b['key']}")
+                # Fallback: synthesize a warehouse-format id so the
+                # downstream shape stays uniform; frontend lookups will
+                # 404 on these, but the structure is consistent.
+                b["summary_eval_ids"] = [
+                    quote(f"{composite_slug}/{b['key']}", safe="")
+                ]
+                kept.append(b)
+        return kept
+
+    for fam in payload.get("families", []):
+        if fam.get("standalone_benchmarks"):
+            fam["standalone_benchmarks"] = _process(fam["key"], fam["standalone_benchmarks"])
+        if fam.get("benchmarks"):
+            fam["benchmarks"] = _process(fam["key"], fam["benchmarks"])
+        for c in fam.get("composites") or []:
+            c["benchmarks"] = _process(c["key"], c.get("benchmarks", []) or [])
+
+    # Re-roll family.eval_summary_ids from the now-aligned children
+    for fam in payload.get("families", []):
+        all_ids: set[str] = set()
+        for b in (fam.get("standalone_benchmarks") or []):
+            all_ids.update(b.get("summary_eval_ids") or [])
+        for b in (fam.get("benchmarks") or []):
+            all_ids.update(b.get("summary_eval_ids") or [])
+        for c in (fam.get("composites") or []):
+            for b in c.get("benchmarks") or []:
+                all_ids.update(b.get("summary_eval_ids") or [])
+        fam["eval_summary_ids"] = sorted(all_ids)
+
+    # Re-roll benchmark_index appearances
+    for entry in payload.get("benchmark_index", []):
+        for app in entry.get("appearances", []):
+            ids = app.get("eval_summary_ids") or []
+            # Replace with warehouse ids by walking the families tree
+            # (cheap because the index is small).
+            fam_key = app["family_key"]
+            bench_key = app["benchmark_key"]
+            fam = next((f for f in payload["families"]
+                        if f["key"] == fam_key), None)
+            if fam is None:
+                continue
+            for stream in ("standalone_benchmarks", "benchmarks"):
+                for b in fam.get(stream) or []:
+                    if b["key"] == bench_key:
+                        app["eval_summary_ids"] = list(b.get("summary_eval_ids") or [])
+                        break
+            for c in fam.get("composites") or []:
+                for b in c.get("benchmarks") or []:
+                    if b["key"] == bench_key:
+                        app["eval_summary_ids"] = list(b.get("summary_eval_ids") or [])
+                        break
+
+    print(f"hierarchy_v2: aligned summary_eval_ids — "
+          f"matched={matched}, unmatched={len(unmatched)}", file=sys.stderr)
+    if unmatched and len(unmatched) <= 20:
+        for u in unmatched:
+            print(f"  unmatched: {u}", file=sys.stderr)
+
+
 def write_hierarchy_v2(
     out_dir: Path,
     snapshot_meta: dict,
     *,
+    con: Any | None = None,
     eee_dir: Path | None = None,
     registry_dir: Path | None = None,
     override_dir: Path | None = None,
@@ -1218,13 +1341,22 @@ def write_hierarchy_v2(
     """Stage J entry point. Builds hierarchy.json from the EEE datastore
     using the v2 spec and writes it to `<out_dir>/hierarchy.json`.
 
+    When `con` is supplied (the pipeline path), queries `evals_view` to
+    align `summary_eval_ids` with the warehouse's `evaluation_id` so
+    the frontend can join hierarchy → evals_view.parquet by id.
+
     `eee_dir` / `registry_dir` / `override_dir` default to the same
-    `.cache/...` paths the standalone build uses. The pipeline can
-    override them to point at where Stage A landed the data."""
+    `.cache/...` paths the standalone build uses."""
     _configure_paths(eee_dir=eee_dir, registry_dir=registry_dir,
                      override_dir=override_dir)
     payload = build()
     payload["generated_at"] = snapshot_meta.get("snapshot_id")
+    if con is not None:
+        try:
+            _align_summary_eval_ids(payload, con)
+        except Exception as exc:
+            print(f"hierarchy_v2: failed to align eval ids ({exc!r}); "
+                  f"emitting raw v2 ids", file=sys.stderr)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "hierarchy.json"
