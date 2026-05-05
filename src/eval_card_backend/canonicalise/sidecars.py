@@ -512,6 +512,20 @@ def _reporting_org_count(con) -> int:
     return int(row[0] or 0)
 
 
+def _total_benchmarks(con) -> int:
+    # Denominator for per-model "Benchmarks" / "Coverage" on the listing.
+    # Must come from eval_results_view so numerator (per-model
+    # COUNT(DISTINCT benchmark_id) in models_view) is a strict subset.
+    row = con.execute(
+        """
+        SELECT COUNT(DISTINCT benchmark_id)
+        FROM eval_results_view
+        WHERE benchmark_id IS NOT NULL
+        """
+    ).fetchone()
+    return int(row[0] or 0)
+
+
 def write_headline(con, out_dir: Path, snapshot_meta: dict) -> Path:
     from eval_card_backend.categorisation import categories as enum_categories
 
@@ -532,6 +546,7 @@ def write_headline(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "provenance":      _stratified(_provenance_block),
         "comparability":   _stratified(_comparability_block),
         "reporting_org_count": _reporting_org_count(con),
+        "total_benchmarks":   _total_benchmarks(con),
         "developers":      _developers_list(con),
         # Renamed from `families` so the model-family rollup doesn't
         # collide with the benchmark-family hierarchy in hierarchy.json
