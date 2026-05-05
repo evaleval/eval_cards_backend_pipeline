@@ -125,6 +125,9 @@ _CATEGORIZED: dict[str, list[str]] = {}  # populated lazily on first lookup
 
 
 def _ensure_categorized_index() -> dict[str, list[str]]:
+    """Index categorized.json by lowercased display name only. The curated
+    file ships display-name keys ("AIME 2025", "APEX Agents", …); slugs and
+    canonical ids do NOT match its keyspace."""
     global _CATEGORIZED
     if _CATEGORIZED or not _CATEGORIZED_RAW:
         return _CATEGORIZED
@@ -132,25 +135,25 @@ def _ensure_categorized_index() -> dict[str, list[str]]:
         cats = [str(c) for c in v] if isinstance(v, list) else []
         if not cats:
             continue
-        slug = slugify(k)
-        if slug:
-            _CATEGORIZED[slug] = cats
         _CATEGORIZED[k.strip().lower()] = cats
     print(f"[override] loaded {len(_CATEGORIZED_RAW)} categorized entries",
           file=sys.stderr)
     return _CATEGORIZED
 
 
-def lookup_categories(*candidates: str | None) -> list[str]:
+def lookup_categories(*display_names: str | None) -> list[str]:
+    """Look up curated categories by display name (case-insensitive exact
+    match). Pass multiple candidates (e.g. raw_display_name then key) and
+    the first hit wins."""
     idx = _ensure_categorized_index()
     if not idx:
         return []
-    for c in candidates:
+    for c in display_names:
         if not c:
             continue
-        for key in (slugify(c), str(c).strip().lower()):
-            if key in idx:
-                return list(idx[key])
+        cats = idx.get(str(c).strip().lower())
+        if cats:
+            return list(cats)
     return []
 
 
@@ -930,9 +933,8 @@ def build() -> dict:
         first_only = sum(1 for v in groups.values() if v == {"first_party"})
         third_only = sum(1 for v in groups.values() if v == {"third_party"})
         multi = sum(1 for v in groups.values() if len(v) > 1)
-        bench_cats = lookup_categories(
-            b["underlying_canonical_id"], b["key"], b["display_name"]
-        )
+        # categorized.json keys on display name only — id/slug won't match
+        bench_cats = lookup_categories(b["display_name"])
         payload = {
             "key": b["key"],
             "display_name": strip_family_prefix(family_key, b["display_name"]) or "Overall",
@@ -1104,7 +1106,7 @@ def build() -> dict:
         if union_cats:
             ordered = [c for c, _ in Counter(flat_cats).most_common()]
         else:
-            ordered = list(lookup_categories(fkey, family_display))
+            ordered = list(lookup_categories(family_display))
             union_cats = sorted(set(ordered))
         family_category = (
             primary_category(ordered)
@@ -1139,7 +1141,7 @@ def build() -> dict:
                 comp_ordered = [c for c, _ in Counter(comp_flat).most_common()]
                 comp_union = sorted(set(comp_flat))
             else:
-                comp_ordered = lookup_categories(ckey, comp_display)
+                comp_ordered = lookup_categories(comp_display)
                 comp_union = sorted(set(comp_ordered))
             comp_category = (primary_category(comp_ordered)
                              or FAMILY_CATEGORY.get(ckey, family_payload["category"]))

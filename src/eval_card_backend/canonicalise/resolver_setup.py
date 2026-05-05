@@ -172,8 +172,19 @@ def register_udfs(con, resolver) -> None:
 
     # Producer-owned benchmark categorisation. Output is constrained to
     # the typed CategoryType enum; default 'General' on no-match.
+    # Extended signature: also takes (benchmark_id, display_name) so the
+    # `categorized.json` curator override can be consulted as a direct
+    # lookup before falling through to pattern-based rules.
     con.create_function(
         "categorise_benchmark_udf", categorisation.classify_benchmark,
-        ["VARCHAR[]", "VARCHAR[]", "VARCHAR[]"], "VARCHAR",
+        ["VARCHAR[]", "VARCHAR[]", "VARCHAR[]", "VARCHAR", "VARCHAR"],
+        "VARCHAR",
+        null_handling="special",
+    )
+    con.create_function(
+        "categorise_benchmark_list_udf",
+        categorisation.classify_benchmark_categories,
+        ["VARCHAR[]", "VARCHAR[]", "VARCHAR[]", "VARCHAR", "VARCHAR"],
+        "VARCHAR[]",
         null_handling="special",
     )

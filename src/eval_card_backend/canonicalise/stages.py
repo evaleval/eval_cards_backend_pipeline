@@ -2015,7 +2015,8 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
             -- (composite, benchmark) row in the dim.
             SELECT
                 composite_slug, benchmark_id,
-                categorise_benchmark_udf(domains, tasks, registry_tags) AS category
+                categorise_benchmark_udf(domains, tasks, registry_tags,
+                                          benchmark_id, display_name) AS category
             FROM benchmarks
         ),
         tris AS (
@@ -3125,7 +3126,8 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
 
             b.display_name                              AS evaluation_name,
             b.display_name                              AS canonical_display_name,
-            categorise_benchmark_udf(b.domains, b.tasks, b.registry_tags) AS category,
+            categorise_benchmark_udf(b.domains, b.tasks, b.registry_tags,
+                                     b.benchmark_id, b.display_name) AS category,
 
             CAST(struct_pack(
                 evaluation_description := pm.metric_display_name,

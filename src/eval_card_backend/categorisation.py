@@ -1,14 +1,13 @@
 """Producer-owned benchmark categorisation.
 
-Maps each benchmark to one of `{General, Reasoning, Agentic, Safety,
-Knowledge}` via a layered rule set in `registry/category_mapping.json`.
-The frontend's category filter reads the typed enum directly; pattern-
-matching fallbacks on the consumer side are dead code.
+Curator-supplied direct lookup (`categorized.json` from the registry seed
+dir / `temp_registry_override/`) takes precedence: maps benchmark display
+names → ordered list of categories. First entry is the primary; the full
+list is the union surfaced as `categories`.
 
-Match rule: case-insensitive substring against entries in the benchmark's
-`domains[]`, `tasks[]`, and `registry_tags[]` arrays. First-match-wins
-across the priority order `domains > tasks > tags`. Unmapped benchmarks
-fall through to the default category (`General`).
+Falls back to a layered rule set in `registry/category_mapping.json` —
+case-insensitive substring against `domains[] / tasks[] / registry_tags[]`,
+first-match-wins across `domains > tasks > tags`, default `General`.
 
 Drift surfacing: every classification increments either the per-category
 counter or the uncategorised counter; `log_category_summary` reports both
@@ -22,6 +21,8 @@ in a per-benchmark CTE before classifying.
 from __future__ import annotations
 
 import json
+import os
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -30,6 +31,66 @@ from typing import Iterable, Sequence
 CATEGORY_MAPPING_PATH = (
     Path(__file__).resolve().parent / "registry" / "category_mapping.json"
 )
+
+# `categorized.json` ships in temp_registry_override/ (or the registry seed
+# dir when the curator has folded it in). Maps display names like "MMLU-Pro"
+# / "AIME 2025" / "Humanity's Last Exam" → ordered list of fine-grained
+# categories. The first entry is the primary; the full list is the union
+# the producer attaches alongside the scalar `category`.
+def _categorized_candidate_paths() -> list[Path]:
+    paths: list[Path] = []
+    seed = os.environ.get("EVALCARD_REGISTRY_SEED_DIR")
+    if seed:
+        paths.append(Path(seed) / "categorized.json")
+    # Repo-local override (this file is at src/eval_card_backend/categorisation.py)
+    repo_root = Path(__file__).resolve().parents[2]
+    paths.append(repo_root / "temp_registry_override" / "categorized.json")
+    return paths
+
+
+def _slugify(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"[_\s]+", "-", s)
+    s = re.sub(r"[^a-z0-9-/.]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s
+
+
+def _load_categorized() -> dict[str, list[str]]:
+    """Index categorized.json by lowercased display name. Curators key the
+    file by display name (e.g. "AIME 2025", "APEX Agents", "AI2 Reasoning
+    Challenge (ARC)") — never by slug or canonical id."""
+    out: dict[str, list[str]] = {}
+    for path in _categorized_candidate_paths():
+        if not path.exists():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        for k, v in raw.items():
+            if not isinstance(k, str):
+                continue
+            cats = [str(c) for c in v] if isinstance(v, list) else []
+            if not cats:
+                continue
+            out[k.strip().lower()] = cats
+        return out  # first hit wins
+    return out
+
+
+_CATEGORIZED: dict[str, list[str]] = _load_categorized()
+
+
+def lookup_categorized(display_name: str | None) -> list[str]:
+    """Look up curated categories by benchmark display name (case-insensitive
+    exact match). Returns [] when not present — caller falls back to the
+    rule-based matcher."""
+    if not _CATEGORIZED or not display_name:
+        return []
+    return list(_CATEGORIZED.get(str(display_name).strip().lower(), []))
 
 
 def _load_mapping() -> dict:
@@ -84,14 +145,25 @@ def classify_benchmark(
     domains: Sequence[str] | None,
     tasks: Sequence[str] | None,
     registry_tags: Sequence[str] | None,
+    benchmark_id: str | None = None,
+    display_name: str | None = None,
 ) -> str:
-    """Classify a benchmark by its card domains, tasks, and registry tags.
+    """Classify a benchmark.
 
-    Walks signals in priority order; within each signal, walks rules in
-    declaration order; returns the first matching category. Returns the
-    default category when nothing matches.
+    Lookup order:
+      1. `categorized.json` (curator-supplied direct mapping). Returns the
+         FIRST entry of the list — the primary/most-load-bearing category.
+      2. Layered rule set in `registry/category_mapping.json`
+         (substring match against domains > tasks > tags).
+      3. `_DEFAULT_CATEGORY` ("General") on no match.
     """
     global _uncategorised_counter
+
+    direct = lookup_categorized(display_name)
+    if direct:
+        category = direct[0]
+        _categorised_counter[category] += 1
+        return category
 
     signal_values: dict[str, Sequence[str] | None] = {
         "domains": domains,
@@ -111,6 +183,23 @@ def classify_benchmark(
     _uncategorised_counter += 1
     _categorised_counter[_DEFAULT_CATEGORY] += 1
     return _DEFAULT_CATEGORY
+
+
+def classify_benchmark_categories(
+    domains: Sequence[str] | None,
+    tasks: Sequence[str] | None,
+    registry_tags: Sequence[str] | None,
+    benchmark_id: str | None = None,
+    display_name: str | None = None,
+) -> list[str]:
+    """Same lookup logic as `classify_benchmark` but returns the FULL
+    category list (the union per spec). Single-entry list when only the
+    rule-based / default category applies — keeps the JSON shape uniform."""
+    direct = lookup_categorized(display_name)
+    if direct:
+        return direct
+    return [classify_benchmark(domains, tasks, registry_tags,
+                               benchmark_id, display_name)]
 
 
 def log_category_summary(log) -> None:
