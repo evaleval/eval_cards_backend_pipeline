@@ -2971,11 +2971,17 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
             -- Per-triple rollups read from eval_results_view (one row per
             -- triple already). Counts of (benchmark_id, metric_id) cells,
             -- third-party coverage, signal flags, score summary, category
-            -- breakdown.
+            -- breakdown. LEFT JOINs benchmarks dim only to read is_slice;
+            -- the join is 1:1 on (composite_slug, benchmark_id) so the
+            -- other counts are unaffected. benchmarks_count excludes slice
+            -- rows so the per-model count matches the snapshot-level
+            -- benchmark_count denominator (both parents-only).
             SELECT
-                model_key,
+                erv.model_key,
                 CAST(COUNT(*) AS BIGINT)                                  AS evaluations_count,
-                CAST(COUNT(DISTINCT benchmark_id) AS BIGINT)              AS benchmarks_count,
+                CAST(COUNT(DISTINCT erv.benchmark_id)
+                    FILTER (WHERE NOT COALESCE(b.is_slice, FALSE)) AS BIGINT)
+                                                                          AS benchmarks_count,
                 CAST(COUNT(*) FILTER (WHERE coverage_cell IN ('third', 'both')) AS BIGINT)
                                                                           AS third_party_eval_count,
                 AVG(CASE WHEN has_reproducibility_gap THEN 1.0 ELSE 0.0 END)
@@ -3006,15 +3012,23 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                                                                           AS groups_with_variant_check,
                 CAST(SUM(CASE WHEN has_cross_party_divergence IS NOT NULL THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS groups_with_cross_party_check,
-                {_source_type_distribution_sql("eval_results_view")}
-            FROM eval_results_view
+                {_source_type_distribution_sql("erv")}
+            FROM eval_results_view erv
+            LEFT JOIN benchmarks b
+              ON b.composite_slug = erv.composite_slug
+             AND b.benchmark_id   = erv.benchmark_id
             GROUP BY 1
         ),
         benchmark_names AS (
+            -- Excludes slice display names so the array length matches the
+            -- per-model `benchmarks_count` (parents-only). Downstream
+            -- consumers: developer rollup in headline.json, search filter
+            -- on /models, "X benchmarks" tags on model cards.
             SELECT
                 erv.model_key,
                 ARRAY_AGG(DISTINCT b.display_name)
-                    FILTER (WHERE b.display_name IS NOT NULL) AS benchmark_names
+                    FILTER (WHERE b.display_name IS NOT NULL
+                            AND NOT COALESCE(b.is_slice, FALSE)) AS benchmark_names
             FROM eval_results_view erv
             LEFT JOIN benchmarks b
               ON b.composite_slug = erv.composite_slug
