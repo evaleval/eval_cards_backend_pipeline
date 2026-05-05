@@ -1,0 +1,21 @@
+family_primary_override:
+  artificial-analysis: artificial-analysis-intelligence-index
+promote_to_benchmark:
+- gaia-level-1
+- gaia-level-2
+- gaia-level-3
+- mmlu
+- gpqa
+- ifeval
+- mmlu-pro
+- gsm8k
+- math-500
+- hle
+- aime
+- aime-2025
+- aime-2024
+- aime-2026
+- scicode
+- livecodebench
+- ifbench
+- terminalbench-hard

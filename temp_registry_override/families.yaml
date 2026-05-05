@@ -1,0 +1,53 @@
+cyse2:
+  benchmarks:
+  - cyse2-interpreter-abuse
+  - cyse2-prompt-injection
+  - cyse2-vulnerability-exploit
+  display: CYSE2
+fibble-arena:
+  benchmarks:
+  - fibble-arena
+  - fibble-1-arena
+  - fibble-2-arena
+  - fibble-3-arena
+  - fibble-4-arena
+  - fibble-5-arena
+  display: Fibble Arena
+hal:
+  benchmarks:
+  - hal-gaia
+  - hal-assistantbench
+  - hal-corebench-hard
+  - hal-online-mind2web
+  - hal-scicode
+  - hal-scienceagentbench
+  - hal-swebench-mini
+  - hal-taubench-airline
+  - hal-usaco
+  display: HAL
+helm:
+  benchmarks:
+  - helm-classic
+  - helm-lite
+  - helm-capabilities
+  - helm-instruct
+  - helm-mmlu
+  - helm-air-bench
+  - helm-safety
+  display: HELM
+mmmu:
+  benchmarks:
+  - mmmu-multiple-choice
+  - mmmu-open-ended
+  display: MMMU
+reward-bench:
+  benchmarks:
+  - reward-bench
+  - reward-bench-2
+  display: RewardBench
+tau-bench:
+  benchmarks:
+  - tau-bench-2-airline
+  - tau-bench-2-retail
+  - tau-bench-2-telecom
+  display: "\u03C4-Bench"

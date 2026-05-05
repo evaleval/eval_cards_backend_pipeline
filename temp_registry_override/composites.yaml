@@ -1,0 +1,253 @@
+ace:
+  configs:
+  - ace
+  display: ACE
+agentharm:
+  configs:
+  - agentharm
+  display: AgentHarm
+apex-agents:
+  configs:
+  - apex-agents
+  display: APEX Agents
+apex-v1:
+  configs:
+  - apex-v1
+  display: APEX v1
+appworld:
+  configs:
+  - appworld_test_normal
+  display: AppWorld
+arc-agi:
+  configs:
+  - arc-agi
+  display: ARC-AGI
+artificial-analysis:
+  configs:
+  - artificial-analysis-llms
+  display: Artificial Analysis
+bbh:
+  configs:
+  - big_bench_hard
+  display: BBH
+bfcl:
+  configs:
+  - bfcl
+  display: BFCL
+browsecompplus:
+  configs:
+  - browsecompplus
+  display: BrowseCompPlus
+caparena:
+  configs:
+  - caparena-auto
+  display: CapArena
+cocoabench:
+  configs:
+  - cocoabench
+  display: CocoaBench
+commonsense-qa:
+  configs:
+  - commonsense_qa
+  display: CommonsenseQA
+cvebench:
+  configs:
+  - cvebench
+  display: CVE-Bench
+cybench:
+  configs:
+  - cybench
+  display: CyBench
+cyse2-interpreter-abuse:
+  configs:
+  - cyse2_interpreter_abuse
+  display: CYSE2 Interpreter Abuse
+cyse2-prompt-injection:
+  configs:
+  - cyse2_prompt_injection
+  display: CYSE2 Prompt Injection
+cyse2-vulnerability-exploit:
+  configs:
+  - cyse2_vulnerability_exploit
+  display: CYSE2 Vulnerability Exploit
+facts-grounding:
+  configs:
+  - facts-grounding
+  display: FACTS Grounding
+fibble-1-arena:
+  configs:
+  - fibble1_arena
+  display: Fibble Arena (1 lie)
+fibble-2-arena:
+  configs:
+  - fibble2_arena
+  display: Fibble Arena (2 lies)
+fibble-3-arena:
+  configs:
+  - fibble3_arena
+  display: Fibble Arena (3 lies)
+fibble-4-arena:
+  configs:
+  - fibble4_arena
+  display: Fibble Arena (4 lies)
+fibble-5-arena:
+  configs:
+  - fibble5_arena
+  display: Fibble Arena (5 lies)
+fibble-arena:
+  configs:
+  - fibble_arena
+  display: Fibble Arena
+gaia:
+  configs:
+  - GAIA
+  display: GAIA
+gdm-intercode-ctf:
+  configs:
+  - gdm_intercode_ctf
+  display: GDM Intercode CTF
+global-mmlu-lite:
+  configs:
+  - global-mmlu-lite
+  display: Global MMLU Lite
+gpqa-diamond:
+  configs:
+  - gpqa-diamond
+  - gpqa_diamond
+  display: GPQA Diamond
+hal-assistantbench:
+  configs:
+  - hal-assistantbench
+  display: "HAL \xB7 AssistantBench"
+hal-corebench-hard:
+  configs:
+  - hal-corebench-hard
+  display: "HAL \xB7 CORE-Bench Hard"
+hal-gaia:
+  configs:
+  - hal-gaia
+  display: "HAL \xB7 GAIA"
+hal-online-mind2web:
+  configs:
+  - hal-online-mind2web
+  display: "HAL \xB7 Online-Mind2Web"
+hal-scicode:
+  configs:
+  - hal-scicode
+  display: "HAL \xB7 SciCode"
+hal-scienceagentbench:
+  configs:
+  - hal-scienceagentbench
+  display: "HAL \xB7 ScienceAgentBench"
+hal-swebench-mini:
+  configs:
+  - hal-swebench-verified-mini
+  display: "HAL \xB7 SWE-bench Mini"
+hal-taubench-airline:
+  configs:
+  - hal-taubench-airline
+  display: "HAL \xB7 \u03C4-Bench Airline"
+hal-usaco:
+  configs:
+  - hal-usaco
+  display: "HAL \xB7 USACO"
+helm-air-bench:
+  configs:
+  - helm_air_bench
+  display: HELM Air-Bench
+helm-capabilities:
+  configs:
+  - helm_capabilities
+  display: HELM Capabilities
+helm-classic:
+  configs:
+  - helm_classic
+  display: HELM Classic
+helm-instruct:
+  configs:
+  - helm_instruct
+  display: HELM Instruct
+helm-lite:
+  configs:
+  - helm_lite
+  display: HELM Lite
+helm-mmlu:
+  configs:
+  - helm_mmlu
+  display: HELM MMLU
+helm-safety:
+  configs:
+  - helm_safety
+  display: HELM Safety
+hf-open-llm-v2:
+  configs:
+  - hfopenllm_v2
+  display: HF Open LLM v2
+ifeval:
+  configs:
+  - IFEval
+  display: IFEval
+la-leaderboard:
+  configs:
+  - la_leaderboard
+  display: La Leaderboard
+livecodebench-pro:
+  configs:
+  - livecodebenchpro
+  display: LiveCodeBench Pro
+mathvista:
+  configs:
+  - MathVista
+  display: MathVista
+mmlu-pro:
+  configs:
+  - MMLU-Pro
+  display: MMLU-Pro
+mmmu-multiple-choice:
+  configs:
+  - MMMU-Multiple-Choice
+  display: MMMU Multiple Choice
+mmmu-open-ended:
+  configs:
+  - MMMU-Open-Ended
+  display: MMMU Open Ended
+reward-bench:
+  configs:
+  - reward-bench
+  display: RewardBench
+reward-bench-2:
+  configs:
+  - reward-bench-2
+  display: RewardBench 2
+sciarena:
+  configs:
+  - sciarena
+  display: SciArena
+swe-bench:
+  configs:
+  - swe-bench
+  display: SWE-bench
+tau-bench-2-airline:
+  configs:
+  - tau-bench-2_airline
+  display: "\u03C4\xB2-Bench Airline"
+tau-bench-2-retail:
+  configs:
+  - tau-bench-2_retail
+  display: "\u03C4\xB2-Bench Retail"
+tau-bench-2-telecom:
+  configs:
+  - tau-bench-2_telecom
+  display: "\u03C4\xB2-Bench Telecom"
+terminal-bench-2:
+  configs:
+  - terminal-bench-2.0
+  display: Terminal-Bench 2
+theory-of-mind:
+  configs:
+  - theory_of_mind
+  display: Theory of Mind
+wordle-arena:
+  configs:
+  - wordle_arena
+  display: Wordle Arena

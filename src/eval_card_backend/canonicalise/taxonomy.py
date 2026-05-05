@@ -26,6 +26,7 @@ the registry cache first, then from the seed dir as fallback.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -273,6 +274,57 @@ def materialise_taxonomy_tables(
         con.executemany(
             "INSERT INTO slice_promotions VALUES (?)",
             [(b,) for b in sorted(slice_promotions)],
+        )
+
+    # Also emit the v3-shaped tables that sidecars.write_hierarchy reads
+    # directly. This bridges the YAML fallback path: `_hierarchy_v3_families`
+    # SELECTs from canonical_families and canonical_composites, which only
+    # the parquet loader created. Without this, families.yaml curation wouldn't
+    # influence the v3 hierarchy bucketing — every composite would degrade to
+    # a singleton family and HELM/HAL/tau-bench would shatter into pieces.
+    con.execute(
+        "CREATE OR REPLACE TABLE canonical_families ("
+        "id VARCHAR, display_name VARCHAR, category VARCHAR, "
+        "tags VARCHAR, benchmark_ids VARCHAR, composite_keys VARCHAR)"
+    )
+    fam_rows: list[tuple[str, str, str, str, str, str]] = []
+    for fid, entry in families.items():
+        fam_rows.append((
+            fid,
+            entry["display"],
+            "other",                                # category — defaulted; per-family overrides live in display layer
+            "[]",                                   # tags JSON
+            json.dumps(entry["benchmarks"]),        # benchmark_ids JSON
+            json.dumps(entry["benchmarks"]),        # composite_keys JSON (treat composite_slug as benchmark_id for YAML path)
+        ))
+    if fam_rows:
+        con.executemany(
+            "INSERT INTO canonical_families VALUES (?, ?, ?, ?, ?, ?)",
+            fam_rows,
+        )
+
+    # `canonical_composites` carries the composite→family pointer that
+    # _hierarchy_v3_families uses to bucket. Walk family_membership to
+    # build the inverse: composite_slug → family_id.
+    composite_to_family: dict[str, str] = {}
+    for fid, entry in families.items():
+        for member in entry["benchmarks"]:
+            # YAML families.yaml lists composite slugs as benchmarks (each
+            # composite IS a benchmark in the v3 model when no nested
+            # benchmark hierarchy exists). composite_to_family[slug] = fid.
+            composite_to_family[member] = fid
+    con.execute(
+        "CREATE OR REPLACE TABLE canonical_composites ("
+        "id VARCHAR, family_id VARCHAR)"
+    )
+    comp_rows: list[tuple[str, str | None]] = [
+        (slug, composite_to_family.get(slug))
+        for slug in composites
+    ]
+    if comp_rows:
+        con.executemany(
+            "INSERT INTO canonical_composites VALUES (?, ?)",
+            comp_rows,
         )
 
 
