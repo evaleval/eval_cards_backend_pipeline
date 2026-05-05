@@ -120,6 +120,31 @@ def org_normalize_sql(column_expr: str) -> str:
     )
 
 
+def org_display_normalize_sql(column_expr: str) -> str:
+    r"""Display-preserving counterpart of `org_normalize_sql`.
+
+    Collapses ASCII whitespace runs, trims, and NULLs out the empty
+    string and the literal placeholder `unknown` — but **does not**
+    lowercase, so values stay in their original casing for rendering
+    (e.g. `Hugging Face`, `Allen Institute for AI`, `LLM Stats`).
+
+    Applied at ingestion (`source_organization_name → org_raw`) so
+    downstream aggregations distinct-count cleaned strings. Without
+    this, upstream whitespace inconsistencies (e.g. one source writing
+    `New York University,  Princeton University …` with a double space
+    and another with a single space) inflate the distinct-eval-provider
+    count. There's no canonical-org registry behind this — eval-provider
+    orgs proliferate freely in the wild and we don't want to build a
+    seed/orgs.yaml entry for every new leaderboard — so this is a
+    light-touch surface clean rather than alias resolution.
+    """
+    cleaned = f"trim(regexp_replace({column_expr}, '\\s+', ' ', 'g'))"
+    return (
+        f"CASE WHEN {cleaned} = '' OR lower({cleaned}) = 'unknown' "
+        f"THEN NULL ELSE {cleaned} END"
+    )
+
+
 class StageEStats(NamedTuple):
     """Row-count breakdown for Stage E. Exposed so the orchestrator can
     populate snapshot_meta with each drop reason separately."""
@@ -130,6 +155,127 @@ class StageEStats(NamedTuple):
     post: int                   # final fact_results_signaled count
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# MODEL DEVELOPER name-pattern fallback (Fix 2).
+#
+# Applied in Stage G to orgless model rows — display-name strings that have
+# no `org/` slug prefix (e.g. `chatgpt-4o-latest-2025-01-30`,
+# `claude-3-5-opus-20240229`, `Qwen2-0.5B-Instruct`). For these we infer the
+# developer org by regex on the lowercased model_key. Each tuple is
+# `(case-insensitive regex, canonical_orgs.id)`. The org_id MUST exist in
+# `seed/orgs.yaml`; misses are silent (the join produces no row and the
+# COALESCE chain falls through to the next fallback).
+#
+# Order does not matter here — the SQL CASE picks the first matching pattern,
+# but patterns are intentionally non-overlapping. Keep narrowest patterns
+# (e.g. `^o[1-4][-_]`) tight enough not to match unrelated prefixes.
+#
+# This is intentionally MODEL-DEVELOPER only. Eval-provider org inference
+# (HELM, LLM Stats, …) lives in a separate pathway via
+# `evals_view.evaluator_names` / `eval_results_view.reporting_orgs`.
+# ---------------------------------------------------------------------------
+MODEL_DEVELOPER_NAME_PATTERNS: list[tuple[str, str]] = [
+    # OpenAI
+    (r'^chatgpt[-_]', 'openai'),
+    (r'^gpt[-_]', 'openai'),
+    (r'^o[1-4][-_]', 'openai'),
+    # Anthropic
+    (r'^claude', 'anthropic'),
+    (r'^anthropic[-_ ]', 'anthropic'),
+    # Google
+    (r'^gemini', 'google'),
+    (r'^gemma', 'google'),
+    (r'^palm[-_]', 'google'),
+    (r'^bison', 'google'),
+    (r'^bard', 'google'),
+    # xAI
+    (r'^grok', 'xai'),
+    # Cohere
+    (r'^cohere[ _-]', 'cohere'),
+    (r'^command[-_]r', 'cohere'),
+    (r'^aya[-_]', 'cohere'),
+    # DeepSeek
+    (r'^deepseek', 'deepseek'),
+    # Alibaba (Qwen)
+    (r'^qwen', 'alibaba'),
+    # Meta
+    (r'^llama[-_ ]?[0-9]', 'meta'),
+    (r'^opt[-_][0-9]', 'meta'),
+    (r'^galactica', 'meta'),
+    # Mistral AI
+    (r'^mistral', 'mistralai'),
+    (r'^mixtral', 'mistralai'),
+    (r'^codestral', 'mistralai'),
+    # Microsoft
+    (r'^phi[-_]', 'microsoft'),
+    (r'^wizardlm', 'microsoft'),
+    (r'^wizardcoder', 'microsoft'),
+    # IBM Granite
+    (r'^granite[-_]', 'ibm-granite'),
+    # 01.AI
+    (r'^yi[-_][0-9]', '01-ai'),
+    # Nous Research
+    (r'^openhermes', 'nous-research'),
+    (r'^hermes[-_][0-9]', 'nous-research'),
+    # Perplexity
+    (r'^perplexity', 'perplexity'),
+    (r'^sonar[-_]', 'perplexity'),
+    # Allen AI
+    (r'^olmo', 'allenai'),
+    (r'^tulu', 'allenai'),
+    # NVIDIA
+    (r'^nemotron', 'nvidia'),
+    # ZAI / Zhipu
+    (r'^chatglm', 'zai'),
+    (r'^glm[-_][0-9]', 'zai'),
+    # MiniMax
+    (r'^minimax', 'minimax'),
+    (r'^abab[-_]', 'minimax'),
+    # StepFun
+    (r'^step[-_][0-9]', 'stepfun'),
+    # TII (UAE)
+    (r'^falcon[-_]', 'tiiuae'),
+    # Inception (Jais)
+    (r'^jais', 'inception'),
+    # EleutherAI
+    (r'^pythia', 'eleutherai'),
+    (r'^gpt-neox', 'eleutherai'),
+    (r'^gpt-j', 'eleutherai'),
+    # Databricks
+    (r'^dbrx', 'databricks'),
+    # BigScience
+    (r'^bloom', 'bigscience'),
+    # Upstage
+    (r'^solar[-_][0-9]', 'upstage'),
+    # Writer
+    (r'^palmyra', 'writer'),
+    # AI21
+    (r'^jamba', 'ai21'),
+    (r'^jurassic', 'ai21'),
+    # MoonshotAI
+    (r'^kimi', 'moonshotai'),
+    # Stability AI
+    (r'^stablelm', 'stabilityai'),
+]
+
+
+def _model_developer_pattern_case_sql(slug_expr: str) -> str:
+    """Compile MODEL_DEVELOPER_NAME_PATTERNS into a SQL CASE expression
+    that maps `slug_expr` (e.g. `um.model_key`) to a canonical org_id, or
+    NULL when no pattern matches. Used in Stage G's models-dim CTE."""
+    if not MODEL_DEVELOPER_NAME_PATTERNS:
+        return "CAST(NULL AS VARCHAR)"
+    whens = "\n".join(
+        # DuckDB `regexp_matches` is case-sensitive; we lower() the input.
+        # Pattern strings are SQL-escaped against single quotes (none of
+        # ours contain `'`, but be defensive in case future entries do).
+        f"            WHEN regexp_matches(lower({slug_expr}), "
+        f"'{regex.replace(chr(39), chr(39)*2)}') THEN '{org_id}'"
+        for regex, org_id in MODEL_DEVELOPER_NAME_PATTERNS
+    )
+    return f"CASE\n{whens}\n        END"
 
 
 # ---------------------------------------------------------------------------
@@ -705,8 +851,9 @@ def stage_c_resolve_identities(con) -> None:
     # Identity inputs come from struct dot notation; the typed Arrow loader
     # in `sources.eee.load_arrow_table` guarantees stable STRUCT shapes so
     # JSON-path extraction isn't needed here.
+    org_raw_clean = org_display_normalize_sql('source_metadata.source_organization_name')
     con.execute(
-        """
+        f"""
         CREATE TABLE results_resolved AS
         WITH raw AS (
             SELECT
@@ -717,7 +864,7 @@ def stage_c_resolve_identities(con) -> None:
                     COALESCE(metric_config.evaluation_description,
                              metric_config.metric_name,
                              evaluation_name))                                    AS _metric_raw,
-                source_metadata.source_organization_name                          AS _org_raw,
+                {org_raw_clean}                                                   AS _org_raw,
                 -- Concatenate name + version for resolver lookup, but treat
                 -- 'unknown'/empty version as no version at all. Upstream EEE
                 -- writes 'unknown' verbatim when the version isn't recorded;
@@ -887,11 +1034,13 @@ def stage_d_join_dims_and_flatten(con) -> None:
                     cmet.min_score,   cmet.max_score, cmet.lower_is_better,
                     rr.metric_config.metric_name,
                     cmet.score_type
-                )                                                      AS _meta
+                )                                                      AS _meta,
+                co_org.display_name                                    AS org_display_canonical
             FROM results_resolved rr
             LEFT JOIN canonical_benchmarks cb       ON cb.id = rr.benchmark_id
             LEFT JOIN canonical_models     cm_model ON cm_model.id = rr.model_id
             LEFT JOIN canonical_metrics    cmet     ON cmet.id = rr.metric_id
+            LEFT JOIN canonical_orgs       co_org   ON co_org.id = rr.org_id
             LEFT JOIN cards_raw            c        ON c.benchmark_id = rr.benchmark_id
             LEFT JOIN composite_config_map ccm      ON ccm.source_config = rr.source_config
         )
@@ -930,6 +1079,17 @@ def stage_d_join_dims_and_flatten(con) -> None:
             j.slice_key,     j.slice_name,
             j.metric_raw,    j.metric_id,
             j.org_raw,       j.org_id,
+            -- De-aliased eval-provider name. When the registry has a
+            -- canonical_orgs row matching `org_id` (e.g. `Ai2` and
+            -- `Allen Institute for AI` both resolve to canonical
+            -- `allenai`), use the canonical display_name so downstream
+            -- aggregations fold the dual-named entries together. When
+            -- there's no canonical match (most upstream evaluators —
+            -- Vals.ai, LLM Stats, etc. — aren't in seed/orgs.yaml and
+            -- aren't expected to be), fall back to the raw upstream
+            -- string. Computed once here so view stages can read it
+            -- as a column without rejoining canonical_orgs.
+            COALESCE(j.org_display_canonical, j.org_raw)                                  AS org_display,
             j.harness_raw,   j.harness_id,
 
             -- Aggregation keys: addressable-or-canonical-or-raw. Used by
@@ -1889,6 +2049,10 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
         """
     )
 
+    # Stage G models-dim: precompute the MODEL DEVELOPER name-pattern CASE
+    # so the SQL stays readable. See module-scope MODEL_DEVELOPER_NAME_PATTERNS.
+    dev_pattern_case = _model_developer_pattern_case_sql("um.model_key")
+
     # models.parquet — root grain. One row per `model_aggregation_key`
     # (= transitive variant root for resolved rows, raw string for
     # unresolved). Variants of the same identity collapse into one row;
@@ -1982,16 +2146,50 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             TRY_CAST(cm.metadata AS JSON)                    AS registry_metadata,
             COALESCE(cm.review_status, 'unresolved')         AS review_status,
 
-            co.display_name        AS org_display_name,
-            co.website             AS org_website,
-            co.hf_org              AS org_hf_org,
-            co.kind                AS org_kind,
-            co.parent_org_id       AS org_parent_id
+            -- Developer/org backfill priority. "Model developer" includes
+            -- individuals (HF community uploaders) — not just labs — so the
+            -- raw slug prefix is a legitimate developer identity even when
+            -- the registry has no canonical org for it.
+            --   1. canonical_models.org_id → co.*  (registry-truthful)
+            --   2. canonical_models.lineage_origin_org_id → co_lineage.*
+            --      (registry hit but org_id missing, e.g. xiaomi/mimo-v2)
+            --   3. split_part(model_key, '/', 1) → co_slug.*
+            --      (registry miss, slug carries an org we know — e.g.
+            --       `openai/gpt-5-...` matches canonical orgs.id='openai',
+            --       so we render polished "OpenAI" rather than the slug)
+            --   4. name-pattern → co_pattern.*  (Fix 2)
+            --      Orgless display names like `chatgpt-4o-latest`,
+            --      `claude-3-5-opus`, `Qwen2-72B-Instruct` map to a
+            --      canonical org via MODEL_DEVELOPER_NAME_PATTERNS.
+            --   5. raw slug prefix as-is — `jaspionjader/Llama-…-merged` etc.
+            --      Filters the literal `unknown` placeholder so it isn't
+            --      treated as a developer. Casing reflects what the source
+            --      uploaded (slug-style for community, polished for known
+            --      orgs via step 3).
+            COALESCE(
+                co.display_name,
+                co_lineage.display_name,
+                co_slug.display_name,
+                co_pattern.display_name,
+                CASE
+                    WHEN um.model_key LIKE '%/%'
+                         AND length(split_part(um.model_key, '/', 1)) > 0
+                         AND split_part(um.model_key, '/', 1) != 'unknown'
+                    THEN split_part(um.model_key, '/', 1)
+                END
+            )                                                                            AS org_display_name,
+            COALESCE(co.website,       co_lineage.website,       co_slug.website,       co_pattern.website)       AS org_website,
+            COALESCE(co.hf_org,        co_lineage.hf_org,        co_slug.hf_org,        co_pattern.hf_org)        AS org_hf_org,
+            COALESCE(co.kind,          co_lineage.kind,          co_slug.kind,          co_pattern.kind)          AS org_kind,
+            COALESCE(co.parent_org_id, co_lineage.parent_org_id, co_slug.parent_org_id, co_pattern.parent_org_id) AS org_parent_id
 
         FROM used_models um
         LEFT JOIN canonical_models cm ON cm.id = um.model_key
         LEFT JOIN leaf_release lr     ON lr.model_key = um.model_key
-        LEFT JOIN canonical_orgs co   ON co.id = cm.org_id
+        LEFT JOIN canonical_orgs co         ON co.id         = cm.org_id
+        LEFT JOIN canonical_orgs co_lineage ON co_lineage.id = cm.lineage_origin_org_id
+        LEFT JOIN canonical_orgs co_slug    ON co_slug.id    = split_part(um.model_key, '/', 1)
+        LEFT JOIN canonical_orgs co_pattern ON co_pattern.id = ({dev_pattern_case})
         """
     )
 
@@ -2029,6 +2227,66 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             "view-layer falls developer back to the raw org prefix.",
             miss_total, miss_hf_shaped,
         )
+
+    # Developer coverage on the models dim. "Model developer" is intentionally
+    # broad — labs, academic groups, and individual HF uploaders all count.
+    # The breakdown distinguishes registry-rich (canonical org) from raw-slug
+    # fallback (community uploaders) so operators can see both kinds of
+    # coverage and decide which gaps are worth investing in (canonicalising
+    # a high-traffic uploader vs adding a name-pattern rule).
+    cov_pattern_case = _model_developer_pattern_case_sql("m.model_key")
+    cov = con.execute(
+        f"""
+        SELECT
+            COUNT(*)                                                AS total,
+            -- Rich resolution: registry knew the org, the slug prefix
+            -- matched a canonical org, or a name pattern matched.
+            COUNT(*) FILTER (
+                WHERE COALESCE(
+                    co_match.id, co_lineage_match.id,
+                    co_slug_match.id, co_pattern_match.id
+                ) IS NOT NULL
+            )                                                       AS resolved_canonical,
+            -- Raw-slug fallback: developer is the HF user/org slug because
+            -- no canonical_orgs row matched. Each distinct prefix here is a
+            -- candidate for promotion to seed/orgs.yaml if it's a real lab.
+            COUNT(*) FILTER (
+                WHERE org_display_name IS NOT NULL
+                  AND COALESCE(
+                      co_match.id, co_lineage_match.id,
+                      co_slug_match.id, co_pattern_match.id
+                  ) IS NULL
+            )                                                       AS resolved_raw_slug,
+            -- Orgless display names that didn't match any pattern. These
+            -- are Fix-2 candidates: extend MODEL_DEVELOPER_NAME_PATTERNS
+            -- once a pattern is identified.
+            COUNT(*) FILTER (WHERE org_display_name IS NULL)        AS unresolved_orgless
+        FROM models m
+        LEFT JOIN canonical_models cm_match ON cm_match.id = m.model_key
+        LEFT JOIN canonical_orgs co_match
+            ON co_match.id = cm_match.org_id
+        LEFT JOIN canonical_orgs co_lineage_match
+            ON co_lineage_match.id = cm_match.lineage_origin_org_id
+        LEFT JOIN canonical_orgs co_slug_match
+            ON co_slug_match.id = split_part(m.model_key, '/', 1)
+        LEFT JOIN canonical_orgs co_pattern_match
+            ON co_pattern_match.id = ({cov_pattern_case})
+        """
+    ).fetchone() or (0, 0, 0, 0)
+    cov_total, cov_canonical, cov_raw_slug, cov_orgless = cov
+    cov_distinct_devs = con.execute(
+        "SELECT COUNT(DISTINCT org_display_name) FROM models WHERE org_display_name IS NOT NULL"
+    ).fetchone()[0]
+    cov_rate = ((cov_canonical + cov_raw_slug) / cov_total) if cov_total else 0.0
+    log.info(
+        "Stage G developer coverage: %d/%d models (%.1f%%) have a developer; "
+        "%d distinct developers in total. Breakdown — %d via canonical org "
+        "(registry/slug match), %d via raw slug fallback (community "
+        "uploaders), %d orgless display names (Fix 2: needs name→org pattern "
+        "table).",
+        cov_canonical + cov_raw_slug, cov_total, cov_rate * 100,
+        cov_distinct_devs, cov_canonical, cov_raw_slug, cov_orgless,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2168,7 +2426,9 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
             -- metric_key). Variants of the same identity collapse into
             -- one triple; rows whose model, benchmark, or metric failed
             -- to resolve still flow through via the raw fallback baked
-            -- into each `*_key`.
+            -- into each `*_key`. `fact_results.org_display` carries the
+            -- de-aliased eval-provider name (canonical when registered,
+            -- raw otherwise — see Stage D's `joined` CTE).
             SELECT *
             FROM fact_results
             WHERE model_aggregation_key IS NOT NULL
@@ -2193,8 +2453,8 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
                 ARRAY_AGG(DISTINCT evaluator_relationship)
                     FILTER (WHERE evaluator_relationship IS NOT NULL)
                     AS evaluator_relationships,
-                ARRAY_AGG(DISTINCT org_raw)
-                    FILTER (WHERE org_raw IS NOT NULL)
+                ARRAY_AGG(DISTINCT org_display)
+                    FILTER (WHERE org_display IS NOT NULL)
                     AS reporting_orgs,
                 -- Provenance signals (`is_multi_source`, `first_party_only`)
                 -- are computed at the (model, benchmark) level in Stage F.1
@@ -2679,10 +2939,15 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 MAX({ts_cast_sql("evaluation_timestamp")}) AS latest_timestamp,
                 arg_max(org_raw, {ts_cast_sql("evaluation_timestamp")})
                     FILTER (WHERE org_raw IS NOT NULL)        AS latest_source_name,
-                CAST(COUNT(DISTINCT org_id) FILTER (WHERE org_id IS NOT NULL) AS BIGINT)
+                -- evaluator_count uses the de-aliased identity (`org_display`)
+                -- so models evaluated by both `Ai2` and `Allen Institute for
+                -- AI` rows count as one evaluator, and unresolved-org rows
+                -- still contribute (counting raw string identity) instead
+                -- of being filtered out by an `org_id IS NOT NULL` predicate.
+                CAST(COUNT(DISTINCT org_display) FILTER (WHERE org_display IS NOT NULL) AS BIGINT)
                                                               AS evaluator_count,
-                ARRAY_AGG(DISTINCT org_raw)
-                    FILTER (WHERE org_raw IS NOT NULL)        AS evaluator_names,
+                ARRAY_AGG(DISTINCT org_display)
+                    FILTER (WHERE org_display IS NOT NULL)    AS evaluator_names,
                 CAST(COUNT(DISTINCT provenance_source_type)
                      FILTER (WHERE provenance_source_type IS NOT NULL) AS INTEGER)
                                                               AS source_type_count,
