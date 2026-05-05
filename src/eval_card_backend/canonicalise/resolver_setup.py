@@ -171,7 +171,8 @@ def register_udfs(con, resolver) -> None:
     )
 
     # Producer-owned benchmark categorisation. Output is constrained to
-    # the typed CategoryType enum; default 'General' on no-match.
+    # the typed CategoryType enum (sourced from categorized.json); default
+    # 'general' on no-match.
     # Extended signature: also takes (benchmark_id, display_name) so the
     # `categorized.json` curator override can be consulted as a direct
     # lookup before falling through to pattern-based rules.

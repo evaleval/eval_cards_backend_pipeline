@@ -1,98 +1,175 @@
 {
-  "category_version": "1.0",
-  "categories": ["General", "Reasoning", "Agentic", "Safety", "Knowledge"],
-  "default_category": "General",
+  "category_version": "2.0",
+  "categories": [
+    "agentic", "applied_reasoning", "commonsense_reasoning", "finance",
+    "general", "hallucination", "humanities_and_social_sciences",
+    "knowledge", "law", "linguistic_core", "logical_reasoning",
+    "mathematics", "multimodal", "natural_sciences", "other",
+    "robustness", "safety", "software_engineering"
+  ],
+  "default_category": "general",
   "match_mode": "case_insensitive_substring",
   "priority_order": ["domains", "tasks", "tags"],
+  "_source_of_truth": "Curators ship benchmark→categories[] mapping in temp_registry_override/categorized.json; classify_benchmark looks up by display_name first. These pattern-based rules apply only when the display name isn't present in categorized.json.",
   "rules": {
     "domains": [
       {
-        "category": "Safety",
+        "category": "safety",
         "patterns": [
           "safety", "harm", "toxic", "bias", "fairness", "jailbreak",
-          "alignment", "redteam", "red-team", "red team", "hallucination",
-          "ethic"
+          "alignment", "redteam", "red-team", "red team", "ethic"
         ]
       },
       {
-        "category": "Agentic",
+        "category": "hallucination",
+        "patterns": ["hallucination", "factual error", "factuality"]
+      },
+      {
+        "category": "agentic",
         "patterns": [
           "agentic", "agent", "tool-use", "tool_use", "tool use",
           "autonomy", "autonomous", "browse", "browsing"
         ]
       },
       {
-        "category": "Reasoning",
+        "category": "software_engineering",
         "patterns": [
-          "reasoning", "math", "mathematics", "arithmetic", "logic",
-          "theorem", "proof", "code", "coding", "programming",
-          "competitive programming"
+          "code", "coding", "programming", "competitive programming",
+          "software", "swe-bench"
         ]
       },
       {
-        "category": "Knowledge",
+        "category": "mathematics",
         "patterns": [
-          "knowledge", "trivia", "factual", "factuality", "world knowledge",
-          "world_knowledge", "common sense", "commonsense"
+          "math", "mathematics", "arithmetic", "theorem", "proof",
+          "calculus", "algebra"
+        ]
+      },
+      {
+        "category": "logical_reasoning",
+        "patterns": ["logic", "logical", "reasoning"]
+      },
+      {
+        "category": "commonsense_reasoning",
+        "patterns": ["common sense", "commonsense", "intuitive"]
+      },
+      {
+        "category": "natural_sciences",
+        "patterns": [
+          "physics", "biology", "chemistry", "science", "medical", "medicine"
+        ]
+      },
+      {
+        "category": "humanities_and_social_sciences",
+        "patterns": ["history", "humanities", "social science", "psychology"]
+      },
+      {
+        "category": "law",
+        "patterns": ["law", "legal"]
+      },
+      {
+        "category": "finance",
+        "patterns": ["finance", "financial", "economics"]
+      },
+      {
+        "category": "multimodal",
+        "patterns": ["vision", "visual", "image", "multimodal", "audio"]
+      },
+      {
+        "category": "linguistic_core",
+        "patterns": [
+          "language", "linguistic", "grammar", "instruction following",
+          "instruction-following"
+        ]
+      },
+      {
+        "category": "knowledge",
+        "patterns": [
+          "knowledge", "trivia", "world knowledge", "world_knowledge"
         ]
       }
     ],
     "tasks": [
       {
-        "category": "Safety",
+        "category": "safety",
         "patterns": [
           "safety", "harm", "toxic", "bias", "fairness", "jailbreak",
-          "refusal", "hallucination", "alignment", "redteam"
+          "refusal", "alignment", "redteam"
         ]
       },
       {
-        "category": "Agentic",
+        "category": "hallucination",
+        "patterns": ["hallucination", "factuality"]
+      },
+      {
+        "category": "agentic",
         "patterns": [
-          "agent", "agentic", "tool", "swe-bench", "swe_bench",
-          "browse", "browsing", "navigation", "web"
+          "agent", "agentic", "tool", "browse", "browsing", "navigation",
+          "web"
         ]
       },
       {
-        "category": "Reasoning",
+        "category": "software_engineering",
         "patterns": [
-          "reasoning", "math", "logic", "theorem", "proof",
-          "code", "coding", "programming", "competitive_programming"
+          "code", "coding", "programming", "competitive_programming",
+          "swe-bench", "swe_bench"
         ]
       },
       {
-        "category": "Knowledge",
+        "category": "mathematics",
+        "patterns": ["math", "theorem", "proof"]
+      },
+      {
+        "category": "logical_reasoning",
+        "patterns": ["reasoning", "logic"]
+      },
+      {
+        "category": "knowledge",
         "patterns": [
           "question_answering", "question answering", "qa",
-          "knowledge", "trivia", "factuality", "open_domain",
-          "open domain"
+          "knowledge", "trivia", "open_domain", "open domain"
         ]
+      },
+      {
+        "category": "linguistic_core",
+        "patterns": ["instruction", "language", "grammar"]
       }
     ],
     "tags": [
       {
-        "category": "Safety",
+        "category": "safety",
         "patterns": [
           "safety", "harm", "toxic", "bias", "fairness", "jailbreak",
-          "alignment", "redteam", "hallucination"
+          "alignment", "redteam"
         ]
       },
       {
-        "category": "Agentic",
-        "patterns": [
-          "agent", "agentic", "tool", "swe-bench", "browse", "web"
-        ]
+        "category": "hallucination",
+        "patterns": ["hallucination"]
       },
       {
-        "category": "Reasoning",
-        "patterns": [
-          "reasoning", "math", "logic", "code", "coding", "programming"
-        ]
+        "category": "agentic",
+        "patterns": ["agent", "agentic", "tool", "browse", "web"]
       },
       {
-        "category": "Knowledge",
-        "patterns": [
-          "knowledge", "trivia", "factual", "qa", "mmlu"
-        ]
+        "category": "software_engineering",
+        "patterns": ["code", "coding", "programming", "swe-bench"]
+      },
+      {
+        "category": "mathematics",
+        "patterns": ["math"]
+      },
+      {
+        "category": "logical_reasoning",
+        "patterns": ["reasoning", "logic"]
+      },
+      {
+        "category": "knowledge",
+        "patterns": ["knowledge", "trivia", "factual", "qa", "mmlu"]
+      },
+      {
+        "category": "multimodal",
+        "patterns": ["multimodal", "vision", "image"]
       }
     ]
   }

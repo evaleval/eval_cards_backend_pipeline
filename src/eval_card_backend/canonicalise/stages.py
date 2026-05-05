@@ -25,6 +25,7 @@ from typing import NamedTuple
 
 import pyarrow as pa
 
+from eval_card_backend import categorisation
 from eval_card_backend.signals.reproducibility import (
     AGENTIC_REPRODUCIBILITY_FIELDS,
     BASE_REPRODUCIBILITY_FIELDS,
@@ -2524,11 +2525,10 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 AVG(completeness_score)                                   AS completeness_avg,
                 ARRAY_AGG(DISTINCT category)
                     FILTER (WHERE category IS NOT NULL)                   AS categories_present,
-                CAST(SUM(CASE WHEN category = 'General'   THEN 1 ELSE 0 END) AS INTEGER) AS cat_general,
-                CAST(SUM(CASE WHEN category = 'Reasoning' THEN 1 ELSE 0 END) AS INTEGER) AS cat_reasoning,
-                CAST(SUM(CASE WHEN category = 'Agentic'   THEN 1 ELSE 0 END) AS INTEGER) AS cat_agentic,
-                CAST(SUM(CASE WHEN category = 'Safety'    THEN 1 ELSE 0 END) AS INTEGER) AS cat_safety,
-                CAST(SUM(CASE WHEN category = 'Knowledge' THEN 1 ELSE 0 END) AS INTEGER) AS cat_knowledge,
+                {",".join(
+                    f"CAST(SUM(CASE WHEN category = '{c}' THEN 1 ELSE 0 END) AS INTEGER) AS cat_{c}"
+                    for c in categorisation.categories()
+                )},
                 CAST(COUNT(score) AS INTEGER)                             AS score_count,
                 MIN(score)                                                AS score_min,
                 MAX(score)                                                AS score_max,
@@ -2661,14 +2661,12 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
 
             ta.categories_present                        AS categories,
             CAST({{
-                'General':   COALESCE(ta.cat_general,   0),
-                'Reasoning': COALESCE(ta.cat_reasoning, 0),
-                'Agentic':   COALESCE(ta.cat_agentic,   0),
-                'Safety':    COALESCE(ta.cat_safety,    0),
-                'Knowledge': COALESCE(ta.cat_knowledge, 0)
+                {", ".join(
+                    f"'{c}': COALESCE(ta.cat_{c}, 0)"
+                    for c in categorisation.categories()
+                )}
             }} AS STRUCT(
-                "General" INTEGER, "Reasoning" INTEGER, "Agentic" INTEGER,
-                "Safety" INTEGER, "Knowledge" INTEGER
+                {", ".join(f'"{c}" INTEGER' for c in categorisation.categories())}
             )) AS category_stats,
 
             -- reproducibility band rule (legacy: 0/1/0<x<1 → complete/missing/partial)

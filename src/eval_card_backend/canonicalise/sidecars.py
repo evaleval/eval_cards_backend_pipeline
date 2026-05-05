@@ -30,6 +30,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from eval_card_backend import categorisation as _categorisation
 from eval_card_backend.config import IGNORED_CONFIGS
 from eval_card_backend.signals.reproducibility import (
     AGENTIC_REPRODUCIBILITY_FIELDS,
@@ -1045,7 +1046,7 @@ def _composite_category(members: list[dict]) -> str:
 
     cats = [m["category"] for m in members if m.get("category")]
     if not cats:
-        return "General"
+        return _categorisation.default_category()
     counts = Counter(cats)
     top_count = max(counts.values())
     candidates = [c for c, n in counts.items() if n == top_count]
@@ -1932,7 +1933,7 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             "is_slice":                bool(meta.get("is_slice")),
             "display_name":            meta.get("canonical_display_name")
                                          or meta.get("evaluation_name"),
-            "category":                meta.get("category") or "General",
+            "category":                meta.get("category") or _categorisation.default_category(),
             "is_summary_score":        bool(meta.get("is_summary_score")),
             "summary_score_for":       None,
             "summary_eval_ids":        list(meta.get("summary_eval_ids") or []),

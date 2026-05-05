@@ -17,3 +17,4 @@ build/
 #notes/
 notebooks/
 warehouse/
+node_modules/

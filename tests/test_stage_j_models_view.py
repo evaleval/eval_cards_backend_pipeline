@@ -169,7 +169,8 @@ def test_category_stats_shape_and_sum(tmp_path, monkeypatch):
         "SELECT category_stats, evaluations_count FROM models_view"
     ).fetchone()
     cs, ec = row
-    assert set(cs.keys()) == {"General", "Reasoning", "Agentic", "Safety", "Knowledge"}
+    from eval_card_backend import categorisation
+    assert set(cs.keys()) == set(categorisation.categories())
     assert sum(cs.values()) == ec
 
 

@@ -132,10 +132,11 @@ def test_headline_top_level_shape(tmp_path, monkeypatch):
 def test_headline_by_category_keys_match_typed_enum(tmp_path, monkeypatch):
     """by_category blocks key on every CategoryType — even when empty."""
     pytest.importorskip("duckdb")
+    from eval_card_backend import categorisation
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
     h = json.loads((out / "headline.json").read_text())
-    expected = {"General", "Reasoning", "Agentic", "Safety", "Knowledge"}
+    expected = set(categorisation.categories())
     for signal in ("reproducibility", "completeness", "provenance", "comparability"):
         assert set(h[signal]["by_category"].keys()) == expected
 
@@ -171,10 +172,11 @@ def test_developers_list_route_id_set(tmp_path, monkeypatch):
 def test_categories_list_typed(tmp_path, monkeypatch):
     """Each entry in categories[] uses the typed enum."""
     pytest.importorskip("duckdb")
+    from eval_card_backend import categorisation
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
     h = json.loads((out / "headline.json").read_text())
-    valid = {"General", "Reasoning", "Agentic", "Safety", "Knowledge"}
+    valid = set(categorisation.categories())
     for entry in h["categories"]:
         assert entry["category"] in valid
 
