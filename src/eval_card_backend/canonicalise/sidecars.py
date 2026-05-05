@@ -514,12 +514,15 @@ def _reporting_org_count(con) -> int:
 
 def _total_benchmarks(con) -> int:
     # Denominator for per-model "Benchmarks" / "Coverage" on the listing.
-    # Must come from eval_results_view so numerator (per-model
-    # COUNT(DISTINCT benchmark_id) in models_view) is a strict subset.
+    # Reads `benchmarks` (the canonical dim) so this matches the home-page
+    # `hierarchy.stats.benchmark_count`. Numerator
+    # (models_view.benchmarks_count = COUNT(DISTINCT benchmark_id) over
+    # eval_results_view) is still a subset since any benchmark with model
+    # rows in the view also exists in the dim.
     row = con.execute(
         """
         SELECT COUNT(DISTINCT benchmark_id)
-        FROM eval_results_view
+        FROM benchmarks
         WHERE benchmark_id IS NOT NULL
         """
     ).fetchone()
