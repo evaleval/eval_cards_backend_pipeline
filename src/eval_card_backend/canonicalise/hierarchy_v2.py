@@ -803,6 +803,9 @@ def build() -> dict:
                              key=lambda kv: (kv[0] != "__root__", kv[0])):
             metrics_out: list[dict] = []
             for mid, m in sorted(sd["metrics"].items()):
+                # Navigation-layer only: counts + top_score for previews.
+                # Per-model rows live in models.parquet — frontend joins
+                # on (benchmark_key, metric_key) when it needs them.
                 vals = [r["score"] for r in m["model_results"]]
                 metrics_out.append({
                     "metric_key": m["metric_key"],
@@ -811,9 +814,6 @@ def build() -> dict:
                     "models_count": len({r["model_id"] for r in m["model_results"]}),
                     "results_count": len(m["model_results"]),
                     "top_score": (min(vals) if m["lower_is_better"] else max(vals)) if vals else None,
-                    "model_results": sorted(m["model_results"],
-                                            key=lambda r: r["score"],
-                                            reverse=not m["lower_is_better"])[:50],
                 })
             out.append({
                 "slice_key": sd["slice_key"],
@@ -1185,40 +1185,10 @@ def build() -> dict:
         if len(distinct_families) < 2:
             continue
         appearances = [a for _, a in entries]
-        # Aggregate per (model_id, metric_key) across appearances
-        per_model: dict[tuple[str, str], list] = defaultdict(list)
-        for b, a in entries:
-            for sl in b["slices"]:
-                for m in sl["metrics"]:
-                    if sl["slice_key"] not in (None, "__root__"):
-                        # only aggregate root-scope metrics; spec §8.5b is
-                        # strict on metric_key equality
-                        continue
-                    for r in m["model_results"]:
-                        per_model[(r["model_id"], m["metric_key"])].append({
-                            "family_key": a["family_key"],
-                            "benchmark_key": b["key"],
-                            "value": r["score"],
-                            "model_name": r["model_name"],
-                        })
-        model_aggregates = []
-        for (mid, metric_key), uses in per_model.items():
-            if len(uses) < 2:
-                continue
-            vals = [u["value"] for u in uses]
-            model_aggregates.append({
-                "model_id": mid,
-                "metric_key": metric_key,
-                "mean": sum(vals) / len(vals),
-                "count": len(vals),
-                "appearances_used": uses,
-            })
         benchmark_index.append({
             "key": cid,
             "display_name": reg["display_name"].get(cid, titleize(cid)),
             "appearances": appearances,
-            "model_aggregates": sorted(model_aggregates,
-                                       key=lambda x: -x["count"])[:200],
         })
 
     return {
