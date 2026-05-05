@@ -1,6 +1,19 @@
-output/
-node_modules/
-.DS_Store
-.cache/
+.venv/
 __pycache__/
-scripts/__pycache__/
+*.py[cod]
+.cache/
+output/
+.ruff_cache/
+.pytest_cache/
+.DS_Store
+*.egg-info/
+dist/
+build/
+.env
+
+# local development
+#.claude/
+#CLAUDE.md
+#notes/
+notebooks/
+warehouse/

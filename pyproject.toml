@@ -1,0 +1,40 @@
+[project]
+name = "eval-card-backend"
+version = "0.0.1"
+description = "Materializes evaluation artifacts from evaleval/EEE_datastore and evaleval/auto-benchmarkcards."
+requires-python = ">=3.11"
+dependencies = [
+    "huggingface_hub>=0.24",
+    "duckdb>=1.0",
+    "pyarrow>=16",
+    "eval-entity-resolver",
+    # pydantic 2.5+ for Discriminator support, used by vendored eee_types.py
+    # (validates EEE records at the Stage A boundary).
+    "pydantic>=2.5",
+    # PyYAML for the composite/family/slice taxonomy seed (composites.yaml,
+    # families.yaml, slice_overrides.yaml in evalcard-registry/seed/).
+    "pyyaml>=6",
+]
+
+[project.scripts]
+eval-card-backend = "eval_card_backend.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eval_card_backend"]
+
+[tool.uv.sources]
+eval-entity-resolver = { path = "../eval-card-registry/packages/eval-entity-resolver", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "jupyterlab>=4",
+    # pandas is dev-only (e2e fixtures + ad-hoc inspection); not in the hot
+    # path. See notes/02-:25 ("no Pandas in the hot path").
+    "pandas>=2",
+]

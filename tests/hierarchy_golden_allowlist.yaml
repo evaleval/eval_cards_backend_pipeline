@@ -1,0 +1,139 @@
+# Allowlist for the golden-file structural-parity test against
+# /Users/jchim/projects/evaleval/ref-hierarchy_v2.json.
+#
+# Per spec §8 — structural parity + curated-diff allowlist. Each entry
+# below documents an intentional divergence between our producer's
+# hierarchy.json and the reference. The test reads this file to skip
+# the listed checks; un-allowed divergences fail.
+#
+# Adding an entry here costs a one-line `rationale:`. That's deliberate
+# friction — the allowlist exists to make divergences reviewable, not
+# to silence them.
+
+# ---------------------------------------------------------------------------
+# Family-set differences
+# ---------------------------------------------------------------------------
+# Our family bucketing is composite-driven (canonical_composites.family_id);
+# the reference's is EEE-folder-driven. The two produce different family
+# slugs for the same underlying data:
+#
+#   - ref's "gpqa" / "judgebench" surface as standalone families because
+#     the reference treats every EEE folder as a top-level family.
+#     We surface them under their composites: "wasp" (which contains
+#     gpqa-diamond + judgebench), "helm" (helm-classic with mmlu/gpqa/...).
+#     The same canonical_id appears via benchmark_index[] cross-suite.
+#
+#   - we have a "wasp" / "hfopenllm-v2" / "exgentic-open-agent" family
+#     because composites.yaml curates these as top-level leaderboards.
+#     The reference's data either lacks them or surfaces them under
+#     different keys.
+#
+# The test asserts structural shape, not family-key identity, so this
+# section is informational rather than required.
+schema_version_difference:
+  ours: "v3.hierarchy.1"
+  ref:  "v2.hierarchy.1"
+  rationale: |
+    v3 is the family-rooted reshape per spec §5.1. v2 was the
+    pre-alignment shape with composites[] at the top level. The schema
+    version is itself a divergence point — both are valid; v3 is the
+    target.
+
+# Families we surface that the reference doesn't (or surfaces under a
+# different key). The test does not require these to be absent — listed
+# here for documentation.
+only_in_ours:
+  - key: hfopenllm-v2
+    rationale: "composites.yaml curates this as a leaderboard composite (configs: [hfopenllm_v2]); ref slugs it as 'hf-open-llm-v2'."
+  - key: exgentic-open-agent
+    rationale: "composites.yaml curates this as a leaderboard composite. Ref doesn't have a composite layer; surfaces its constituent folders as separate families."
+  - key: wasp
+    rationale: "composites.yaml curates wasp as the leaderboard publishing gpqa-diamond + judgebench. Ref surfaces gpqa / judgebench as separate top-level families."
+  - key: livecodebenchpro
+    rationale: "composite slug is livecodebenchpro; ref slugs it as 'livecodebench-pro'. Functionally the same."
+  - key: terminal-bench-2-0
+    rationale: "composite slug differs from ref's 'terminal-bench-2'. Underlying data identical."
+  - key: artificial-analysis-llms
+    rationale: "composite slug; ref calls the family 'artificial-analysis'."
+  - key: caparena-auto
+    rationale: "composite slug; ref family is 'caparena'."
+  - key: mmlu-pro-leaderboard
+    rationale: "composites.yaml curates 'mmlu-pro-leaderboard' (the leaderboard surface); ref's family key is 'mmlu-pro' (the canonical benchmark)."
+  - key: swe-bench-verified-leaderboard
+    rationale: "leaderboard composite; ref's family is 'swe-bench'."
+  - key: swe-bench-verified-mini
+    rationale: "leaderboard composite for a downscaled SWE-bench cut; ref bucketed differently."
+
+# Families the reference has that we don't surface as top-level. These
+# are accessible via benchmark_index[] cross-suite or as benchmarks
+# inside our composite-rooted families.
+only_in_ref:
+  - key: gpqa
+    rationale: "Ref surfaces every EEE folder as its own family. Our gpqa benchmarks live under wasp + helm composites; cross-linked via benchmark_index[]."
+  - key: judgebench
+    rationale: "Same pattern as gpqa — under wasp composite in our model."
+  - key: mmlu
+    rationale: "MMLU lives under helm-classic composite; benchmark_index links cross-suite appearances."
+  - key: mmmu
+    rationale: "Singleton benchmark in our model, surfaced via composite layer."
+  - key: gaia
+    rationale: "GAIA + its levels live under hal composite + parent_benchmark_id chains."
+  - key: ifeval
+    rationale: "Surfaced as a benchmark inside hfopenllm-v2 composite."
+  - key: agentharm
+    rationale: "Singleton not yet curated as a composite; on-disk under its source_config."
+  - key: appworld
+    rationale: "Lives under exgentic-open-agent composite."
+  - key: bbh
+    rationale: "Inside hfopenllm-v2 composite."
+  - key: browsecompplus
+    rationale: "Inside exgentic-open-agent composite."
+  - key: commonsense-qa
+    rationale: "Inside helm-classic composite."
+  - key: cvebench
+    rationale: "Singleton; not surfaced as own composite — would need composites.yaml addition."
+  - key: cybench
+    rationale: "Same as cvebench."
+  - key: cyse2
+    rationale: "Three sub-benchmarks; folder_aliases curates these but family wasn't synthesised because there's no composite for it. Could be addressed by adding a composite or producer-side singleton-family synthesis."
+  - key: evalplus
+    rationale: "Singleton."
+  - key: gdm-intercode-ctf
+    rationale: "Singleton."
+  - key: gsm-mc
+    rationale: "Singleton."
+  - key: gsm8k
+    rationale: "Singleton."
+  - key: hellaswag
+    rationale: "Inside helm-classic composite."
+  - key: hle
+    rationale: "Singleton."
+  - key: humaneval
+    rationale: "Singleton."
+  - key: math-mc
+    rationale: "Singleton."
+  - key: mathvista
+    rationale: "Singleton."
+  - key: mmlu-pro
+    rationale: "Lives under mmlu-pro-leaderboard composite + helm-mmlu composite. benchmark_index links cross-suite."
+  - key: mt-bench
+    rationale: "Singleton; folder_aliases captures the mt_bench/mtbench EEE variants."
+  - key: piqa
+    rationale: "Inside helm-classic composite."
+  - key: swe-bench
+    rationale: "Lives under swe-bench-verified-leaderboard composite + as members of the swe-bench family."
+  - key: tau-bench
+    rationale: "Lives under exgentic-open-agent composite + folder_aliases on tau-bench family."
+
+# ---------------------------------------------------------------------------
+# Stats differences
+# ---------------------------------------------------------------------------
+# Numeric stats (benchmark_count, slice_count, metric_count, etc.)
+# diverge because the underlying snapshots are independent runs.
+# The test does not assert stat values — only that the keys are
+# present.
+stats:
+  rationale: |
+    Snapshot drift: ours and ref are built from different EEE pulls
+    at different times; counts naturally differ. The test asserts
+    schema (which keys are present) only.

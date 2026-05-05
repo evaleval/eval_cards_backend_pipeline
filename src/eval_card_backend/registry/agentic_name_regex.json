@@ -1,0 +1,4 @@
+{
+  "_comment": "Agentic-benchmark-name regex. Pattern matches the underscore-collapsed lowercased form of a benchmark slug. Used by is_agentic to classify a benchmark as agentic when its name matches one of these tokens.",
+  "pattern": "(appworld|swe_bench|tau_bench|browsecomp|agent|livecodebench|terminal_bench)"
+}
