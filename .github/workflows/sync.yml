@@ -12,6 +12,10 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/sync.yml"
+      # Curation edits (families/composites/categories) need to re-run the
+      # pipeline so the next snapshot picks them up. Drop this when the
+      # YAMLs move into the registry parquets.
+      - "temp_registry_override/**"
 
 env:
   HF_TARGET_DATASET: evaleval/card_backend
@@ -99,13 +103,16 @@ jobs:
       - name: Run canonicalisation
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          # Point the producer's taxonomy loader at the registry checkout
-          # done above. resolve_seed_dir() prefers this env var over its
-          # parent-walk fallback. The parent-walk would also find the
-          # checkout (path: evalcard-registry matches one of the names it
-          # searches for), but the explicit env var avoids dependence on
-          # cwd and makes the wiring obvious.
-          EVALCARD_REGISTRY_SEED_DIR: ${{ github.workspace }}/evalcard-registry/seed
+          # Point the producer's taxonomy loader at the in-repo override.
+          # `temp_registry_override/` ships the v2-aligned families.yaml /
+          # composites.yaml / slice_overrides.yaml / display_overrides.yaml
+          # — the same files this team curates against in scripts/build_hierarchy_v2.py
+          # so warehouse output and the local audit tool stay in sync.
+          # When the registry team folds these into evaleval/entity-registry-data
+          # (per temp_registry_override/README.md), drop this override and
+          # let resolve_seed_dir() fall back to the evalcard-registry/seed
+          # parent-walk lookup it used before.
+          EVALCARD_REGISTRY_SEED_DIR: ${{ github.workspace }}/temp_registry_override
         run: uv run eval-card-backend canonicalise --warehouse warehouse
 
       - name: Publish warehouse snapshot to HF dataset
