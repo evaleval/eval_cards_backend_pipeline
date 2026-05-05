@@ -575,30 +575,78 @@ def write_hierarchy(con, out_dir: Path, snapshot_meta: dict) -> Path:
 
 def _hierarchy_v3_benchmark_index(con, families: list[dict]) -> list[dict]:
     """Cross-suite lookup. One entry per canonical benchmark that
-    surfaces under 2+ distinct families (e.g. AIME under llm-stats AND
-    artificial-analysis). Per spec §5.1 / ref-build_hierarchy.py:1009-1089.
+    surfaces in 2+ distinct families (e.g. AIME under llm-stats AND
+    artificial-analysis). Per spec §5.1 / §8.
 
     Each entry:
       {
         key:          canonical benchmark id,
         display_name: benchmark display,
-        appearances: [{family_key, benchmark_key, eval_summary_ids,
-                       models_count, is_canonical_home}],
+        appearances: [{family_key, benchmark_key, level: "benchmark"|"metric",
+                       metric_key?, eval_summary_ids, is_canonical_home}],
       }
 
-    `is_canonical_home` flags the appearance whose family is the
-    benchmark's "natural" home (family_key == benchmark_key, i.e. the
-    benchmark IS the family root somewhere). Useful for the frontend
-    to render the headline link.
-
-    The reference also computes per-(model, metric) cross-suite
-    aggregates; that's deferred — it's data analysis, not structure.
+    Two appearance levels surface:
+      - `benchmark`: a benchmark whose key matches this canonical id.
+        E.g. helm/mmlu, hf-open-llm-v2/mmlu, llm-stats/mmlu all map to
+        canonical 'mmlu'.
+      - `metric`: a benchmark hosting a metric WHOSE NAME slugs to this
+        canonical id (and isn't a generic word). Catches AA's "AIME 2025"
+        metric inside the Intelligence Index → links to llm-stats's AIME
+        2025 standalone benchmark. The frontend can render this as a
+        "this metric is also reported as benchmark X in suite Y" hint.
     """
     from collections import defaultdict
 
-    # Walk every benchmark across every family layout. Each appearance
-    # is one (family, benchmark) pair carrying its summary_eval_ids.
+    # Strict generic-word filter — without this, every "Score" or
+    # "Overall" metric would attach to a different canonical id and
+    # blow up the index with junk hits.
+    _generic = {"score", "overall", "main", "all", "total", "sum",
+                "mean", "avg", "best", "first", "last", "rank", "default"}
+
+    def _slugify_metric(s: str | None) -> str | None:
+        if not s:
+            return None
+        s2 = re.sub(r"[_\s]+", "-", s.strip().lower())
+        s2 = re.sub(r"[^a-z0-9-/.]+", "-", s2)
+        s2 = re.sub(r"-+", "-", s2).strip("-")
+        if s2 in _generic or len(s2) < 3:
+            return None
+        return s2
+
+    # Build a set of known canonical ids from the families+benchmarks tree
+    # so metric-level lookup only fires when the slug genuinely matches a
+    # canonical (i.e. the metric is named after a benchmark we know about).
+    known_canonicals: set[str] = set()
+    display_lookup: dict[str, str] = {}
+    for fam in families:
+        for stream_name in ("standalone_benchmarks", "benchmarks"):
+            for b in fam.get(stream_name) or []:
+                known_canonicals.add(b["key"])
+                display_lookup.setdefault(b["key"], b.get("display_name") or b["key"])
+        for c in fam.get("composites") or []:
+            for b in c.get("benchmarks") or []:
+                known_canonicals.add(b["key"])
+                display_lookup.setdefault(b["key"], b.get("display_name") or b["key"])
+
     appearances_by_bench: dict[str, list[dict]] = defaultdict(list)
+    seen_keys: set[tuple] = set()  # dedup (cid, family, bench, level, metric)
+
+    def _add(cid: str, fam_key: str, b: dict, level: str,
+             metric_key: str | None = None) -> None:
+        dedup = (cid, fam_key, b["key"], level, metric_key or "")
+        if dedup in seen_keys:
+            return
+        seen_keys.add(dedup)
+        appearances_by_bench[cid].append({
+            "family_key":        fam_key,
+            "benchmark_key":     b["key"],
+            "level":             level,
+            "metric_key":        metric_key,
+            "eval_summary_ids":  list(b.get("summary_eval_ids") or []),
+            "is_canonical_home": (fam_key == cid and level == "benchmark"),
+        })
+
     for fam in families:
         bench_streams = [
             *(fam.get("standalone_benchmarks") or []),
@@ -607,33 +655,33 @@ def _hierarchy_v3_benchmark_index(con, families: list[dict]) -> list[dict]:
                 for b in (c.get("benchmarks") or [])),
         ]
         for b in bench_streams:
-            bench_key = b["key"]
-            appearances_by_bench[bench_key].append({
-                "family_key":        fam["key"],
-                "benchmark_key":     bench_key,
-                "eval_summary_ids":  list(b.get("summary_eval_ids") or []),
-                "is_canonical_home": (fam["key"] == bench_key),
-            })
-
-    # Look up display names from the benchmarks dim — one canonical id
-    # may have inconsistent display_name across composites; pick the
-    # one tied to the canonical_home appearance when possible.
-    display_lookup: dict[str, str] = {}
-    for fam in families:
-        for stream_name in ("standalone_benchmarks", "benchmarks"):
-            for b in fam.get(stream_name) or []:
-                display_lookup.setdefault(b["key"], b.get("display_name") or b["key"])
-        for c in fam.get("composites") or []:
-            for b in c.get("benchmarks") or []:
-                display_lookup.setdefault(b["key"], b.get("display_name") or b["key"])
+            # Benchmark-level: own key
+            _add(b["key"], fam["key"], b, "benchmark")
+            # Metric-level: any metric whose name slugs to a known canonical
+            # AND isn't a generic word AND differs from the benchmark itself
+            seen_metric_cids: set[str] = set()
+            for src in (b.get("metrics") or []):
+                slug = _slugify_metric(src.get("display_name") or src.get("key"))
+                if slug and slug != b["key"] and slug in known_canonicals:
+                    if slug in seen_metric_cids:
+                        continue
+                    seen_metric_cids.add(slug)
+                    _add(slug, fam["key"], b, "metric", src.get("key"))
+            for sl in (b.get("slices") or []):
+                for src in (sl.get("metrics") or []):
+                    slug = _slugify_metric(src.get("display_name") or src.get("key"))
+                    if slug and slug != b["key"] and slug in known_canonicals:
+                        if slug in seen_metric_cids:
+                            continue
+                        seen_metric_cids.add(slug)
+                        _add(slug, fam["key"], b, "metric", src.get("key"))
 
     out: list[dict] = []
     for bench_key in sorted(appearances_by_bench):
         appearances = appearances_by_bench[bench_key]
-        distinct_families = {a["family_key"] for a in appearances}
         # Cross-suite means 2+ DISTINCT families. Same-family appearances
-        # (rare; would mean a benchmark appears under multiple composite
-        # layouts within one family) don't count.
+        # (rare) don't count.
+        distinct_families = {a["family_key"] for a in appearances}
         if len(distinct_families) < 2:
             continue
         out.append({
@@ -731,10 +779,17 @@ def _hierarchy_v3_families(con, composites: list[dict]) -> list[dict]:
         # 3. Single composite, multiple benchmarks → flat benchmarks[].
         # 4. No benchmarks anywhere (curated family with empty composites)
         #    → skip (continue above already filtered empty buckets).
+        # Family categories[]: union of all member benchmarks' categories.
+        # Mode-most-common stays as the scalar `category` for views that
+        # need one string (headline tile, badge, etc.).
+        family_categories = sorted({
+            c for b in all_benchmarks for c in (b.get("categories") or [])
+        })
         family_record: dict = {
             "key":              fid,
             "display_name":     display_name,
             "category":         category,
+            "categories":       family_categories or [category],
             "tags":             _merge_family_tags(family_tags, all_benchmarks),
             "evals_count":      sum(int(c.get("evals_count") or 0)
                                     for c in family_composites),
@@ -752,6 +807,11 @@ def _hierarchy_v3_families(con, composites: list[dict]) -> list[dict]:
         # is_primary on each benchmark row across whatever layout the
         # family ends up using.
         _mark_family_primary_benchmark(fid, all_benchmarks)
+        # Surface the primary key at family level too, so the frontend
+        # doesn't have to walk the children to find the headline row.
+        primary_bench = next((b for b in all_benchmarks if b.get("is_primary")), None)
+        if primary_bench:
+            family_record["primary_benchmark_key"] = primary_bench["key"]
 
         if len(family_composites) >= 2:
             # Multi-composite layout (HELM): the family doesn't carry
@@ -761,6 +821,16 @@ def _hierarchy_v3_families(con, composites: list[dict]) -> list[dict]:
             primary_comp = sorted(family_composites, key=lambda c: c["key"])[0]
             for comp in family_composites:
                 comp["is_primary"] = (comp["key"] == primary_comp["key"])
+                # Composite-level primary_benchmark_key: the benchmark
+                # whose key matches the composite's slug (its bare-stem
+                # row), if one exists.
+                bench_match = next(
+                    (b for b in comp.get("benchmarks", [])
+                     if b.get("key") == comp.get("key")),
+                    None,
+                )
+                if bench_match:
+                    comp["primary_benchmark_key"] = bench_match["key"]
             family_record["composites"] = family_composites
         elif len(all_benchmarks) == 1:
             family_record["standalone_benchmarks"] = all_benchmarks
@@ -1026,10 +1096,18 @@ def _hierarchy_composites(con) -> list[dict]:
         prov = _aggregate_provenance(roots)
         comp = _aggregate_comparability(roots)
 
+        # categories[]: union of member benchmark categories — the curator
+        # taxonomy is fine-grained (mathematics, software_engineering, …),
+        # so a composite can legitimately span 5–10 categories. The scalar
+        # `category` stays as the most-common pick for headline displays.
+        comp_categories = sorted({
+            c for b in bench_records for c in (b.get("categories") or [])
+        })
         out.append({
             "key":          slug,
             "display_name": display_name,
             "category":     category,
+            "categories":   comp_categories or [category],
             "tags":         {"domains": domains, "languages": languages, "tasks": tasks},
             "evals_count":  evals_count,
             "benchmarks":   bench_records,
@@ -1331,6 +1409,17 @@ def _hierarchy_composite_benchmark(
     else:
         bench_display = prettify_display(benchmark_id)
 
+    # Curator-supplied categories[] union (per spec §5.1). Looked up by
+    # display name first; falls back to a single-entry list with the
+    # rule-based scalar category. Keeps the JSON shape uniform.
+    categories_list = _categorisation.classify_benchmark_categories(
+        list(root.get("domains") or []),
+        list(root.get("tasks") or []),
+        list(root.get("registry_tags") or []),
+        benchmark_id,
+        bench_display,
+    )
+
     return {
         "key":          benchmark_id,
         "display_name": bench_display,
@@ -1345,6 +1434,7 @@ def _hierarchy_composite_benchmark(
             "languages": list(root.get("languages") or []),
             "tasks":     list(root.get("tasks") or []),
         },
+        "categories":   categories_list,
         "metrics":   metrics,
         "slices":   _hierarchy_composite_slices(
                         con, composite_slug, benchmark_id, slice_rows),
