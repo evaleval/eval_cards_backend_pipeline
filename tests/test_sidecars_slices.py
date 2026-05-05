@@ -47,7 +47,8 @@ _BENCH_DDL = """
 CREATE TABLE benchmarks (
     composite_slug      VARCHAR,
     benchmark_id        VARCHAR,
-    parent_benchmark_id VARCHAR
+    parent_benchmark_id VARCHAR,
+    is_slice            BOOLEAN
 )
 """
 
@@ -66,7 +67,7 @@ def _seed_minimal_tables(con):
     con.execute(_FACT_DDL)
     con.execute(_BENCH_DDL)
     con.execute(_METRICS_DDL)
-    con.execute("INSERT INTO benchmarks VALUES ('helm-classic', 'mmlu', NULL)")
+    con.execute("INSERT INTO benchmarks VALUES ('helm-classic', 'mmlu', NULL, FALSE)")
 
 
 @pytest.fixture
@@ -101,7 +102,7 @@ def test_slice_count_counts_distinct_benchmark_slice_pairs(con):
     duplicate (benchmark, slice) rows from different models / orgs
     don't inflate it."""
     _seed_minimal_tables(con)
-    con.execute("INSERT INTO benchmarks VALUES ('mmlu-pro-leaderboard', 'mmlu-pro', NULL)")
+    con.execute("INSERT INTO benchmarks VALUES ('mmlu-pro-leaderboard', 'mmlu-pro', NULL, FALSE)")
     con.executemany(
         "INSERT INTO fact_results VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
@@ -196,7 +197,7 @@ def test_slices_filtered_by_composite_and_benchmark(con):
     """Calling for one (composite, benchmark) only returns its slices,
     not another multi-slice benchmark in the same fact_results."""
     _seed_minimal_tables(con)
-    con.execute("INSERT INTO benchmarks VALUES ('mmlu-pro-leaderboard', 'mmlu-pro', NULL)")
+    con.execute("INSERT INTO benchmarks VALUES ('mmlu-pro-leaderboard', 'mmlu-pro', NULL, FALSE)")
     con.execute("INSERT INTO canonical_metrics VALUES ('accuracy', 'Accuracy')")
     con.executemany(
         "INSERT INTO fact_results VALUES (?, ?, ?, ?, ?, ?, ?)",

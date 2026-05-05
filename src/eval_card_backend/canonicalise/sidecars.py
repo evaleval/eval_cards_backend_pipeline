@@ -515,7 +515,9 @@ def _reporting_org_count(con) -> int:
 def _total_benchmarks(con) -> int:
     # Denominator for per-model "Benchmarks" / "Coverage" on the listing.
     # Reads `benchmarks` (the canonical dim) so this matches the home-page
-    # `hierarchy.stats.benchmark_count`. Numerator
+    # `hierarchy.stats.benchmark_count`. Excludes slice rows (e.g.
+    # gaia-level-1) so the user-facing count reflects distinct evaluation
+    # frameworks, not framework × subset cells. Numerator
     # (models_view.benchmarks_count = COUNT(DISTINCT benchmark_id) over
     # eval_results_view) is still a subset since any benchmark with model
     # rows in the view also exists in the dim.
@@ -524,6 +526,7 @@ def _total_benchmarks(con) -> int:
         SELECT COUNT(DISTINCT benchmark_id)
         FROM benchmarks
         WHERE benchmark_id IS NOT NULL
+          AND NOT is_slice
         """
     ).fetchone()
     return int(row[0] or 0)
@@ -1001,7 +1004,9 @@ def _hierarchy_v3_stats(con, families: list[dict]) -> dict:
                    AND metric_key     IS NOT NULL)                    AS metric_count,
             (SELECT COUNT(*) FROM fact_results)                       AS metric_rows_scanned,
             (SELECT COUNT(DISTINCT benchmark_id)
-                 FROM benchmarks WHERE benchmark_id IS NOT NULL)      AS benchmark_count
+                 FROM benchmarks
+                 WHERE benchmark_id IS NOT NULL
+                   AND NOT is_slice)                                  AS benchmark_count
         """
     ).fetchone()
     composite_count = sum(
@@ -1102,7 +1107,9 @@ def _hierarchy_stats(
                    AND metric_key     IS NOT NULL)                    AS metric_count,
             (SELECT COUNT(*) FROM fact_results)                       AS metric_rows_scanned,
             (SELECT COUNT(DISTINCT benchmark_id)
-                 FROM benchmarks WHERE benchmark_id IS NOT NULL)      AS benchmark_count
+                 FROM benchmarks
+                 WHERE benchmark_id IS NOT NULL
+                   AND NOT is_slice)                                  AS benchmark_count
         """
     ).fetchone()
     return {
