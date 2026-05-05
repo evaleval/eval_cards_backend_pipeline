@@ -1,0 +1,58 @@
+{
+  "benchmark_card": {
+    "benchmark_details": {
+      "name": "MMLU",
+      "overview": "Massive Multitask Language Understanding",
+      "data_type": "qa",
+      "domains": [
+        "test"
+      ],
+      "languages": [
+        "en"
+      ],
+      "similar_benchmarks": [
+        "bbh"
+      ],
+      "resources": [
+        "paper"
+      ]
+    },
+    "purpose_and_intended_users": {
+      "goal": "evaluate broad knowledge",
+      "audience": [
+        "devs"
+      ],
+      "tasks": [
+        "qa"
+      ],
+      "limitations": "training-set leakage",
+      "out_of_scope_uses": [
+        "medical advice"
+      ]
+    },
+    "data": {
+      "source": "scraped",
+      "size": "14k",
+      "format": "json",
+      "annotation": "manual"
+    },
+    "methodology": {
+      "methods": [
+        "multiple-choice"
+      ],
+      "metrics": [
+        "accuracy"
+      ],
+      "calculation": "n_correct / n_total",
+      "interpretation": "higher is better",
+      "baseline_results": "0.25 (random)",
+      "validation": "manual review"
+    },
+    "ethical_and_legal_considerations": {
+      "privacy_and_anonymity": "n/a",
+      "data_licensing": "MIT",
+      "consent_procedures": "n/a",
+      "compliance_with_regulations": "n/a"
+    }
+  }
+}

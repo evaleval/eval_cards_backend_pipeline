@@ -7,56 +7,119 @@ on:
   push:
     branches: [main]
     paths:
-      - "metadata/**"
+      - "src/eval_card_backend/**"
       - "scripts/**"
-      - "package.json"
+      - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/sync.yml"
+
+env:
+  # Target HF dataset for the published warehouse. Currently a scratch
+  # repo; flip to the production target when the schema is locked.
+  HF_TARGET_DATASET: j-chim/temp_evalcard_backend
+  # Pin the registry resolver source for reproducible CI builds. Bump
+  # when registry semantics change and we want CI to pick them up.
+  RESOLVER_REF: main
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
+      # Second checkout: the registry's seed/ directory holds the curated
+      # composite/family/slice YAMLs that the canonicalise pipeline reads
+      # at Stage A (taxonomy.load_and_materialise). Without this, the
+      # producer's resolve_seed_dir() returns None and Stage A hard-fails
+      # at taxonomy.py — see eval_card_backend/.github/workflows/sync.yml
+      # history for why we now check out the registry alongside its
+      # resolver package. Pinned to the same RESOLVER_REF so the seed
+      # YAMLs travel together with the resolver code that consumes them.
+      - name: Check out evalcard-registry (for taxonomy seed YAMLs)
+        uses: actions/checkout@v6
         with:
-          python-version: "3.11"
+          repository: evaleval/evalcard-registry
+          ref: ${{ env.RESOLVER_REF }}
+          # Path matches one of the names taxonomy.resolve_seed_dir()
+          # walks parents looking for ("evalcard-registry/seed"), so the
+          # producer can find it via parent walk even if the env var
+          # below goes missing. Both paths point to the same directory —
+          # belt and braces.
+          path: evalcard-registry
 
-      - name: Install python dependencies
-        run: |
-          python -m pip install --upgrade pip huggingface_hub datasets pytest pandas pyarrow
-          python -m pip install 'eval-entity-resolver @ git+https://github.com/evaleval/evalcard-registry.git#subdirectory=packages/eval-entity-resolver'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
 
-      - name: Cache HF dataset snapshots
+      - name: Configure resolver dep for CI
+        run: python3 scripts/ci_install_resolver.py
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      # Stage cache (.cache/canonicalise/) is intentionally NOT cached:
+      # production runs always mint fresh snapshot IDs and never invoke
+      # --from-stage on prior runs. Caching it would just accumulate
+      # stale snapshot dirs.
+
+      - name: Cache EEE + benchmark-cards snapshots
         uses: actions/cache@v4
         with:
           path: |
             .cache/eee_datastore
             .cache/auto_benchmarkcards
-          key: hf-snapshots-${{ github.run_id }}
+          key: hf-bulk-${{ github.run_id }}
           restore-keys: |
-            hf-snapshots-
+            hf-bulk-
 
-      - name: Run tests
-        run: python -m pytest tests/
-
-      - name: Run pipeline
+      # Registry cache is keyed on the entity-registry-data dataset's HEAD
+      # revision so that newly-seeded aliases/canonicals are picked up on
+      # the next sync. No restore-keys: a SHA mismatch must force a fresh
+      # download (otherwise the producer's `ensure_snapshot` short-circuits
+      # on a stale cache and never sees the new entities).
+      - name: Resolve entity-registry-data revision
+        id: registry-rev
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          CONFIG_BATCH_SIZE: "3"
-          EEE_LOCAL_DATASET_DIR: .cache/eee_datastore
-          PARTY_OVERRIDE_LLM_STATS_FIX: "1"
-          # Frontend still reads model-cards.json, eval-list.json,
-          # developers.json, and per-detail JSONs from HF. Keep emitting
-          # them until the frontend cuts over to duckdb/v1/*.parquet.
-          EMIT_LEGACY_JSON: "1"
-        run: python -m scripts.pipeline
+        run: |
+          SHA=$(curl -fsSL -H "Authorization: Bearer $HF_TOKEN" "https://huggingface.co/api/datasets/evaleval/entity-registry-data" | jq -r .sha)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Upload manifest as artifact
+      - name: Cache entity-registry snapshot
+        uses: actions/cache@v4
+        with:
+          path: .cache/entity_registry
+          key: entity-registry-${{ steps.registry-rev.outputs.sha }}
+
+      - name: Run tests
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run pytest tests/
+
+      - name: Run canonicalisation
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Point the producer's taxonomy loader at the registry checkout
+          # done above. resolve_seed_dir() prefers this env var over its
+          # parent-walk fallback. The parent-walk would also find the
+          # checkout (path: evalcard-registry matches one of the names it
+          # searches for), but the explicit env var avoids dependence on
+          # cwd and makes the wiring obvious.
+          EVALCARD_REGISTRY_SEED_DIR: ${{ github.workspace }}/evalcard-registry/seed
+        run: uv run eval-card-backend canonicalise --warehouse warehouse
+
+      - name: Publish warehouse snapshot to HF dataset
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_TARGET_DATASET: ${{ env.HF_TARGET_DATASET }}
+        run: uv run python scripts/ci_publish_warehouse.py
+
+      - name: Upload snapshot_meta as run artifact
+        if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: pipeline-manifest
-          path: output/manifest.json
+          name: snapshot-meta
+          path: warehouse/*/snapshot_meta.json
+          if-no-files-found: warn

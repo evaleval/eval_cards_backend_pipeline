@@ -1,119 +1,133 @@
-# eval-cards-backend-pipeline
+# eval-card-backend
 
-Python pipeline for materializing static evaluation artifacts from `evaleval/EEE_datastore` and publishing them to the Hugging Face dataset `evaleval/card_backend` (or a staging target — see "Upload safety guard" below).
+Materialises evaluation artifacts from `evaleval/EEE_datastore`,
+`evaleval/auto-benchmarkcards`, and `evaleval/entity-registry-data` into
+a Parquet warehouse for the Eval Cards frontend.
 
-## What it does
-
-- Reads upstream JSON evaluation records from `evaleval/EEE_datastore` (one record per `data/<benchmark>/<dev>/<model>/<uuid>.json`).
-- Caches benchmark cards from `evaleval/auto-benchmarkcards` under `.cache/auto_benchmarkcards/cards/`.
-- Normalizes model identities into stable family and route IDs.
-- Groups composite benchmarks into single-benchmark eval summaries and nests metrics under each eval.
-- Precomputes JSON artifacts:
-  - `model-cards.json`, `model-cards-lite.json`
-  - `eval-list.json`, `eval-list-lite.json`
-  - `peer-ranks.json`, `comparison-index.json`
-  - `benchmark-metadata.json`, `eval-hierarchy.json`, `corpus-aggregates.json`
-  - `developers.json`
-  - `models/*.json`, `evals/*.json`, `developers/*.json`, `instances/*.jsonl`, `records/*.json`
-  - `manifest.json`
-- Emits the parity-layer parquet artifacts under `output/duckdb/v1/` (frontend-ready DuckDB read surface):
-  - `model_cards.parquet`, `model_cards_lite.parquet`
-  - `eval_list.parquet`, `eval_list_lite.parquet`
-  - `eval_summaries.parquet`, `aggregate_eval_summaries.parquet`, `matrix_eval_summaries.parquet`
-  - `model_summaries.parquet`
-  - `developers.parquet`, `developer_summaries.parquet`
-- Uploads the full `output/` directory to the dataset selected by `CARD_BACKEND_OUTPUT_REPO`.
+The pipeline runs end-to-end via DuckDB in-process: it loads the three
+upstream HF datasets, resolves identity through `eval-entity-resolver`,
+computes the four interpretive signals (reproducibility, completeness,
+provenance, comparability), and emits a snapshot of canonical tables
+plus a thin view layer shaped to what the frontend renders.
 
 ## Install
 
-The pipeline runs via `uv` with no project venv. Required packages are pulled in at run time:
+```bash
+uv sync
+```
 
-- `huggingface_hub` — for snapshot reads of upstream datasets and uploads.
-- `datasets` — Arrow-backed parquet writer (sibling of `huggingface_hub`).
-
-`pyarrow` is a transitive dependency of `datasets`.
+`eval-entity-resolver` is wired as a uv workspace path dep against a
+sibling clone at `../eval-card-registry/`. CI overrides this with a git
+URL — see `scripts/ci_install_resolver.py`.
 
 ## Run
 
-Dry run (no upload, full output written under `output/`):
+Inspect what's already cached locally:
 
 ```bash
-uv run --with huggingface_hub --with datasets --with pandas --with pyarrow \
-  --with 'eval-entity-resolver @ git+https://github.com/evaleval/evalcard-registry.git#subdirectory=packages/eval-entity-resolver' \
-  --no-project python -m scripts.pipeline --dry-run
+uv run eval-card-backend
 ```
 
-Generate the metric-looking string registry from the local EEE snapshot:
+Run the full pipeline (downloads HF snapshots if not cached, materialises
+the warehouse):
 
 ```bash
-uv run --with huggingface_hub --no-project python -m scripts.build_metric_looking_registry
+uv run eval-card-backend canonicalise
 ```
 
-Upload to Hugging Face:
+Common flags:
 
 ```bash
-HF_TOKEN=hf_xxx CARD_BACKEND_OUTPUT_REPO=DATASET_NAME \
-  uv run --with huggingface_hub --with datasets --with pandas --with pyarrow \
-  --with 'eval-entity-resolver @ git+https://github.com/evaleval/evalcard-registry.git#subdirectory=packages/eval-entity-resolver' \
-  --no-project python -m scripts.pipeline
+# Limit to specific EEE configs
+uv run eval-card-backend canonicalise --configs cnn_dailymail,xsum
+
+# Smoke-test the first N configs
+uv run eval-card-backend canonicalise --config-limit 3
+
+# Pin the snapshot id (default: now in UTC)
+uv run eval-card-backend canonicalise --snapshot-id 2026-05-04T00:00:00Z
+
+# Custom warehouse / cache locations
+uv run eval-card-backend canonicalise --warehouse path/to/warehouse \
+                                      --cache-root path/to/stage_cache
 ```
 
-## Upload safety guard
+## Stage caching
 
-`pipeline.resolve_upload_target()` defends against accidental production writes from local shells where `HF_TOKEN` is auto-loaded from a profile (e.g. `~/.zshrc`). It does **not** gate CI deploys — owner PR review is the gate there, and `main` is the production branch.
-
-| Context | Behavior |
-|---|---|
-| **CI** (`GITHUB_ACTIONS=true`) | Uploads to `evaleval/card_backend` by default. Set `CARD_BACKEND_OUTPUT_REPO` to a non-prod dataset to override. |
-| **Local**, `CARD_BACKEND_OUTPUT_REPO` unset | Raises. Set the variable to a staging dataset, or set `CARD_BACKEND_ALLOW_PRODUCTION=1` for an intentional manual prod push. |
-| **Local**, `CARD_BACKEND_OUTPUT_REPO=evaleval/card_backend` | Raises unless `CARD_BACKEND_ALLOW_PRODUCTION=1` is also set. |
-| **Local**, any other `CARD_BACKEND_OUTPUT_REPO` | Uploads to that target. |
-
-## Cross-repo parity verification
-
-After running the pipeline, validate the parquet payloads against the canonical TS adapters in `general-eval-card`:
+Each pipeline stage's terminal output is COPY-ed to
+`<cache-root>/<snapshot>/<table>.parquet` so re-runs can resume mid-pipeline:
 
 ```bash
-uv run --with datasets --no-project python -m scripts.verify_parity \
-  --pipeline-output ./output \
-  --general-eval-card ../general-eval-card
+# Re-bake the view layer from cached canonical tables (skips Stages A–I)
+uv run eval-card-backend canonicalise --from-stage J
+
+# Run only Stages A–D for debugging; cache dir is the result
+uv run eval-card-backend canonicalise --to-stage D
+
+# Skip cache writes (cache reads still work for --from-stage)
+uv run eval-card-backend canonicalise --no-cache
 ```
 
-Exits non-zero on any unexplained divergence between the parity parquet payloads and the TS-adapter outputs (`hfModelCardToEvaluationCardData`, `hfEvalEntryToListItem`, `hfEvalDetailToSummary`, `createModelFamilySummary`, `hfDeveloperDetailToSummary`).
+Stage letters: A (load) · B (explode) · C (resolve identity) · D (flatten
++ join dims) · E (per-row signals) · F (group signals) · G (dim
+materialisation) · I (canonical-warehouse emit) · J (view-layer emit).
+
+## Output layout
+
+```
+warehouse/<snapshot_id>/
+├── fact_results.parquet           # one row per atomic score, all signal columns
+├── benchmarks.parquet             # one row per resolved benchmark
+├── models.parquet                 # one row per resolved model
+├── canonical_metrics.parquet      # the registry's metric dim (snapshot-stamped)
+├── eval_results_view.parquet      # one row per (model, benchmark, metric) triple
+├── models_view.parquet            # one row per model, denormalised for the index page
+├── evals_view.parquet             # one row per benchmark, multi-metric pre-pivoted
+├── manifest.json                  # corpus scalars (model_count, eval_count, …)
+├── headline.json                  # corpus signal aggregates (overall + by_category)
+├── hierarchy.json                 # top-level composites[] tree + flat families[] lookup
+├── comparison-index.json          # per-(eval, metric) leaderboards + inverse model→peer index
+└── snapshot_meta.json             # pipeline run metadata (tables, sidecars, row counts)
+```
+
+The four canonical parquets are the source of truth (audit/debug);
+`*_view.parquet` + the four JSON sidecars are pre-baked for the
+frontend to read without GROUP BYs.
 
 ## Environment variables
 
-- `HF_TOKEN`: required for non-dry-run uploads.
-- `CARD_BACKEND_OUTPUT_REPO`: optional override for the upload target. Required for local non-dry-run uploads (the safety guard raises otherwise); CI runs default to `evaleval/card_backend`.
-- `CARD_BACKEND_ALLOW_PRODUCTION=1`: opt-in for an intentional manual local prod push. Not needed in CI.
-- `CONFIG_BATCH_SIZE`: optional. Controls how many EEE configs are loaded concurrently. Default: `4`.
-- `EEE_LOCAL_DATASET_DIR`: optional local snapshot directory (used in CI to avoid HF rate limits).
-- `BENCHMARK_METADATA_LOCAL_DIR`: optional local cache directory for `evaleval/auto-benchmarkcards`.
-- `EEE_REFRESH_SNAPSHOT=1` / `BENCHMARK_METADATA_REFRESH=1`: force re-download of the corresponding snapshot.
-- `CONFIGS` / `CONFIG_NAMES`: optional comma-separated config override.
-- `CONFIG_LIMIT`: optional limit for quick smoke tests.
-- `LOAD_INSTANCE_IN_DRY_RUN=1`: load detailed instance-level data even in dry-run mode (slow; off by default).
-
-Lower `CONFIG_BATCH_SIZE` reduces peak disk and memory pressure on GitHub Actions runners as the source dataset grows.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HF_TOKEN` | `None` | Optional for public datasets; required for private. |
+| `EEE_LOCAL_DATASET_DIR` | `.cache/eee_datastore` | Local cache for the EEE snapshot. |
+| `BENCHMARK_METADATA_LOCAL_DIR` | `.cache/auto_benchmarkcards` | Local cache for benchmark cards. |
+| `ENTITY_REGISTRY_LOCAL_DIR` | `.cache/entity_registry` | Local cache for the registry. |
+| `WAREHOUSE_DIR` | `warehouse` | Output root; overridden by `--warehouse`. |
+| `EEE_REFRESH_SNAPSHOT` | unset | Set to `1` to force-refetch the EEE snapshot. |
+| `BENCHMARK_METADATA_REFRESH` | unset | Set to `1` to force-refetch the cards. |
+| `ENTITY_REGISTRY_REFRESH` | unset | Set to `1` to force-refetch the registry. |
 
 ## Tests
 
 ```bash
-uv run --with pytest --with huggingface_hub --with datasets --with pandas --with pyarrow \
-  --with 'eval-entity-resolver @ git+https://github.com/evaleval/evalcard-registry.git#subdirectory=packages/eval-entity-resolver' \
-  --no-project pytest tests/
+uv run pytest
 ```
 
-Coverage is split across:
-- `tests/test_signals.py` — interpretive-signals helpers.
-- `tests/test_parity.py` — cleaning-spec primitives in `scripts/parity.py`.
-- `tests/test_parity_adapters.py` — TS-shape adapter ports in `scripts/parity_adapters.py`.
-- `tests/test_pipeline_integration.py` — end-to-end fixture pipeline + parity parquet emission + upload safety guard.
-- `tests/test_verify_parity.py` — verifier-of-the-verifier (proves cross-repo verifier catches injected divergences).
+Tests use hand-built fixtures under `tests/fixtures/` and don't require
+HF credentials.
 
-## Notes
+## Continuous integration
 
-- The pipeline cleans and recreates `output/` on each run.
-- Benchmark metadata is sourced only from the Hugging Face dataset `evaleval/auto-benchmarkcards`.
-- `registry/metric_looking_strings.json` is generated from the local EEE snapshot and can be refreshed with `python -m scripts.build_metric_looking_registry`; the pipeline uses it to canonicalize metric aliases.
-- Config load failures are logged and skipped; the skipped config list is recorded in `output/manifest.json`.
+`.github/workflows/sync.yml` runs the pipeline daily, then publishes the
+warehouse snapshot tree to a target HF dataset (today:
+`j-chim/temp_evalcard_backend`; flip `HF_TARGET_DATASET` env at the
+workflow level to point elsewhere). The `HF_TOKEN` secret must be set on
+the repo.
+
+## Design notes
+
+- `CLAUDE.md` is the operational source of truth (architecture pointers,
+  ignored-config policy, hotfix retirement plans).
+- `notes/01-` through `notes/08-` are the design specs for the canonical
+  schema, producer pipeline, EEE schema vendoring, and Stage J view
+  layer.

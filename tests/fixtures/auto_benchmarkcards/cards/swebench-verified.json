@@ -1,0 +1,52 @@
+{
+  "benchmark_card": {
+    "benchmark_details": {
+      "name": "SWE-bench Verified",
+      "overview": "Coding tasks",
+      "data_type": "code",
+      "domains": [
+        "software"
+      ],
+      "languages": [
+        "en"
+      ],
+      "similar_benchmarks": [],
+      "resources": []
+    },
+    "purpose_and_intended_users": {
+      "goal": "agentic SWE",
+      "audience": [
+        "devs"
+      ],
+      "tasks": [
+        "agentic"
+      ],
+      "limitations": "limited to GitHub issues",
+      "out_of_scope_uses": []
+    },
+    "data": {
+      "source": "github",
+      "size": "500",
+      "format": "patch",
+      "annotation": "auto"
+    },
+    "methodology": {
+      "methods": [
+        "execute-and-test"
+      ],
+      "metrics": [
+        "pass@1"
+      ],
+      "calculation": "n_pass / n_total",
+      "interpretation": "higher is better",
+      "baseline_results": "0",
+      "validation": "ci"
+    },
+    "ethical_and_legal_considerations": {
+      "privacy_and_anonymity": "n/a",
+      "data_licensing": "MIT",
+      "consent_procedures": "n/a",
+      "compliance_with_regulations": "n/a"
+    }
+  }
+}

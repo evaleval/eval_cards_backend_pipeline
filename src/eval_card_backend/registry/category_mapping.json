@@ -1,0 +1,99 @@
+{
+  "category_version": "1.0",
+  "categories": ["General", "Reasoning", "Agentic", "Safety", "Knowledge"],
+  "default_category": "General",
+  "match_mode": "case_insensitive_substring",
+  "priority_order": ["domains", "tasks", "tags"],
+  "rules": {
+    "domains": [
+      {
+        "category": "Safety",
+        "patterns": [
+          "safety", "harm", "toxic", "bias", "fairness", "jailbreak",
+          "alignment", "redteam", "red-team", "red team", "hallucination",
+          "ethic"
+        ]
+      },
+      {
+        "category": "Agentic",
+        "patterns": [
+          "agentic", "agent", "tool-use", "tool_use", "tool use",
+          "autonomy", "autonomous", "browse", "browsing"
+        ]
+      },
+      {
+        "category": "Reasoning",
+        "patterns": [
+          "reasoning", "math", "mathematics", "arithmetic", "logic",
+          "theorem", "proof", "code", "coding", "programming",
+          "competitive programming"
+        ]
+      },
+      {
+        "category": "Knowledge",
+        "patterns": [
+          "knowledge", "trivia", "factual", "factuality", "world knowledge",
+          "world_knowledge", "common sense", "commonsense"
+        ]
+      }
+    ],
+    "tasks": [
+      {
+        "category": "Safety",
+        "patterns": [
+          "safety", "harm", "toxic", "bias", "fairness", "jailbreak",
+          "refusal", "hallucination", "alignment", "redteam"
+        ]
+      },
+      {
+        "category": "Agentic",
+        "patterns": [
+          "agent", "agentic", "tool", "swe-bench", "swe_bench",
+          "browse", "browsing", "navigation", "web"
+        ]
+      },
+      {
+        "category": "Reasoning",
+        "patterns": [
+          "reasoning", "math", "logic", "theorem", "proof",
+          "code", "coding", "programming", "competitive_programming"
+        ]
+      },
+      {
+        "category": "Knowledge",
+        "patterns": [
+          "question_answering", "question answering", "qa",
+          "knowledge", "trivia", "factuality", "open_domain",
+          "open domain"
+        ]
+      }
+    ],
+    "tags": [
+      {
+        "category": "Safety",
+        "patterns": [
+          "safety", "harm", "toxic", "bias", "fairness", "jailbreak",
+          "alignment", "redteam", "hallucination"
+        ]
+      },
+      {
+        "category": "Agentic",
+        "patterns": [
+          "agent", "agentic", "tool", "swe-bench", "browse", "web"
+        ]
+      },
+      {
+        "category": "Reasoning",
+        "patterns": [
+          "reasoning", "math", "logic", "code", "coding", "programming"
+        ]
+      },
+      {
+        "category": "Knowledge",
+        "patterns": [
+          "knowledge", "trivia", "factual", "qa", "mmlu"
+        ]
+      }
+    ]
+  }
+}
