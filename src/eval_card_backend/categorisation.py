@@ -84,6 +84,42 @@ def _load_categorized() -> dict[str, list[str]]:
 _CATEGORIZED: dict[str, list[str]] = _load_categorized()
 
 
+# Map fine-grained curator categories (lowercase, ~18 values in
+# categorized.json) onto the pipeline's typed CategoryType enum
+# (5 broad values, frontend-facing). The scalar `category` column has
+# to stay inside the typed enum — downstream tests + view definitions
+# enforce it. The curated fine-grained labels survive untouched in
+# `classify_benchmark_categories` for when we wire a categories[] array
+# through to hierarchy.json.
+_FINE_TO_BROAD: dict[str, str] = {
+    "agentic":                       "Agentic",
+    "software_engineering":          "Agentic",
+    "robustness":                    "Safety",
+    "safety":                        "Safety",
+    "hallucination":                 "Safety",
+    "knowledge":                     "Knowledge",
+    "natural_sciences":              "Knowledge",
+    "humanities_and_social_sciences":"Knowledge",
+    "law":                           "Knowledge",
+    "finance":                       "Knowledge",
+    "mathematics":                   "Reasoning",
+    "logical_reasoning":             "Reasoning",
+    "applied_reasoning":             "Reasoning",
+    "commonsense_reasoning":         "Reasoning",
+    "linguistic_core":               "Reasoning",
+    "general":                       "General",
+    "multimodal":                    "General",
+    "other":                         "General",
+}
+
+
+def _to_broad_category(fine: str) -> str:
+    """Translate a curator fine-grained label to the typed CategoryType
+    enum. Unknown labels default to 'General' so the pipeline never
+    emits a category outside the enum."""
+    return _FINE_TO_BROAD.get((fine or "").strip().lower(), _DEFAULT_CATEGORY)
+
+
 def lookup_categorized(display_name: str | None) -> list[str]:
     """Look up curated categories by benchmark display name (case-insensitive
     exact match). Returns [] when not present — caller falls back to the
@@ -161,7 +197,8 @@ def classify_benchmark(
 
     direct = lookup_categorized(display_name)
     if direct:
-        category = direct[0]
+        # Curator file ships fine-grained labels; project to the typed enum.
+        category = _to_broad_category(direct[0])
         _categorised_counter[category] += 1
         return category
 
