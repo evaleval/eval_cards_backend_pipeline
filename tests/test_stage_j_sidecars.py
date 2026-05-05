@@ -129,6 +129,23 @@ def test_headline_top_level_shape(tmp_path, monkeypatch):
     assert "categories" in h
 
 
+def test_headline_total_benchmarks_matches_dim(tmp_path, monkeypatch):
+    # Same universe as hierarchy.stats.benchmark_count — the home page
+    # and /models denominator must agree.
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    con = _materialise_views_and_sidecars(out)
+    h = json.loads((out / "headline.json").read_text())
+    expected = con.execute(
+        "SELECT COUNT(DISTINCT benchmark_id) FROM benchmarks "
+        "WHERE benchmark_id IS NOT NULL"
+    ).fetchone()[0]
+    assert h["total_benchmarks"] == expected
+    assert h["total_benchmarks"] >= 1
+    hierarchy = json.loads((out / "hierarchy.json").read_text())
+    assert h["total_benchmarks"] == hierarchy["stats"]["benchmark_count"]
+
+
 def test_headline_by_category_keys_match_typed_enum(tmp_path, monkeypatch):
     """by_category blocks key on every CategoryType — even when empty."""
     pytest.importorskip("duckdb")
