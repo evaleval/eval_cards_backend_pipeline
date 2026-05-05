@@ -597,6 +597,10 @@ def _hierarchy_v3_benchmark_index(con, families: list[dict]) -> list[dict]:
 
     # Walk every benchmark across every family layout. Each appearance
     # is one (family, benchmark) pair carrying its summary_eval_ids.
+    # We also walk slices: a within-benchmark slice whose `key` is itself
+    # a canonical benchmark (e.g. `aime-2024` as a slice of `aime`)
+    # surfaces as a cross-suite hit when it appears under multiple
+    # families' parent benchmarks.
     appearances_by_bench: dict[str, list[dict]] = defaultdict(list)
     for fam in families:
         bench_streams = [
@@ -613,6 +617,16 @@ def _hierarchy_v3_benchmark_index(con, families: list[dict]) -> list[dict]:
                 "eval_summary_ids":  list(b.get("summary_eval_ids") or []),
                 "is_canonical_home": (fam["key"] == bench_key),
             })
+            for s in b.get("slices") or []:
+                slice_key = s.get("key")
+                if not slice_key or slice_key == bench_key:
+                    continue
+                appearances_by_bench[slice_key].append({
+                    "family_key":        fam["key"],
+                    "benchmark_key":     bench_key,
+                    "eval_summary_ids":  list(b.get("summary_eval_ids") or []),
+                    "is_canonical_home": False,
+                })
 
     # Look up display names from the benchmarks dim — one canonical id
     # may have inconsistent display_name across composites; pick the
@@ -657,18 +671,19 @@ def _hierarchy_v3_families(con, composites: list[dict]) -> list[dict]:
     # --- Pull family / composite curation from registry tables ---
     fam_rows = con.execute(
         "SELECT id, display_name, category, tags, "
-        "       benchmark_ids, composite_keys "
+        "       benchmark_ids, composite_keys, folder_aliases "
         "  FROM canonical_families"
     ).fetchall() if _table_exists(con, "canonical_families") else []
     families_curated: dict[str, dict] = {}
     for r in fam_rows:
-        fid, display, cat, tags, bench_ids, comp_keys = r
+        fid, display, cat, tags, bench_ids, comp_keys, folder_aliases = r
         families_curated[fid] = {
-            "display_name":   display or fid,
-            "category":       (cat or "other"),
-            "tags":           _decode_json_list(tags),
-            "benchmark_ids":  _decode_json_list(bench_ids),
-            "composite_keys": _decode_json_list(comp_keys),
+            "display_name":    display or fid,
+            "category":        (cat or "other"),
+            "tags":            _decode_json_list(tags),
+            "benchmark_ids":   _decode_json_list(bench_ids),
+            "composite_keys":  _decode_json_list(comp_keys),
+            "folder_aliases":  _decode_json_list(folder_aliases),
         }
 
     comp_rows = con.execute(
@@ -679,10 +694,40 @@ def _hierarchy_v3_families(con, composites: list[dict]) -> list[dict]:
         if fid:
             composite_to_family[cid] = fid
 
+    # When `canonical_families.folder_aliases` is populated, map each
+    # folder alias to a composite-slug equivalent (`cyse2_interpreter_abuse`
+    # → `cyse2-interpreter-abuse`) and treat that composite as belonging
+    # to the curated family. Lets families that only specify
+    # `folder_aliases` (no `composite_keys` or `benchmark_ids`) still
+    # bucket their composites correctly.
+    import re as _re
+    def _folder_to_composite_slug(folder: str) -> str:
+        s = folder.lower()
+        s = _re.sub(r"[_\s]+", "-", s)
+        s = _re.sub(r"[^a-z0-9-/.]+", "-", s)
+        s = _re.sub(r"-+", "-", s).strip("-")
+        return s
+    for fid, curated in families_curated.items():
+        for folder in curated.get("folder_aliases") or []:
+            comp_slug = _folder_to_composite_slug(folder)
+            composite_to_family.setdefault(comp_slug, fid)
+
     # --- Bucket composites by family ---
+    # Family-slug aliases align v3's composite-derived family slugs with
+    # v2's reference slugs. Values are the v2 slug; keys are what v3
+    # would otherwise emit (the composite's own slug, when no
+    # canonical_composites.family_id is curated). Set in one place so
+    # the rename also applies to per-benchmark family_id below.
+    family_slug_aliases = {
+        "artificial-analysis-llms": "artificial-analysis",
+        "caparena-auto":            "caparena",
+        "hfopenllm-v2":             "hf-open-llm-v2",
+    }
+
     by_family: dict[str, list[dict]] = defaultdict(list)
     for comp in composites:
         family_id = composite_to_family.get(comp["key"], comp["key"])
+        family_id = family_slug_aliases.get(family_id, family_id)
         by_family[family_id].append(comp)
 
     # Add curated families that have no composites (rare — covers the
@@ -695,10 +740,12 @@ def _hierarchy_v3_families(con, composites: list[dict]) -> list[dict]:
 
     # --- Build per-family records ---
     out: list[dict] = []
+    composite_driven_keys: set[str] = set()  # tracks families built from composites
     for fid in sorted(by_family):
         family_composites = by_family[fid]
         if not family_composites:
             continue
+        composite_driven_keys.add(fid)
 
         curated = families_curated.get(fid)
         # Display name preference: curated > composite display when
@@ -772,7 +819,127 @@ def _hierarchy_v3_families(con, composites: list[dict]) -> list[dict]:
 
         out.append(family_record)
 
+    # --- Benchmark-driven families ---------------------------------------
+    # Some benchmarks claim a `family_id` that no composite is curated to
+    # (e.g. judgebench-coding lives under the `wasp` composite but its
+    # canonical_benchmark.family_id="judgebench"). The composite-driven
+    # bucketing above places such benchmarks under the wrong family and
+    # drops the natural one. Surface them here as additional top-level
+    # families. Each benchmark appears in BOTH its composite-driven family
+    # and its benchmark-driven family — benchmark_index naturally cross-
+    # links the two.
+    #
+    # We only surface a benchmark-driven family when:
+    #   (a) the family_id matches a curated `canonical_families` entry, OR
+    #   (b) ≥2 distinct benchmarks across composites share the same
+    #       family_id and that family_id isn't already a top-level family.
+    # Singleton family_ids that just happen to match a benchmark's own
+    # canonical_id (the auto-fallback for unset family_ids) don't qualify.
+    benchmark_family_groups: dict[str, dict[str, dict]] = defaultdict(dict)
+    for fam_record in list(out):
+        for bench in _walk_family_benchmarks(fam_record):
+            bfid = bench.get("family_id")
+            if not bfid or bfid == fam_record["key"]:
+                continue
+            if bfid in composite_driven_keys:
+                continue
+            # Skip the auto-fallback case where family_id was defaulted
+            # to the benchmark's own canonical_id by
+            # `_hierarchy_composite_benchmark`. Those aren't curated
+            # family edges; surfacing them here creates singleton
+            # noise-families.
+            if bfid == bench.get("key"):
+                continue
+            # Dedupe by benchmark_id: the same canonical can live
+            # under multiple composites (cross-suite benchmarks like
+            # math-500, mmlu, gpqa). We only want one entry per
+            # canonical in the benchmark-driven family.
+            benchmark_family_groups[bfid].setdefault(bench["key"], bench)
+
+    # Registry-curation-driven families: a `canonical_families` entry can
+    # list `benchmark_ids` directly (e.g. cyse2 → [cyse2_interpreter_abuse,
+    # cyse2_prompt_injection, cyse2_vulnerability_exploit]). When the
+    # member benchmarks don't carry an explicit `family_id` (so the
+    # walk above missed them), pull them in by ID match against
+    # everything we've already rendered.
+    for fid, curated in families_curated.items():
+        if fid in composite_driven_keys or fid in benchmark_family_groups:
+            continue
+        member_ids = set(curated.get("benchmark_ids") or [])
+        if not member_ids:
+            continue
+        for fam_record in out:
+            for bench in _walk_family_benchmarks(fam_record):
+                if bench.get("key") in member_ids:
+                    benchmark_family_groups[fid].setdefault(bench["key"], bench)
+
+    # The inner filter (`bfid != bench.get("key")`) already removed the
+    # auto-fallback case, so any remaining group is curated. No further
+    # gating required.
+
+    import copy as _copy
+    for bfid in sorted(benchmark_family_groups):
+        # Clone the benchmark dicts so that `_mark_family_primary_benchmark`
+        # below — which mutates `is_primary` — doesn't leak the
+        # benchmark-driven family's primary choice back into the
+        # composite-driven family that originally owns these benchmarks.
+        # Without the clone, a benchmark surfaced under both families
+        # ends up with `is_primary=True` set from whichever pass ran
+        # last, violating the per-family "at most one primary" invariant.
+        benches = [_copy.copy(b) for b in benchmark_family_groups[bfid].values()]
+        if not benches:
+            continue
+        # Reset is_primary on the cloned copies — the benchmark-driven
+        # family decides its own primary independently of the
+        # composite-driven family's choice.
+        for b in benches:
+            b["is_primary"] = False
+        curated = families_curated.get(bfid)
+        display = curated["display_name"] if curated else _prettify_family_slug(bfid)
+        category = curated["category"] if curated else (
+            benches[0].get("tags", {}).get("category") or "other"
+        )
+        family_tags = curated["tags"] if curated else []
+        all_eval_summary_ids: set[str] = set()
+        for b in benches:
+            for eid in b.get("summary_eval_ids", []) or []:
+                all_eval_summary_ids.add(eid)
+        family_record = {
+            "key":              bfid,
+            "display_name":     display,
+            "category":         category,
+            "tags":             _merge_family_tags(family_tags, benches),
+            "evals_count":      len(all_eval_summary_ids),
+            "eval_summary_ids": sorted(all_eval_summary_ids),
+        }
+        family_record["reproducibility_summary"] = _aggregate_reproducibility(benches)
+        family_record["provenance_summary"]      = _aggregate_provenance(benches)
+        family_record["comparability_summary"]   = _aggregate_comparability(benches)
+        _mark_family_primary_benchmark(bfid, benches)
+        if len(benches) == 1:
+            family_record["standalone_benchmarks"] = benches
+        else:
+            family_record["benchmarks"] = benches
+        out.append(family_record)
+
     return out
+
+
+def _walk_family_benchmarks(family: dict):
+    """Yield every benchmark dict in a family record across all three
+    layouts (standalone_benchmarks / benchmarks / composites[].benchmarks).
+    """
+    for layout in ("standalone_benchmarks", "benchmarks"):
+        for b in family.get(layout) or []:
+            yield b
+    for c in family.get("composites") or []:
+        for b in c.get("benchmarks") or []:
+            yield b
+
+
+def _prettify_family_slug(slug: str) -> str:
+    """Lightweight display fallback when no curated display_name exists."""
+    return slug.replace("-", " ").replace("_", " ").title()
 
 
 def _hierarchy_v3_stats(con, families: list[dict]) -> dict:

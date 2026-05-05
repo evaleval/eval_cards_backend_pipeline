@@ -213,16 +213,20 @@ def test_benchmark_metrics_have_is_primary(ours: dict) -> None:
 
 
 def test_family_primary_benchmark_exclusive(ours: dict) -> None:
-    """At most one benchmark per family has is_primary=True. The flag
-    is set by _mark_family_primary_benchmark in the producer."""
+    """At most one DISTINCT benchmark canonical per family has
+    is_primary=True. The flag is set by _mark_family_primary_benchmark
+    in the producer. A canonical can legitimately appear under multiple
+    composites of the same family (e.g. `math` reported in both
+    `reward-bench` and `reward-bench-2` leaderboards) — the dedup makes
+    the assertion check distinct keys, not raw walk count."""
     for fam in ours["families"]:
         benches = list(_walk_benchmarks(fam))
         if not benches:
             continue
-        primaries = [b for b in benches if b.get("is_primary")]
-        assert len(primaries) <= 1, (
-            f"family {fam['key']!r} has {len(primaries)} primary benchmarks; "
-            f"should be at most 1"
+        primary_keys = {b["key"] for b in benches if b.get("is_primary")}
+        assert len(primary_keys) <= 1, (
+            f"family {fam['key']!r} has {len(primary_keys)} distinct primary "
+            f"benchmark canonicals ({sorted(primary_keys)}); should be at most 1"
         )
 
 
@@ -325,3 +329,135 @@ def test_allowlist_loads(ours: dict) -> None:
     not identity-based)."""
     allowlist = _load_allowlist()
     assert isinstance(allowlist, dict)
+
+
+# ---------------------------------------------------------------------------
+# v2 → v3 membership coverage (strict)
+# ---------------------------------------------------------------------------
+# These tests treat ref-hierarchy_v2.json as the gold for *coverage*, not
+# values. Every benchmark / family / benchmark_index canonical that v2
+# surfaces must be reachable somewhere in v3's hierarchy. Missing
+# canonicals are the broken-link bug list.
+#
+# The assertions deliberately do NOT consult the allowlist — every miss
+# should surface so we can decide case-by-case whether to fix the
+# producer or document the drop. The allowlist YAML is now informational
+# burn-down.
+
+
+def _v2_canonical_keys(ref: dict) -> set[str]:
+    """V2 entities that resolved to a registry canonical_id. These are
+    the entities the registry recognises as real benchmarks; v2 keeps
+    additional non-canonical slugged leftovers (`bfcl-leaderboard-csv-
+    overall`, `arc-prize-evaluations-leaderboard-json-v1-public-eval`,
+    etc.) which we don't treat as required surface."""
+    out: set[str] = set()
+    for fam in ref.get("families") or []:
+        for layout in ("standalone_benchmarks", "benchmarks"):
+            for b in fam.get(layout) or []:
+                cid = b.get("underlying_canonical_id")
+                if cid:
+                    out.add(cid)
+    return out
+
+
+def _v3_all_keys(ours: dict) -> set[str]:
+    """Every key v3 emits at any level — family / composite / benchmark
+    / slice. Used as a liberal coverage target: a v2 benchmark is
+    "reachable" in v3 if its canonical_id matches anything we surface,
+    including as a within-benchmark slice."""
+    out: set[str] = set()
+    for fam in ours.get("families") or []:
+        if fam.get("key"):
+            out.add(fam["key"])
+        for layout in ("standalone_benchmarks", "benchmarks"):
+            for b in fam.get(layout) or []:
+                if b.get("key"):
+                    out.add(b["key"])
+                for s in b.get("slices") or []:
+                    if s.get("key"):
+                        out.add(s["key"])
+        for comp in fam.get("composites") or []:
+            if comp.get("key"):
+                out.add(comp["key"])
+            for b in comp.get("benchmarks") or []:
+                if b.get("key"):
+                    out.add(b["key"])
+                for s in b.get("slices") or []:
+                    if s.get("key"):
+                        out.add(s["key"])
+    return out
+
+
+def _v3_family_member_count(ours: dict) -> dict[str, int]:
+    """Map of benchmark key → number of distinct v3 families it appears
+    in. Used to validate that v2 benchmark_index cross-suite canonicals
+    still appear in 2+ families even when v3 doesn't emit them in
+    benchmark_index."""
+    appearances: dict[str, set[str]] = {}
+    for fam in ours.get("families") or []:
+        fkey = fam.get("key")
+        if not fkey:
+            continue
+        for layout in ("standalone_benchmarks", "benchmarks"):
+            for b in fam.get(layout) or []:
+                if b.get("key"):
+                    appearances.setdefault(b["key"], set()).add(fkey)
+        for comp in fam.get("composites") or []:
+            for b in comp.get("benchmarks") or []:
+                if b.get("key"):
+                    appearances.setdefault(b["key"], set()).add(fkey)
+    return {k: len(v) for k, v in appearances.items()}
+
+
+def test_v2_benchmark_keys_reachable_in_v3(ours: dict, ref: dict) -> None:
+    """Every registry-canonical benchmark that v2 surfaces must be
+    reachable somewhere in v3's hierarchy — top-level family, composite,
+    nested benchmark, or within-benchmark slice. Missing canonicals are
+    the broken-link bug list. We deliberately ignore v2's non-canonical
+    synthetic keys (slugged ds_name leftovers) — those aren't required
+    surface."""
+    v2_keys = _v2_canonical_keys(ref)
+    v3_keys = _v3_all_keys(ours)
+    missing = sorted(v2_keys - v3_keys)
+    assert not missing, (
+        f"v3 hierarchy is missing {len(missing)} v2 canonical benchmark(s) "
+        f"(of {len(v2_keys)} total):\n  " + "\n  ".join(missing)
+    )
+
+
+def test_v2_family_keys_reachable_in_v3(ours: dict, ref: dict) -> None:
+    """Every family key that v2 surfaces as a top-level family must
+    appear somewhere in v3 — either as a v3 family, a composite under
+    a v3 family, or a benchmark key. The v3 grouping bucket can differ
+    from v2's, but the entity itself must be reachable."""
+    v2_family_keys = {f["key"] for f in ref.get("families") or [] if f.get("key")}
+    v3_keys = _v3_all_keys(ours)
+    missing = sorted(v2_family_keys - v3_keys)
+    assert not missing, (
+        f"v3 has no surface for {len(missing)} v2 top-level family key(s):\n  "
+        + "\n  ".join(missing)
+    )
+
+
+def test_v2_benchmark_index_canonicals_preserved(ours: dict, ref: dict) -> None:
+    """For every cross-suite canonical that v2 lists in benchmark_index
+    (≥2 family appearances in v2), v3 must either:
+      (a) list it in its own benchmark_index, OR
+      (b) actually surface it under 2+ distinct v3 families.
+    Otherwise the cross-suite link is silently broken."""
+    v2_index_keys = {e["key"] for e in ref.get("benchmark_index") or []}
+    v3_index_keys = {e["key"] for e in ours.get("benchmark_index") or []}
+    v3_member_counts = _v3_family_member_count(ours)
+    broken: list[str] = []
+    for k in sorted(v2_index_keys):
+        if k in v3_index_keys:
+            continue
+        if v3_member_counts.get(k, 0) >= 2:
+            continue
+        broken.append(k)
+    assert not broken, (
+        f"v3 has dropped {len(broken)} of v2's {len(v2_index_keys)} "
+        f"cross-suite benchmark_index canonicals (not in v3 benchmark_index "
+        f"AND not appearing in 2+ v3 families):\n  " + "\n  ".join(broken)
+    )

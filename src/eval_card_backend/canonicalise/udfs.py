@@ -140,7 +140,23 @@ def make_resolver_udfs(resolver):
         except Exception:
             return "no_match"
 
-    return resolve_canonical_id_py, resolve_strategy_py
+    def resolve_leaf_id_py(
+        raw: str | None, entity_type: str | None, source_config: str | None
+    ) -> str | None:
+        """Return `resolved_leaf_id` — the originally-matched canonical
+        before any root-collapse. Equals `canonical_id` when no
+        version/quantized chain is collapsed. Used by Stage J's model
+        view to surface dated-snapshot release_date via leaf-coalesce
+        even though the row's `model_id` is root-grain."""
+        if not raw or not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            result = _resolve_cached(raw, entity_type, source_config)
+        except Exception:
+            return None
+        return result.resolved_leaf_id
+
+    return resolve_canonical_id_py, resolve_strategy_py, resolve_leaf_id_py
 
 
 def log_resolver_summary(top_n: int = 10) -> None:

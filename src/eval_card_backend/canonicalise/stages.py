@@ -400,6 +400,43 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+def _load_aliases_table(con, registry_root: Path | None) -> None:
+    """Materialise the registry's aliases table on the DuckDB connection.
+
+    Schema mirrors the registry parquet (raw_value / canonical_id /
+    entity_type / status / ...). When the registry doesn't carry an
+    aliases parquet (cold-start dev fixture), an empty table is
+    created so downstream code can JOIN unconditionally.
+    """
+    schema = (
+        ("raw_value",     "VARCHAR"),
+        ("canonical_id",  "VARCHAR"),
+        ("entity_type",   "VARCHAR"),
+        ("status",        "VARCHAR"),
+        ("source_config", "VARCHAR"),
+    )
+    ddl = ", ".join(f"{c} {t}" for c, t in schema)
+
+    from eval_card_backend.sources import registry as _registry_src
+
+    path = _registry_src.aliases_path(registry_root) if registry_root else None
+    if path is None or not path.exists():
+        con.execute(f"CREATE TABLE aliases ({ddl})")
+        return
+
+    rp = read_parquet_arg(path)
+    present = _table_columns(con, path)
+    select_parts = [
+        f"CAST({col} AS {t}) AS {col}" if col in present
+        else f"CAST(NULL AS {t}) AS {col}"
+        for col, t in schema
+    ]
+    con.execute(
+        f"CREATE TABLE aliases AS SELECT {', '.join(select_parts)} "
+        f"FROM read_parquet('{rp}')"
+    )
+
+
 def _load_dim(con, name: str, dim_paths: dict) -> None:
     """Load one registry dim table to its spec shape, padding missing
     columns with typed NULLs. When the registry doesn't carry the dim at
@@ -524,6 +561,12 @@ def stage_a_load_registry(
 
     for name in _DIM_SCHEMAS:
         _load_dim(con, name, dim_paths)
+
+    # The benchmark-resolution alias table is registered as a DuckDB-side
+    # source so slice_promotion (Stage C) can replay v2's resolver path
+    # in Python without re-reading the parquet. Tiny table (~8k rows),
+    # cheap to materialise.
+    _load_aliases_table(con, registry_root)
 
     con.execute("ALTER TABLE canonical_models ADD COLUMN parent_model_id VARCHAR")
     con.execute(
@@ -700,6 +743,13 @@ def stage_c_resolve_identities(con) -> None:
             NULLIF(_harness_raw, '') AS harness_raw,
 
             resolve_canonical_id(_model_raw,     'model',     source_config) AS model_id,
+            -- `model_leaf_id` is the matched canonical BEFORE any
+            -- root-collapse. Identical to `model_id` for non-snapshot
+            -- ids; for dated snapshots that collapse to a family
+            -- pointer (e.g. `Olmo-3-1125-32B` → root `olmo-3-32b`),
+            -- it carries the snapshot canonical so Stage J can read
+            -- per-snapshot release_date via leaf-coalesce.
+            resolve_leaf_id(_model_raw,          'model',     source_config) AS model_leaf_id,
             resolve_canonical_id(_benchmark_raw, 'benchmark', source_config) AS benchmark_id,
             resolve_canonical_id(_metric_raw,    'metric',    source_config) AS metric_id,
             resolve_canonical_id(_org_raw,       'org',       source_config) AS org_id,
@@ -713,6 +763,14 @@ def stage_c_resolve_identities(con) -> None:
         FROM raw
         """
     )
+
+    # v2-style slice promotion: for dot-notation aggregator records
+    # (llm-stats, artificial-analysis, vals-ai, openeval) whose row-level
+    # resolver answer collapses many distinct sub-benchmarks into the
+    # source name, replay v2's bucket-then-promote logic and override
+    # benchmark_id with the canonical the slice actually denotes.
+    from eval_card_backend.canonicalise import slice_promotion
+    slice_promotion.apply_overrides(con)
 
     _apply_slice_key(con)
 
@@ -808,7 +866,19 @@ def stage_d_join_dims_and_flatten(con) -> None:
                 )                                                      AS _composite_slug,
                 COALESCE(
                     ccm.composite_display_name,
-                    rr.source_metadata.source_name,
+                    -- Skip source_metadata.source_name when it equals
+                    -- eval_library.name — that's the upstream harness
+                    -- ('inspect_ai', 'helm', ...) bleeding into the
+                    -- display field, not a publisher/leaderboard name.
+                    -- Aggregator folders (Mercor, Vals.ai, LLM Stats, ...)
+                    -- have meaningfully-distinct source_name vs harness
+                    -- and survive this guard.
+                    CASE
+                        WHEN rr.source_metadata.source_name IS NOT NULL
+                             AND rr.source_metadata.source_name = rr.eval_library.name
+                        THEN NULL
+                        ELSE rr.source_metadata.source_name
+                    END,
                     rr.source_config
                 )                                                      AS _composite_display_name,
                 derive_metric_meta_udf(
@@ -855,7 +925,7 @@ def stage_d_join_dims_and_flatten(con) -> None:
             NULLIF(j.source_metadata.additional_details['benchmark_updated'], '')
                                                                                           AS benchmark_updated,
 
-            j.model_raw,     j.model_id,
+            j.model_raw,     j.model_id,     j.model_leaf_id,
             j.benchmark_raw, j.benchmark_id,
             j.slice_key,     j.slice_name,
             j.metric_raw,    j.metric_id,
@@ -1840,10 +1910,30 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
                 ARRAY_AGG(DISTINCT model_key)
                     FILTER (WHERE model_key IS NOT NULL)          AS variant_keys,
                 ARRAY_AGG(DISTINCT model_id)
-                    FILTER (WHERE model_id IS NOT NULL)           AS leaf_model_ids
+                    FILTER (WHERE model_id IS NOT NULL)           AS leaf_model_ids,
+                ARRAY_AGG(DISTINCT model_leaf_id)
+                    FILTER (WHERE model_leaf_id IS NOT NULL)      AS resolved_leaf_ids
             FROM fact_results
             WHERE model_aggregation_key IS NOT NULL
             GROUP BY model_aggregation_key
+        ),
+        -- Earliest snapshot release_date across the resolved leaves
+        -- that aggregate into this model_key. Lets Stage J's view
+        -- surface a per-snapshot release date even when the family
+        -- pointer canonical's `release_date` is NULL — the common
+        -- shape post-Gap-A where dated snapshots become first-class
+        -- canonicals with their own `release_date` and the family
+        -- pointer is a moving label without one. MIN picks the
+        -- model's earliest known snapshot, which is "when the family
+        -- first shipped."
+        leaf_release AS (
+            SELECT
+                um.model_key,
+                MIN(leaf_cm.release_date) AS leaf_release_date
+            FROM used_models um,
+                 UNNEST(um.resolved_leaf_ids) AS t(leaf_id)
+            LEFT JOIN canonical_models leaf_cm ON leaf_cm.id = t.leaf_id
+            GROUP BY um.model_key
         )
         SELECT
             TIMESTAMP '{sid}' AS snapshot_id,
@@ -1852,8 +1942,23 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             um.raw_model_ids,
             um.variant_keys,
             um.leaf_model_ids,
+            um.resolved_leaf_ids,
 
-            COALESCE(cm.display_name, um.model_raw_sample)   AS display_name,
+            COALESCE(
+                cm.display_name,
+                -- For unresolved HF-shaped raws (`org/name`), drop the
+                -- org prefix so display matches the resolved-row
+                -- convention: name carries the model, developer carries
+                -- the org separately. The full raw id is preserved in
+                -- `raw_model_ids` / `model_key` for callers needing the
+                -- original string.
+                CASE
+                    WHEN um.model_raw_sample LIKE '%/%'
+                         AND length(split_part(um.model_raw_sample, '/', 2)) > 0
+                    THEN split_part(um.model_raw_sample, '/', 2)
+                    ELSE um.model_raw_sample
+                END
+            )                                                AS display_name,
             cm.developer,
             cm.org_id,
             cm.family,
@@ -1863,7 +1968,10 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             cm.root_model_id,
             cm.lineage_origin_org_id,
             cm.open_weights,
-            cm.release_date,
+            -- Prefer the leaf-aggregated date over the family pointer's
+            -- own release_date. NULL on both sides yields NULL, which
+            -- the frontend renders as "—" via formatDateShort.
+            COALESCE(lr.leaf_release_date, cm.release_date)  AS release_date,
             -- Modalities surfaced as VARCHAR[] for the views; on `models`
             -- dim we keep the JSON-encoded form to round-trip cleanly via
             -- parquet readers that don't support nested arrays in joins.
@@ -1882,9 +1990,45 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
 
         FROM used_models um
         LEFT JOIN canonical_models cm ON cm.id = um.model_key
+        LEFT JOIN leaf_release lr     ON lr.model_key = um.model_key
         LEFT JOIN canonical_orgs co   ON co.id = cm.org_id
         """
     )
+
+    # Surface registry-staleness signals on the models dim. A model_key
+    # that didn't match `canonical_models.id` indicates either (a) the
+    # registry hasn't synced this model yet — operator must run
+    # `eval-card-registry sync` and push to entity-registry-data — or
+    # (b) the producer's join key (model_aggregation_key) carries the
+    # raw HF id rather than the registry slug. Either way the row
+    # surfaces with NULL metadata in the warehouse, so consumers
+    # deserve a heads-up; HF-shaped misses are particularly noteworthy
+    # because the registry's auto-create path would normally have
+    # populated those.
+    # When the canonical lookup misses, `model_aggregation_key` falls
+    # back to the raw `model_raw` (Stage E line 930 COALESCE), so on
+    # the `models` dim that raw value lands in `model_key` itself —
+    # detecting HF-shape there avoids a re-join to fact_results.
+    miss_total, miss_hf_shaped = con.execute(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE model_id IS NULL),
+            COUNT(*) FILTER (
+                WHERE model_id IS NULL
+                  AND model_key LIKE '%/%'
+                  AND length(split_part(model_key, '/', 1)) > 0
+            )
+        FROM models
+        """
+    ).fetchone() or (0, 0)
+    if miss_total:
+        log.warning(
+            "Stage G: %d models row(s) had no canonical_models match "
+            "(%d look like HF ids — likely stale registry snapshot). "
+            "Consumers will see NULL metadata for these models; "
+            "view-layer falls developer back to the raw org prefix.",
+            miss_total, miss_hf_shaped,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2233,18 +2377,71 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
             -- model_info: denormalised display context. `id` reflects the
             -- canonical id when known and falls back to the raw source name
             -- so unresolved models still expose a stable identifier.
+            -- `developer` falls through canonical org → free-text developer
+            -- → raw HF id prefix. The third tier is a safety net for rows
+            -- whose model_aggregation_key didn't match canonical_models
+            -- (stale registry snapshot, casing-mismatched alias, brand-new
+            -- model not yet synced) — without it those rows show NULL
+            -- developer even when the raw value clearly carries an org.
+            -- `review_status='unresolved'` on `models` still distinguishes
+            -- these from canonically-resolved rows.
             CAST({{
                 'name':              COALESCE(m_display_name, rep_model_raw),
                 'id':                COALESCE(model_id, rep_model_raw),
-                'developer':         COALESCE(m_org_display_name, m_developer),
+                'developer':         COALESCE(
+                    m_org_display_name,
+                    m_developer,
+                    CASE
+                        WHEN rep_model_raw LIKE '%/%'
+                             AND length(split_part(rep_model_raw, '/', 1)) > 0
+                        THEN split_part(rep_model_raw, '/', 1)
+                        ELSE NULL
+                    END
+                ),
                 'inference_platform': NULL,
                 'inference_engine':   NULL,
                 'model_version':     NULL,
                 'architecture':      m_architecture,
-                'parameter_count':   CASE WHEN m_params_billions IS NOT NULL
-                                          THEN CAST(m_params_billions AS VARCHAR) || 'B'
-                                          ELSE NULL END,
-                'release_date':      m_release_date,
+                -- parameter_count: prefer the canonical's params, else
+                -- best-effort regex from the raw HF id (e.g.
+                -- 'Llama-3-OffsetBias-RM-8B' → '8B', 'Mixtral-8x7B' →
+                -- '8x7B'). Anchored to delimiters so digits inside
+                -- other tokens don't match. `K` is excluded to avoid
+                -- context-length false positives ('phi-3-mini-4k').
+                'parameter_count':   COALESCE(
+                    CASE WHEN m_params_billions IS NOT NULL
+                         THEN CAST(m_params_billions AS VARCHAR) || 'B'
+                         ELSE NULL END,
+                    NULLIF(upper(regexp_extract(
+                        rep_model_raw,
+                        '(?:^|[/_\\- ])((?:\\d+x)?\\d+(?:\\.\\d+)?[BbMm])(?:[/_\\- ]|$)',
+                        1
+                    )), '')
+                ),
+                -- release_date: prefer the canonical's date, else
+                -- best-effort regex on the raw HF id's snapshot suffix.
+                --   trailing `-YYYY-MM-DD`            → that date
+                --   trailing `-YYYYMMDD` (compact)    → reformat as YYYY-MM-DD
+                --   trailing `-YYYY-MM`               → year-month
+                -- Bare 4-digit MMDD codes ('kimi-k2-0905') are skipped —
+                -- no year context to ground them. Only fires when the
+                -- canonical date is NULL, never overrides registry data.
+                'release_date':      COALESCE(
+                    m_release_date,
+                    CASE
+                        WHEN regexp_matches(rep_model_raw, '-20\\d{{2}}-\\d{{2}}-\\d{{2}}$')
+                            THEN regexp_extract(rep_model_raw, '-(20\\d{{2}}-\\d{{2}}-\\d{{2}})$', 1)
+                        WHEN regexp_matches(rep_model_raw, '-20\\d{{6}}$')
+                            THEN regexp_replace(
+                                rep_model_raw,
+                                '.*-(20\\d{{2}})(\\d{{2}})(\\d{{2}})$',
+                                '\\1-\\2-\\3'
+                            )
+                        WHEN regexp_matches(rep_model_raw, '-20\\d{{2}}-\\d{{2}}$')
+                            THEN regexp_extract(rep_model_raw, '-(20\\d{{2}}-\\d{{2}})$', 1)
+                        ELSE NULL
+                    END
+                ),
                 'model_url':         NULL,
                 'open_weights':      m_open_weights,
                 'modalities':        {{

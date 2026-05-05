@@ -128,8 +128,11 @@ def test_fixture_02_no_match_model_keeps_row(tmp_path, monkeypatch):
 def test_fixture_02_unresolved_surfaces_in_models_parquet(tmp_path, monkeypatch):
     """The unresolved community/fine-tune-7b model must appear in
     `models.parquet` and `models_view.parquet` — keyed on `model_key`,
-    with `display_name` falling back to the raw source name and
-    `review_status='unresolved'` so consumers can flag it."""
+    with `display_name` falling back to the org-stripped suffix of the
+    raw HF id (matches the resolved-row convention: name carries the
+    model, developer carries the org separately) and
+    `review_status='unresolved'` so consumers can flag it. The full
+    raw id is preserved on `model_key`."""
     pytest.importorskip("duckdb")
     out = _run_pipeline_per_config(tmp_path, monkeypatch, "fixtures_clean")
 
@@ -144,7 +147,7 @@ def test_fixture_02_unresolved_surfaces_in_models_parquet(tmp_path, monkeypatch)
     model_key, model_id, display_name, review_status = models
     assert model_key == "community/fine-tune-7b"
     assert model_id is None
-    assert display_name == "community/fine-tune-7b"
+    assert display_name == "fine-tune-7b"
     assert review_status == "unresolved"
 
     view = con.execute(
@@ -157,7 +160,7 @@ def test_fixture_02_unresolved_surfaces_in_models_parquet(tmp_path, monkeypatch)
     assert v_model_key == "community/fine-tune-7b"
     assert v_model_id is None
     assert v_route_id == "community%2Ffine-tune-7b"
-    assert v_model_name == "community/fine-tune-7b"
+    assert v_model_name == "fine-tune-7b"
 
 
 # ---------------------------------------------------------------------------

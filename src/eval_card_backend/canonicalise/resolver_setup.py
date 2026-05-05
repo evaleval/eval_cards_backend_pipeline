@@ -13,7 +13,9 @@ from eval_card_backend.canonicalise import udfs
 
 
 def register_udfs(con, resolver) -> None:
-    resolve_canonical_id_py, resolve_strategy_py = udfs.make_resolver_udfs(resolver)
+    resolve_canonical_id_py, resolve_strategy_py, resolve_leaf_id_py = (
+        udfs.make_resolver_udfs(resolver)
+    )
 
     con.create_function(
         "resolve_canonical_id", resolve_canonical_id_py,
@@ -22,6 +24,11 @@ def register_udfs(con, resolver) -> None:
     )
     con.create_function(
         "resolve_strategy", resolve_strategy_py,
+        ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    con.create_function(
+        "resolve_leaf_id", resolve_leaf_id_py,
         ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
         null_handling="special",
     )
