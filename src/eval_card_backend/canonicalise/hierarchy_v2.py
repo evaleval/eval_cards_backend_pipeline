@@ -1207,94 +1207,45 @@ def build() -> dict:
     }
 
 
-def _align_summary_eval_ids(payload: dict, con: Any,
-                            drop_unmatched: bool = False) -> None:
-    """Replace each benchmark's `summary_eval_ids` with the warehouse's
-    evaluation_id values so the frontend can look up the same row in
-    evals_view.parquet.
+def _assign_evaluation_ids(payload: dict) -> None:
+    """Stamp each leaf benchmark with `evaluation_id = url_encode(
+    composite_slug + '/' + bench_key)` and use that as its
+    `summary_eval_ids[0]`. Same id flows into `hierarchy_evals.parquet`
+    so the frontend has a guaranteed match by construction — no
+    dependency on warehouse evals_view.parquet identity scheme.
 
-    Warehouse format: `url_encode(composite_slug + "/" + benchmark_id)`.
-    v2's bench_key isn't always the warehouse's benchmark_id (warehouse
-    strips the composite prefix; v2 keeps it), so we query evals_view
-    at emit time and match by composite_slug + display name / key.
-    Also reports unmatched benchmarks for debugging.
+    The same id propagates into:
+      - benchmark.summary_eval_ids
+      - family.eval_summary_ids (union)
+      - benchmark_index[*].appearances[*].eval_summary_ids
     """
-    rows = con.execute(
-        "SELECT composite_slug, benchmark_id, evaluation_id FROM evals_view"
-    ).fetchall()
-    by_composite_bench: dict[tuple[str, str], str] = {}
-    by_composite: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for cs, bid, eid in rows:
-        if cs and bid and eid:
-            by_composite_bench[(cs, bid)] = eid
-            by_composite[cs].append((bid, eid))
-
-    matched = 0
-    unmatched: list[str] = []
-
-    def _lookup(composite_slug: str, bench_key: str,
-                bench_display: str | None) -> str | None:
-        # Exact (composite, bench_key) match.
-        eid = by_composite_bench.get((composite_slug, bench_key))
-        if eid:
-            return eid
-        # Try the bench_key with the composite-slug prefix stripped
-        # (v2 keeps "helm-mmlu-abstract-algebra"; warehouse has "abstract-algebra").
-        prefix = composite_slug + "-"
-        if bench_key.startswith(prefix):
-            stripped = bench_key[len(prefix):]
-            eid = by_composite_bench.get((composite_slug, stripped))
-            if eid:
-                return eid
-        # Display-name match (slugified) within the composite.
-        if bench_display:
-            disp_slug = slugify(bench_display)
-            for bid, eid in by_composite.get(composite_slug, []):
-                if bid == disp_slug:
-                    return eid
-        return None
-
     from urllib.parse import quote
 
-    def _process(composite_slug: str, benches: list[dict]) -> list[dict]:
-        nonlocal matched
-        kept: list[dict] = []
+    def _eid(composite_slug: str, bench_key: str) -> str:
+        return quote(f"{composite_slug}/{bench_key}", safe="")
+
+    def _process(composite_slug: str, benches: list[dict]) -> None:
         for b in benches:
-            eid = _lookup(composite_slug, b["key"], b.get("raw_display_name"))
-            if eid:
-                b["summary_eval_ids"] = [eid]
-                matched += 1
-                kept.append(b)
-            elif drop_unmatched:
-                unmatched.append(f"{composite_slug}/{b['key']}")
-                # skip — don't include the benchmark
-            else:
-                unmatched.append(f"{composite_slug}/{b['key']}")
-                # Fallback: synthesize a warehouse-format id so the
-                # downstream shape stays uniform; frontend lookups will
-                # 404 on these, but the structure is consistent.
-                b["summary_eval_ids"] = [
-                    quote(f"{composite_slug}/{b['key']}", safe="")
-                ]
-                kept.append(b)
-        return kept
+            eid = _eid(composite_slug, b["key"])
+            b["evaluation_id"] = eid
+            b["composite_slug"] = composite_slug
+            b["summary_eval_ids"] = [eid]
 
     for fam in payload.get("families", []):
-        if fam.get("standalone_benchmarks"):
-            fam["standalone_benchmarks"] = _process(fam["key"], fam["standalone_benchmarks"])
-        if fam.get("benchmarks"):
-            fam["benchmarks"] = _process(fam["key"], fam["benchmarks"])
+        for b in (fam.get("standalone_benchmarks") or []):
+            _process(fam["key"], [b])
+        for b in (fam.get("benchmarks") or []):
+            _process(fam["key"], [b])
         for c in fam.get("composites") or []:
-            c["benchmarks"] = _process(c["key"], c.get("benchmarks", []) or [])
+            _process(c["key"], c.get("benchmarks") or [])
 
-    # Re-roll family.eval_summary_ids from the now-aligned children
+    # Re-roll family.eval_summary_ids
     for fam in payload.get("families", []):
         all_ids: set[str] = set()
-        for b in (fam.get("standalone_benchmarks") or []):
-            all_ids.update(b.get("summary_eval_ids") or [])
-        for b in (fam.get("benchmarks") or []):
-            all_ids.update(b.get("summary_eval_ids") or [])
-        for c in (fam.get("composites") or []):
+        for stream in ("standalone_benchmarks", "benchmarks"):
+            for b in fam.get(stream) or []:
+                all_ids.update(b.get("summary_eval_ids") or [])
+        for c in fam.get("composites") or []:
             for b in c.get("benchmarks") or []:
                 all_ids.update(b.get("summary_eval_ids") or [])
         fam["eval_summary_ids"] = sorted(all_ids)
@@ -1302,9 +1253,6 @@ def _align_summary_eval_ids(payload: dict, con: Any,
     # Re-roll benchmark_index appearances
     for entry in payload.get("benchmark_index", []):
         for app in entry.get("appearances", []):
-            ids = app.get("eval_summary_ids") or []
-            # Replace with warehouse ids by walking the families tree
-            # (cheap because the index is small).
             fam_key = app["family_key"]
             bench_key = app["benchmark_key"]
             fam = next((f for f in payload["families"]
@@ -1322,11 +1270,79 @@ def _align_summary_eval_ids(payload: dict, con: Any,
                         app["eval_summary_ids"] = list(b.get("summary_eval_ids") or [])
                         break
 
-    print(f"hierarchy_v2: aligned summary_eval_ids — "
-          f"matched={matched}, unmatched={len(unmatched)}", file=sys.stderr)
-    if unmatched and len(unmatched) <= 20:
-        for u in unmatched:
-            print(f"  unmatched: {u}", file=sys.stderr)
+
+def _flatten_for_parquet(payload: dict) -> list[dict]:
+    """Yield one row per leaf benchmark with the navigation/structure
+    fields the frontend needs. Joins on `evaluation_id` map back to
+    hierarchy.json by construction.
+
+    Per-model leaderboard rows live in fact_results.parquet — not
+    duplicated here. This file is a navigation index, not a fact table."""
+    rows: list[dict] = []
+    for fam in payload.get("families", []):
+        family_key = fam["key"]
+        family_display = fam.get("display_name") or family_key
+        family_category = fam.get("category")
+        family_categories = list(fam.get("categories") or [])
+
+        def _walk(composite_slug: str, composite_display: str,
+                  benches: list[dict]) -> None:
+            for b in benches:
+                metric_names: list[str] = []
+                for sl in b.get("slices") or []:
+                    for m in sl.get("metrics") or []:
+                        nm = m.get("metric_name") or m.get("metric_key")
+                        if nm and nm not in metric_names:
+                            metric_names.append(nm)
+                rows.append({
+                    "evaluation_id":          b.get("evaluation_id"),
+                    "composite_slug":         composite_slug,
+                    "composite_display_name": composite_display,
+                    "benchmark_id":           b["key"],
+                    "benchmark_display_name": b.get("raw_display_name") or b["key"],
+                    "family_id":              family_key,
+                    "family_display_name":    family_display,
+                    "category":               b.get("category") or family_category,
+                    "categories":             list(b.get("categories") or family_categories),
+                    "is_overall":             bool(b.get("is_overall")),
+                    "is_primary":             bool(b.get("is_primary")),
+                    "is_slice":               False,
+                    "primary_metric_key":     b.get("primary_metric_key"),
+                    "underlying_canonical_id": b.get("underlying_canonical_id"),
+                    "models_count":           int(b.get("models_count") or 0),
+                    "results_count":          int(b.get("results_count") or 0),
+                    "metric_keys":            list(b.get("metric_keys") or []),
+                    "metric_names":           metric_names,
+                    "tag_domains":            list((b.get("tags") or {}).get("domains") or []),
+                    "tag_languages":          list((b.get("tags") or {}).get("languages") or []),
+                    "tag_tasks":              list((b.get("tags") or {}).get("tasks") or []),
+                    "summary_eval_ids":       list(b.get("summary_eval_ids") or []),
+                    "first_party_results":    int((b.get("provenance_summary") or {})
+                                                  .get("first_party_results") or 0),
+                    "third_party_results":    int((b.get("provenance_summary") or {})
+                                                  .get("third_party_results") or 0),
+                    "total_results":          int((b.get("provenance_summary") or {})
+                                                  .get("total_results") or 0),
+                })
+
+        for b in (fam.get("standalone_benchmarks") or []):
+            _walk(family_key, family_display, [b])
+        for b in (fam.get("benchmarks") or []):
+            _walk(family_key, family_display, [b])
+        for c in fam.get("composites") or []:
+            _walk(c["key"], c.get("display_name") or c["key"],
+                  c.get("benchmarks") or [])
+    return rows
+
+
+def _write_hierarchy_evals_parquet(payload: dict, out_dir: Path) -> Path:
+    """Write `hierarchy_evals.parquet` — navigation-grain rows keyed on
+    `evaluation_id`. Matches the ids in hierarchy.json by construction."""
+    rows = _flatten_for_parquet(payload)
+    df = pd.DataFrame(rows)
+    path = out_dir / "hierarchy_evals.parquet"
+    df.to_parquet(path, compression="zstd", index=False)
+    return path
 
 
 def write_hierarchy_v2(
@@ -1338,29 +1354,35 @@ def write_hierarchy_v2(
     registry_dir: Path | None = None,
     override_dir: Path | None = None,
 ) -> Path:
-    """Stage J entry point. Builds hierarchy.json from the EEE datastore
-    using the v2 spec and writes it to `<out_dir>/hierarchy.json`.
+    """Stage J entry point. Builds the hierarchy from the EEE datastore
+    using the v2 spec and writes:
+      - `<out_dir>/hierarchy.json` — multi-level navigation tree
+      - `<out_dir>/hierarchy_evals.parquet` — one row per leaf benchmark,
+        keyed by `evaluation_id` (= url_encode(composite_slug/bench_key)).
+        Same id appears in hierarchy.json's `summary_eval_ids` so the
+        frontend has a guaranteed match by construction.
 
-    When `con` is supplied (the pipeline path), queries `evals_view` to
-    align `summary_eval_ids` with the warehouse's `evaluation_id` so
-    the frontend can join hierarchy → evals_view.parquet by id.
+    `con` is accepted for API symmetry with the warehouse-driven sidecar
+    emitters but is unused — v2 is self-contained, doesn't depend on
+    warehouse evals_view.
 
     `eee_dir` / `registry_dir` / `override_dir` default to the same
     `.cache/...` paths the standalone build uses."""
+    del con  # v2 is self-contained; warehouse evals_view is no longer the
+             # source of truth for hierarchy ids.
     _configure_paths(eee_dir=eee_dir, registry_dir=registry_dir,
                      override_dir=override_dir)
     payload = build()
     payload["generated_at"] = snapshot_meta.get("snapshot_id")
-    if con is not None:
-        try:
-            _align_summary_eval_ids(payload, con)
-        except Exception as exc:
-            print(f"hierarchy_v2: failed to align eval ids ({exc!r}); "
-                  f"emitting raw v2 ids", file=sys.stderr)
+    _assign_evaluation_ids(payload)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "hierarchy.json"
     path.write_text(json.dumps(payload, indent=2, default=str))
+    parquet_path = _write_hierarchy_evals_parquet(payload, out_dir)
+    print(f"hierarchy_v2: wrote {parquet_path} "
+          f"({parquet_path.stat().st_size // 1024} KB, "
+          f"{len(_flatten_for_parquet(payload))} rows)", file=sys.stderr)
     size_kb = path.stat().st_size // 1024
     print(f"hierarchy_v2: wrote {path} ({size_kb} KB) — "
           f"families={payload['stats']['family_count']}  "
