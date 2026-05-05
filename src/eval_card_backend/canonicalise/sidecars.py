@@ -492,6 +492,26 @@ def _categories_list(con) -> list[dict]:
     ]
 
 
+def _reporting_org_count(con) -> int:
+    """Distinct eval-provider identities in the corpus.
+
+    Reads the de-aliased `reporting_orgs` arrays from `eval_results_view`
+    (canonical_orgs.display_name when registered, raw upstream string
+    otherwise — see the `tris` CTE in stage_j_eval_results_view), unnests,
+    and counts distinct. Precomputed here so the frontend doesn't have to
+    scan parquet at request time for the home-page headline tile.
+    """
+    row = con.execute(
+        """
+        SELECT COUNT(DISTINCT u)
+        FROM eval_results_view erv,
+             UNNEST(COALESCE(erv.reporting_orgs, [])) AS u_t(u)
+        WHERE u IS NOT NULL
+        """
+    ).fetchone()
+    return int(row[0] or 0)
+
+
 def write_headline(con, out_dir: Path, snapshot_meta: dict) -> Path:
     from eval_card_backend.categorisation import categories as enum_categories
 
@@ -511,6 +531,7 @@ def write_headline(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "completeness":    _stratified(_completeness_block),
         "provenance":      _stratified(_provenance_block),
         "comparability":   _stratified(_comparability_block),
+        "reporting_org_count": _reporting_org_count(con),
         "developers":      _developers_list(con),
         # Renamed from `families` so the model-family rollup doesn't
         # collide with the benchmark-family hierarchy in hierarchy.json
