@@ -112,7 +112,9 @@ jobs:
       - name: Run tests
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: uv run pytest tests/
+        # -v names each test as it starts; --timeout fails a hung test fast
+        # with a traceback instead of silently stalling until the job cap.
+        run: uv run pytest tests/ -v --timeout=120
 
       - name: Run canonicalisation
         env:

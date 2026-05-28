@@ -32,9 +32,11 @@ eval-entity-resolver = { path = "../eval-card-registry/packages/eval-entity-reso
 [dependency-groups]
 dev = [
     "pytest>=8",
+    # Fails a hung test fast (with a traceback) instead of stalling CI until
+    # the job timeout. Applied via --timeout in the sync workflow.
+    "pytest-timeout>=2.3",
     "ruff>=0.6",
     "jupyterlab>=4",
-    # pandas is dev-only (e2e fixtures + ad-hoc inspection); not in the hot
-    # path. See notes/02-:25 ("no Pandas in the hot path").
+    # pandas is dev-only (e2e fixtures + ad-hoc inspection); not in the hot path.
     "pandas>=2",
 ]
