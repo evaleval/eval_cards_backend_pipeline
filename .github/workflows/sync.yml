@@ -112,6 +112,11 @@ jobs:
       - name: Run tests
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Tests use local fixtures and must never hit the network. Offline
+          # mode turns a stray HF call into an instant local-only fallback (or
+          # fast failure) instead of a socket hang. The canonicalise step below
+          # still runs online.
+          HF_HUB_OFFLINE: "1"
         # -v names each test as it starts; --timeout fails a hung test fast
         # with a traceback instead of silently stalling until the job cap.
         run: uv run pytest tests/ -v --timeout=120
