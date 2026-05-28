@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import logging
 from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any
 
 from eval_card_backend.signals.comparability import (
@@ -261,3 +262,81 @@ def derive_metric_meta_udf_body(
         metric_name,
         registry_score_type=registry_score_type,
     )
+
+
+import json as _json
+import re as _re
+
+_PARAM_RE = _re.compile(r"\b(\d+(?:\.\d+)?)\s*([tmb])\b", _re.IGNORECASE)
+_PARAM_MULTIPLIERS = {"t": 1000, "b": 1, "m": 0.001}
+
+
+def extract_params_billions_py(model_name: str | None) -> float | None:
+    """Best-effort parameter count extraction from a model name string."""
+    if not model_name:
+        return None
+    matches = list(_PARAM_RE.finditer(model_name))
+    if not matches:
+        return None
+    last = matches[-1]
+    value = float(last.group(1))
+    unit = last.group(2).lower()
+    return value * _PARAM_MULTIPLIERS[unit]
+
+
+_BENCHMARK_PRIORITY_TIERS: tuple[tuple[int, re.Pattern[str]], ...] = (
+    (10, _re.compile(r"\b(?:swe[\-_]?bench|terminal[\-_]?bench|tau[\-_]?bench|agent|browsecomp)\b", _re.I)),
+    (9,  _re.compile(r"\b(?:gpqa|mmlu[\-_]?pro|mmlu|bbh|ifeval|math|aime|gsm8k|minerva)\b", _re.I)),
+    (8,  _re.compile(r"\b(?:humaneval|livecodebench|mbpp|codecontests|apps)\b", _re.I)),
+    (7,  _re.compile(r"\b(?:mmmu|seed[\-_]?bench|vision|vqa|multimodal)\b", _re.I)),
+    (6,  _re.compile(r"\b(?:mt[\-_]?bench|arena[\-_]?hard|alpacaeval|reward[\-_]?bench|truthfulqa)\b", _re.I)),
+    (5,  _re.compile(r"\b(?:fairness|bias|safety|toxic|harmful|robust|privacy)\b", _re.I)),
+)
+
+
+def benchmark_priority_py(benchmark_key: str | None) -> int:
+    """Return priority tier (higher = more important). Default 0."""
+    if not benchmark_key:
+        return 0
+    for tier, pattern in _BENCHMARK_PRIORITY_TIERS:
+        if pattern.search(benchmark_key):
+            return tier
+    return 0
+
+
+_KNOWN_ISSUES_PATH = (
+    Path(__file__).resolve().parent.parent / "registry" / "benchmark_known_issues.json"
+)
+_known_issues_index: dict[str, str] | None = None
+
+
+def _normalise_ki(name: str) -> str:
+    return _re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _ensure_known_issues() -> dict[str, str]:
+    global _known_issues_index
+    if _known_issues_index is not None:
+        return _known_issues_index
+    _known_issues_index = {}
+    if not _KNOWN_ISSUES_PATH.exists():
+        return _known_issues_index
+    raw = _json.loads(_KNOWN_ISSUES_PATH.read_text(encoding="utf-8"))
+    issues = raw.get("issues", {})
+    for key, entries in issues.items():
+        _known_issues_index[_normalise_ki(key)] = _json.dumps(entries)
+    return _known_issues_index
+
+
+def lookup_known_issues_py(benchmark_id: str | None, display_name: str | None) -> str | None:
+    """Return JSON array of known issues for a benchmark, or NULL."""
+    idx = _ensure_known_issues()
+    if not idx:
+        return None
+    for candidate in (benchmark_id, display_name):
+        if not candidate:
+            continue
+        key = _normalise_ki(candidate)
+        if key in idx:
+            return idx[key]
+    return None

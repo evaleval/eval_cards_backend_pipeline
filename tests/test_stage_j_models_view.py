@@ -79,7 +79,7 @@ def test_models_view_columns_match_spec(tmp_path, monkeypatch):
         "third_party_eval_count", "independent_verification_ratio",
         "evidence_count", "missing_generation_config_count",
         "latest_timestamp", "latest_source_name", "benchmark_names",
-        "categories", "category_stats",
+        "derived_tags", "tag_stats", "benchmark_coverage_count",
         "reproducibility_status", "reproducibility_summary",
         "provenance_summary", "comparability_summary",
         "eval_libraries", "score_summary", "top_scores",
@@ -159,18 +159,20 @@ def test_reproducibility_status_band_complete(tmp_path, monkeypatch):
     assert status == "complete"
 
 
-def test_category_stats_shape_and_sum(tmp_path, monkeypatch):
-    """category_stats is a fixed-shape STRUCT keyed on the typed enum.
-    The sum equals evaluations_count."""
+def test_tag_stats_overlap_semantics(tmp_path, monkeypatch):
+    """tag_stats is a JSON map of tag → count. Sum may exceed
+    evaluations_count due to overlap (multi-tag benchmarks)."""
     pytest.importorskip("duckdb")
+    import json
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     con = _materialise_views(out)
     row = con.execute(
-        "SELECT category_stats, evaluations_count FROM models_view"
+        "SELECT tag_stats, evaluations_count FROM models_view"
     ).fetchone()
-    cs, ec = row
-    assert set(cs.keys()) == {"General", "Reasoning", "Agentic", "Safety", "Knowledge"}
-    assert sum(cs.values()) == ec
+    ts_raw, ec = row
+    ts = json.loads(ts_raw) if isinstance(ts_raw, str) else ts_raw
+    assert isinstance(ts, dict)
+    assert sum(ts.values()) >= ec
 
 
 def test_score_summary_struct_shape(tmp_path, monkeypatch):
@@ -236,14 +238,13 @@ def test_latest_timestamp_is_typed_timestamp(tmp_path, monkeypatch):
     assert ts is not None
 
 
-def test_top_scores_one_per_category(tmp_path, monkeypatch):
-    """top_scores has at most one entry per CategoryType."""
+def test_top_scores_one_per_tag(tmp_path, monkeypatch):
+    """top_scores has at most one entry per tag."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     con = _materialise_views(out)
     top_scores = con.execute("SELECT top_scores FROM models_view").fetchone()[0]
     assert top_scores is not None
-    benchmark_keys = [t["benchmarkKey"] for t in top_scores]
-    assert len(benchmark_keys) >= 1
+    assert len(top_scores) >= 1
     for entry in top_scores:
-        assert set(entry.keys()) == {"benchmark", "benchmarkKey", "score", "metric"}
+        assert set(entry.keys()) == {"benchmark", "benchmarkKey", "score", "metric", "tag"}

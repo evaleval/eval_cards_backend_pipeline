@@ -7,8 +7,7 @@ materialises three small in-memory tables on the DuckDB connection:
 - `family_membership(family_id, family_display_name, benchmark_id)`
 - `slice_promotions(benchmark_id)`
 
-**Source preference** (per `notes/hierarchy-alignment.md` §4 — the
-registry curation home):
+**Source preference** (the registry is the curation home):
 
   1. Parquet from `<registry_local_dir>/canonical_composites.parquet`
      and `canonical_families.parquet`. Single source of truth. Shipped

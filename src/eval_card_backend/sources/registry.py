@@ -37,6 +37,10 @@ from huggingface_hub import snapshot_download
 log = logging.getLogger(__name__)
 
 from eval_card_backend.config import ENTITY_REGISTRY_DATASET_REPO
+from eval_card_backend.sources._revision_cache import (
+    cache_revision_ok as _cache_revision_ok,
+    write_cache_revision as _write_cache_revision,
+)
 
 # Registry schema major. Bumped when the registry removes/renames a
 # column the producer reads. Minor bumps (additive columns) don't
@@ -71,23 +75,32 @@ def _has_registry_data(target: Path) -> bool:
 
 
 def ensure_snapshot(
-    local_dir: str, hf_token: str | None, force_refresh: bool
+    local_dir: str,
+    hf_token: str | None,
+    force_refresh: bool,
+    revision: str | None = None,
 ) -> Path:
     target = Path(local_dir).resolve()
     if force_refresh and target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
 
-    if _has_registry_data(target):
+    if _has_registry_data(target) and _cache_revision_ok(target, revision):
         return target
+    if _has_registry_data(target):
+        # Revision-mismatched cache — clear and re-download at the pin.
+        shutil.rmtree(target)
+        target.mkdir(parents=True, exist_ok=True)
 
     try:
         snapshot_download(
             repo_id=ENTITY_REGISTRY_DATASET_REPO,
             repo_type="dataset",
+            revision=revision,
             local_dir=str(target),
             token=hf_token,
         )
+        _write_cache_revision(target, revision)
     except Exception as exc:
         log.warning(
             "registry.ensure_snapshot: HF download failed (%s: %s); "

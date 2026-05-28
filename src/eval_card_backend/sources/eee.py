@@ -25,6 +25,10 @@ import pyarrow as pa
 from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
 
 from eval_card_backend.config import EEE_DATASET_REPO, IGNORED_CONFIGS
+from eval_card_backend.sources._revision_cache import (
+    cache_revision_ok as _cache_revision_ok,
+    write_cache_revision as _write_cache_revision,
+)
 
 log = logging.getLogger(__name__)
 
@@ -70,27 +74,42 @@ def _record_drop(config: str, reason: str, path: str, detail: str | None = None)
         )
 
 
-def ensure_snapshot(local_dir: str, hf_token: str | None, force_refresh: bool) -> Path:
+def ensure_snapshot(
+    local_dir: str,
+    hf_token: str | None,
+    force_refresh: bool,
+    revision: str | None = None,
+) -> Path:
     target = Path(local_dir).resolve()
     if force_refresh and target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
 
     data_dir = target / "data"
-    if data_dir.exists() and any(data_dir.iterdir()):
+    has_data = data_dir.exists() and any(data_dir.iterdir())
+    # When a revision is pinned, the cache is only valid if it was
+    # downloaded at that same revision (tracked via a marker file).
+    # Otherwise a stale cache would silently defeat the pin.
+    if has_data and _cache_revision_ok(target, revision):
         log.info("EEE snapshot already present at %s — skipping download", target)
         return target
+    if has_data:
+        # Stale or revision-mismatched cache — clear and re-download.
+        shutil.rmtree(target)
+        target.mkdir(parents=True, exist_ok=True)
 
-    log.info("downloading EEE snapshot to %s …", target)
+    log.info("downloading EEE snapshot to %s (revision=%s) …", target, revision or "latest")
     snapshot_download(
         repo_id=EEE_DATASET_REPO,
         repo_type="dataset",
+        revision=revision,
         local_dir=str(target),
         allow_patterns=["data/**"],
         ignore_patterns=[f"data/{cfg}/**" for cfg in IGNORED_CONFIGS],
         max_workers=16,
         token=hf_token,
     )
+    _write_cache_revision(target, revision)
     log.info("EEE snapshot ready at %s", target)
     return target
 

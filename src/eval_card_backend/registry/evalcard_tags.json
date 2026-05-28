@@ -1,0 +1,1862 @@
+{
+  "AA-Index": [
+    "knowledge",
+    "general"
+  ],
+  "AA-LCR": [
+    "general",
+    "applied_reasoning"
+  ],
+  "ACE": [
+    "multimodal",
+    "agentic"
+  ],
+  "ACEBench": [
+    "multimodal",
+    "agentic"
+  ],
+  "AGIEval": [
+    "general",
+    "applied_reasoning"
+  ],
+  "AI2 Reasoning Challenge (ARC)": [
+    "logical_reasoning",
+    "knowledge",
+    "commonsense_reasoning"
+  ],
+  "AI2D": [
+    "multimodal",
+    "knowledge"
+  ],
+  "AIME": [
+    "mathematics"
+  ],
+  "AIME 2024": [
+    "mathematics"
+  ],
+  "AIME 2025": [
+    "mathematics"
+  ],
+  "AITZ_EM": [
+    "agentic"
+  ],
+  "AMC_2022_23": [
+    "mathematics"
+  ],
+  "APEX Agents": [
+    "agentic",
+    "applied_reasoning"
+  ],
+  "APEX v1": [
+    "agentic",
+    "applied_reasoning"
+  ],
+  "API-Bank": [
+    "agentic"
+  ],
+  "Air Bench 2024": [
+    "safety"
+  ],
+  "ARC-AGI": [
+    "logical_reasoning",
+    "commonsense_reasoning",
+    "general"
+  ],
+  "ARC-C": [
+    "logical_reasoning",
+    "knowledge",
+    "commonsense_reasoning"
+  ],
+  "ARC-E": [
+    "logical_reasoning",
+    "knowledge",
+    "commonsense_reasoning"
+  ],
+  "ARKitScenes": [
+    "multimodal"
+  ],
+  "ActivityNet": [
+    "multimodal"
+  ],
+  "Agentharm": [
+    "safety",
+    "agentic"
+  ],
+  "Aider": [
+    "software_engineering",
+    "agentic"
+  ],
+  "Aider-Polyglot": [
+    "software_engineering",
+    "linguistic_core"
+  ],
+  "Aider-Polyglot Edit": [
+    "software_engineering",
+    "linguistic_core"
+  ],
+  "AlignBench": [
+    "applied_reasoning",
+    "general"
+  ],
+  "AlpacaEval 2.0": [
+    "applied_reasoning",
+    "general"
+  ],
+  "Android Control High_EM": [
+    "agentic",
+    "multimodal"
+  ],
+  "Android Control Low_EM": [
+    "agentic",
+    "multimodal"
+  ],
+  "AndroidWorld": [
+    "agentic",
+    "multimodal"
+  ],
+  "AndroidWorld_SR": [
+    "agentic",
+    "multimodal"
+  ],
+  "Anthropic Red Team": [
+    "safety"
+  ],
+  "AppWorld": [
+    "agentic"
+  ],
+  "AppWorld Benchmark": [
+    "agentic",
+    "applied_reasoning"
+  ],
+  "Arc": [
+    "logical_reasoning",
+    "commonsense_reasoning"
+  ],
+  "Arena Hard": [
+    "general",
+    "applied_reasoning"
+  ],
+  "Arena-Hard v2": [
+    "general",
+    "applied_reasoning"
+  ],
+  "Artificial Analysis": [
+    "general"
+  ],
+  "Artificial Analysis LLM API": [
+    "general"
+  ],
+  "Artificial-Analysis": [
+    "general"
+  ],
+  "AssistantBench": [
+    "agentic",
+    "applied_reasoning"
+  ],
+  "AttaQ": [
+    "robustness"
+  ],
+  "AutoLogi": [
+    "logical_reasoning",
+    "mathematics"
+  ],
+  "BBH": [
+    "logical_reasoning",
+    "applied_reasoning"
+  ],
+  "BBQ": [
+    "safety",
+    "commonsense_reasoning"
+  ],
+  "BFCL": [
+    "agentic",
+    "software_engineering"
+  ],
+  "BFCL v2": [
+    "agentic",
+    "software_engineering"
+  ],
+  "BFCL-V4": [
+    "agentic",
+    "software_engineering"
+  ],
+  "BFCL-v3": [
+    "agentic",
+    "software_engineering"
+  ],
+  "BFCL_v3_MultiTurn": [
+    "agentic",
+    "software_engineering"
+  ],
+  "BIG-Bench": [
+    "general",
+    "applied_reasoning"
+  ],
+  "BIG-Bench Extra Hard": [
+    "general",
+    "applied_reasoning"
+  ],
+  "BIG-Bench Hard": [
+    "general",
+    "applied_reasoning"
+  ],
+  "BLINK": [
+    "knowledge",
+    "linguistic_core"
+  ],
+  "BabyVision": [
+    "multimodal"
+  ],
+  "Beyond AIME": [
+    "mathematics"
+  ],
+  "BigCodeBench": [
+    "software_engineering"
+  ],
+  "BigCodeBench-Full": [
+    "software_engineering"
+  ],
+  "BigCodeBench-Hard": [
+    "software_engineering"
+  ],
+  "BioLP-Bench": [
+    "natural_sciences"
+  ],
+  "Bird-SQL (dev)": [
+    "software_engineering"
+  ],
+  "BixBench": [
+    "applied_reasoning"
+  ],
+  "BoolQ": [
+    "commonsense_reasoning"
+  ],
+  "BrowseComp": [
+    "agentic"
+  ],
+  "BrowseComp Long Context 128k": [
+    "agentic"
+  ],
+  "BrowseComp Long Context 256k": [
+    "agentic"
+  ],
+  "BrowseComp-Plus": [
+    "agentic"
+  ],
+  "BrowseComp-VL": [
+    "agentic",
+    "multimodal"
+  ],
+  "BrowseComp-zh": [
+    "agentic"
+  ],
+  "BrowseCompPlus": [
+    "agentic"
+  ],
+  "C-Eval": [
+    "knowledge",
+    "mathematics",
+    "natural_sciences",
+    "humanities_and_social_sciences"
+  ],
+  "CBNSL": [
+    "linguistic_core"
+  ],
+  "CC-Bench-V2 Backend": [
+    "software_engineering"
+  ],
+  "CC-Bench-V2 Frontend": [
+    "software_engineering"
+  ],
+  "CC-Bench-V2 Repo Exploration": [
+    "software_engineering"
+  ],
+  "CC-OCR": [
+    "multimodal"
+  ],
+  "CFEval": [
+    "software_engineering"
+  ],
+  "CLUEWSC": [
+    "linguistic_core"
+  ],
+  "CMMLU": [
+    "knowledge",
+    "mathematics",
+    "natural_sciences",
+    "humanities_and_social_sciences"
+  ],
+  "CNMO 2024": [
+    "mathematics"
+  ],
+  "CNN/DailyMail": [
+    "linguistic_core"
+  ],
+  "COLLIE": [
+    "applied_reasoning"
+  ],
+  "CORE-Bench Hard": [
+    "applied_reasoning"
+  ],
+  "CRAG": [
+    "applied_reasoning"
+  ],
+  "CRPErelation": [
+    "linguistic_core"
+  ],
+  "CRUX-O": [
+    "software_engineering"
+  ],
+  "CRUXEval-Input-CoT": [
+    "software_engineering"
+  ],
+  "CRUXEval-Output-CoT": [
+    "software_engineering"
+  ],
+  "CSimpleQA": [
+    "knowledge"
+  ],
+  "Caparena": [
+    "agentic"
+  ],
+  "Caparena Auto": [
+    "agentic"
+  ],
+  "CaseLaw (v2) - Overall": [
+    "law"
+  ],
+  "CharXiv-D": [
+    "multimodal"
+  ],
+  "CharXiv-R": [
+    "multimodal"
+  ],
+  "CharadesSTA": [
+    "multimodal"
+  ],
+  "ChartQA": [
+    "multimodal"
+  ],
+  "CheXpert CXR": [
+    "multimodal",
+    "natural_sciences"
+  ],
+  "CivilComments": [
+    "safety"
+  ],
+  "Claw-Eval": [
+    "law"
+  ],
+  "CloningScenarios": [
+    "robustness"
+  ],
+  "CoVoST2": [
+    "linguistic_core"
+  ],
+  "CoVoST2 en-zh": [
+    "linguistic_core"
+  ],
+  "CocoaBench": [
+    "agentic"
+  ],
+  "CocoaBench v1.0": [
+    "agentic"
+  ],
+  "CodeForces": [
+    "mathematics",
+    "software_engineering"
+  ],
+  "Codegolf v2.2": [
+    "software_engineering"
+  ],
+  "Common Voice 15": [
+    "linguistic_core"
+  ],
+  "CommonSenseQA": [
+    "commonsense_reasoning"
+  ],
+  "Commonsense Qa": [
+    "commonsense_reasoning"
+  ],
+  "ComplexFuncBench": [
+    "software_engineering"
+  ],
+  "Corp Fin v2": [
+    "finance"
+  ],
+  "CorpusQA 1M": [
+    "knowledge"
+  ],
+  "CountBench": [
+    "mathematics"
+  ],
+  "Creative Writing v3": [
+    "linguistic_core"
+  ],
+  "CruxEval-O": [
+    "software_engineering"
+  ],
+  "Cvebench": [
+    "software_engineering",
+    "safety"
+  ],
+  "CyBench": [
+    "software_engineering",
+    "safety"
+  ],
+  "Cybench": [
+    "software_engineering",
+    "safety"
+  ],
+  "CyberGym": [
+    "agentic",
+    "safety"
+  ],
+  "Cybersecurity CTFs": [
+    "agentic",
+    "safety"
+  ],
+  "Cyse2": [
+    "software_engineering",
+    "safety"
+  ],
+  "DROP": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "DS-Arena-Code": [
+    "software_engineering"
+  ],
+  "DS-FIM-Eval": [
+    "software_engineering"
+  ],
+  "DeepPlanning": [
+    "agentic"
+  ],
+  "DeepSearchQA": [
+    "applied_reasoning"
+  ],
+  "DermMCQA": [
+    "natural_sciences"
+  ],
+  "Design2Code": [
+    "software_engineering"
+  ],
+  "DocVQA": [
+    "multimodal"
+  ],
+  "DocVQAtest": [
+    "multimodal"
+  ],
+  "DynaMath": [
+    "mathematics"
+  ],
+  "ECLeKTic": [
+    "knowledge"
+  ],
+  "EQ-Bench": [
+    "commonsense_reasoning"
+  ],
+  "ERQA": [
+    "knowledge"
+  ],
+  "EgoSchema": [
+    "multimodal"
+  ],
+  "EmbSpatialBench": [
+    "commonsense_reasoning"
+  ],
+  "EvalPlus": [
+    "software_engineering"
+  ],
+  "FActScore": [
+    "hallucination"
+  ],
+  "FLEURS": [
+    "linguistic_core"
+  ],
+  "FRAMES": [
+    "linguistic_core"
+  ],
+  "Facts Grounding": [
+    "hallucination"
+  ],
+  "Fibble Arena": [
+    "logical_reasoning"
+  ],
+  "Fibble arena": [
+    "logical_reasoning"
+  ],
+  "FigQA": [
+    "multimodal"
+  ],
+  "FinQA": [
+    "finance"
+  ],
+  "FinSearchComp T2&T3": [
+    "finance"
+  ],
+  "FinSearchComp-T3": [
+    "finance"
+  ],
+  "Finance Agent": [
+    "agentic"
+  ],
+  "Flame-VLM-Code": [
+    "software_engineering"
+  ],
+  "FlenQA": [
+    "knowledge"
+  ],
+  "French MMLU": [
+    "general"
+  ],
+  "FrontierMath": [
+    "mathematics"
+  ],
+  "FrontierScience Research": [
+    "natural_sciences"
+  ],
+  "FullStackBench en": [
+    "software_engineering"
+  ],
+  "FullStackBench zh": [
+    "software_engineering"
+  ],
+  "FunctionalMATH": [
+    "mathematics"
+  ],
+  "GAIA": [
+    "applied_reasoning",
+    "agentic"
+  ],
+  "GDPval-AA": [
+    "general"
+  ],
+  "GDPval-MM": [
+    "multimodal"
+  ],
+  "GPQA": [
+    "natural_sciences"
+  ],
+  "GPQA - Overall": [
+    "natural_sciences"
+  ],
+  "GPQA Biology": [
+    "natural_sciences"
+  ],
+  "GPQA Chemistry": [
+    "natural_sciences"
+  ],
+  "GPQA Diamond": [
+    "natural_sciences"
+  ],
+  "GPQA Physics": [
+    "natural_sciences"
+  ],
+  "GSM-8K (CoT)": [
+    "mathematics"
+  ],
+  "GSM-MC": [
+    "mathematics"
+  ],
+  "GSM8K": [
+    "mathematics"
+  ],
+  "GSM8K Chat": [
+    "mathematics"
+  ],
+  "Gdm Intercode CTF": [
+    "software_engineering",
+    "agentic",
+    "safety"
+  ],
+  "GeneBench": [
+    "natural_sciences"
+  ],
+  "GiantSteps Tempo": [
+    "multimodal"
+  ],
+  "Global MMLU Lite": [
+    "general"
+  ],
+  "Global PIQA": [
+    "commonsense_reasoning"
+  ],
+  "Global-MMLU": [
+    "general"
+  ],
+  "Gorilla Benchmark API Bench": [
+    "software_engineering",
+    "agentic"
+  ],
+  "GovReport": [
+    "linguistic_core"
+  ],
+  "Graphwalks BFS >128k": [
+    "logical_reasoning"
+  ],
+  "Graphwalks parents >128k": [
+    "logical_reasoning"
+  ],
+  "GroundUI-1K": [
+    "multimodal",
+    "agentic"
+  ],
+  "HAL": [
+    "hallucination"
+  ],
+  "HELM": [
+    "general"
+  ],
+  "HELM Instruct": [
+    "general"
+  ],
+  "HF Open LLM Leaderboard v2": [
+    "general"
+  ],
+  "HMMT 2025": [
+    "mathematics"
+  ],
+  "HMMT Feb 26": [
+    "mathematics"
+  ],
+  "HMMT25": [
+    "mathematics"
+  ],
+  "Hallusion Bench": [
+    "hallucination"
+  ],
+  "HarmBench": [
+    "safety"
+  ],
+  "HealthBench": [
+    "natural_sciences",
+    "knowledge"
+  ],
+  "HealthBench Hard": [
+    "natural_sciences",
+    "knowledge"
+  ],
+  "HellaSwag": [
+    "commonsense_reasoning"
+  ],
+  "Helm air bench": [
+    "general"
+  ],
+  "Helm classic": [
+    "general"
+  ],
+  "Helm lite": [
+    "general"
+  ],
+  "HiddenMath": [
+    "mathematics"
+  ],
+  "Holistic Evaluation of Language Models (HELM)": [
+    "general"
+  ],
+  "HumanEval": [
+    "software_engineering"
+  ],
+  "HumanEval-Average": [
+    "software_engineering"
+  ],
+  "HumanEval-ER": [
+    "software_engineering"
+  ],
+  "HumanEval-Mul": [
+    "software_engineering"
+  ],
+  "HumanEvalFIM-Average": [
+    "software_engineering"
+  ],
+  "Humanity's Last Exam": [
+    "general"
+  ],
+  "Hypersim": [
+    "multimodal"
+  ],
+  "IF": [
+    "linguistic_core"
+  ],
+  "IFBench": [
+    "linguistic_core"
+  ],
+  "IFEval": [
+    "linguistic_core"
+  ],
+  "IMDb": [
+    "linguistic_core"
+  ],
+  "IMO-AnswerBench": [
+    "mathematics"
+  ],
+  "IOI": [
+    "software_engineering"
+  ],
+  "IPhO 2025": [
+    "natural_sciences",
+    "mathematics"
+  ],
+  "ImageMining": [
+    "multimodal"
+  ],
+  "Include": [
+    "knowledge",
+    "linguistic_core"
+  ],
+  "InfiniteBench/En.MC": [
+    "linguistic_core"
+  ],
+  "InfiniteBench/En.QA": [
+    "linguistic_core",
+    "knowledge"
+  ],
+  "InfoVQA": [
+    "multimodal",
+    "knowledge"
+  ],
+  "InfoVQAtest": [
+    "multimodal",
+    "knowledge"
+  ],
+  "InfographicsQA": [
+    "multimodal",
+    "knowledge"
+  ],
+  "Instruct HumanEval": [
+    "software_engineering"
+  ],
+  "InterGPS": [
+    "multimodal"
+  ],
+  "Internal API instruction following (hard)": [
+    "linguistic_core"
+  ],
+  "JudgeBench": [
+    "applied_reasoning",
+    "general"
+  ],
+  "Judgebench": [
+    "applied_reasoning",
+    "general"
+  ],
+  "LA Leaderboard": [
+    "general"
+  ],
+  "LBPP (v2)": [
+    "software_engineering"
+  ],
+  "LLM-Stats": [
+    "general"
+  ],
+  "LMArena Text Leaderboard": [
+    "general"
+  ],
+  "LSAT": [
+    "law",
+    "logical_reasoning"
+  ],
+  "LVBench": [
+    "multimodal"
+  ],
+  "La Leaderboard composite dataset": [
+    "general"
+  ],
+  "LegalBench": [
+    "law"
+  ],
+  "LingoQA": [
+    "linguistic_core",
+    "knowledge"
+  ],
+  "Live-Bench": [
+    "general"
+  ],
+  "LiveBench": [
+    "general"
+  ],
+  "LiveBench 20241125": [
+    "general"
+  ],
+  "LiveCodeBench": [
+    "software_engineering"
+  ],
+  "LiveCodeBench - Easy": [
+    "software_engineering"
+  ],
+  "LiveCodeBench - Hard": [
+    "software_engineering"
+  ],
+  "LiveCodeBench - Medium": [
+    "software_engineering"
+  ],
+  "LiveCodeBench - Overall": [
+    "software_engineering"
+  ],
+  "LiveCodeBench Pro": [
+    "software_engineering"
+  ],
+  "LiveCodeBench v5": [
+    "software_engineering"
+  ],
+  "LiveCodeBench v5 24.12-25.2": [
+    "software_engineering"
+  ],
+  "LiveCodeBench v6": [
+    "software_engineering"
+  ],
+  "LiveCodeBench(01-09)": [
+    "software_engineering"
+  ],
+  "Llm Stats": [
+    "general"
+  ],
+  "LongBench v2": [
+    "linguistic_core"
+  ],
+  "LongFact Concepts": [
+    "hallucination"
+  ],
+  "LongFact Objects": [
+    "hallucination"
+  ],
+  "LongVideoBench": [
+    "multimodal"
+  ],
+  "MASK": [
+    "linguistic_core"
+  ],
+  "MATH": [
+    "mathematics"
+  ],
+  "MATH (CoT)": [
+    "mathematics"
+  ],
+  "MATH-500": [
+    "mathematics"
+  ],
+  "MATH-Mc": [
+    "mathematics"
+  ],
+  "MAXIFE": [
+    "multimodal"
+  ],
+  "MBPP ++ base version": [
+    "software_engineering"
+  ],
+  "MBPP EvalPlus (base)": [
+    "software_engineering"
+  ],
+  "MBPP pass@1": [
+    "software_engineering"
+  ],
+  "MBPP+": [
+    "software_engineering"
+  ],
+  "MCP Atlas": [
+    "agentic"
+  ],
+  "MCP-Mark": [
+    "agentic"
+  ],
+  "MCP-Universe": [
+    "agentic"
+  ],
+  "MEGA MLQA": [
+    "knowledge"
+  ],
+  "MEGA TyDi QA": [
+    "knowledge"
+  ],
+  "MEGA UDPOS": [
+    "linguistic_core"
+  ],
+  "MEGA XCOPA": [
+    "commonsense_reasoning"
+  ],
+  "MEGA XStoryCloze": [
+    "commonsense_reasoning"
+  ],
+  "MEWC": [
+    "knowledge"
+  ],
+  "MGSM": [
+    "mathematics"
+  ],
+  "MIABench": [
+    "applied_reasoning"
+  ],
+  "MIMIC CXR": [
+    "multimodal",
+    "natural_sciences"
+  ],
+  "MLE-Bench Lite": [
+    "software_engineering"
+  ],
+  "MLVU": [
+    "multimodal"
+  ],
+  "MLVU-M": [
+    "multimodal"
+  ],
+  "MM IF-Eval": [
+    "multimodal"
+  ],
+  "MM-BrowserComp": [
+    "agentic",
+    "multimodal"
+  ],
+  "MM-ClawBench": [
+    "agentic",
+    "multimodal"
+  ],
+  "MM-MT-Bench": [
+    "agentic",
+    "multimodal"
+  ],
+  "MM-Mind2Web": [
+    "agentic",
+    "multimodal"
+  ],
+  "MMAU": [
+    "multimodal"
+  ],
+  "MMAU Music": [
+    "multimodal"
+  ],
+  "MMAU Sound": [
+    "multimodal"
+  ],
+  "MMAU Speech": [
+    "multimodal"
+  ],
+  "MMBench": [
+    "multimodal"
+  ],
+  "MMBench-V1.1": [
+    "multimodal"
+  ],
+  "MMBench-Video": [
+    "multimodal"
+  ],
+  "MMBench_test": [
+    "multimodal"
+  ],
+  "MME": [
+    "multimodal"
+  ],
+  "MME-RealWorld": [
+    "multimodal"
+  ],
+  "MMLU": [
+    "general",
+    "knowledge"
+  ],
+  "MMLU (CoT)": [
+    "general",
+    "knowledge"
+  ],
+  "MMLU Chat": [
+    "general",
+    "knowledge"
+  ],
+  "MMLU French": [
+    "general",
+    "knowledge"
+  ],
+  "MMLU-Base": [
+    "general",
+    "knowledge"
+  ],
+  "MMLU-Pro": [
+    "general",
+    "knowledge"
+  ],
+  "MMLU-Pro leaderboard submissions (TIGER-Lab)": [
+    "general",
+    "knowledge"
+  ],
+  "MMLU-ProX": [
+    "general",
+    "knowledge"
+  ],
+  "MMLU-Redux": [
+    "general",
+    "knowledge"
+  ],
+  "MMLU-STEM": [
+    "general",
+    "knowledge",
+    "natural_sciences",
+    "mathematics"
+  ],
+  "MMLU-redux-2.0": [
+    "general",
+    "knowledge"
+  ],
+  "MMLongBench-Doc": [
+    "multimodal",
+    "linguistic_core"
+  ],
+  "MMMLU": [
+    "multimodal",
+    "knowledge"
+  ],
+  "MMMU": [
+    "multimodal",
+    "knowledge"
+  ],
+  "MMMU (val)": [
+    "multimodal",
+    "knowledge"
+  ],
+  "MMMU (validation)": [
+    "multimodal",
+    "knowledge"
+  ],
+  "MMMUval": [
+    "multimodal",
+    "knowledge"
+  ],
+  "MMSearch": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "MMSearch-Plus": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "MMStar": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "MMT-Bench": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "MMVU": [
+    "multimodal",
+    "knowledge"
+  ],
+  "MMVet": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "MMVetGPT4Turbo": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "MRCR": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR 128K (2-needle)": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR 128K (4-needle)": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR 128K (8-needle)": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR 1M": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR 1M (pointwise)": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR 64K (2-needle)": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR 64K (4-needle)": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR 64K (8-needle)": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR v2": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MRCR v2 (8-needle)": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MS MARCO (TREC)": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MT-Bench": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MTVQA": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "MVBench": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "MathArena Apex": [
+    "mathematics"
+  ],
+  "MathVerse-Mini": [
+    "mathematics",
+    "multimodal"
+  ],
+  "MathVision": [
+    "mathematics",
+    "multimodal"
+  ],
+  "MathVista": [
+    "mathematics",
+    "multimodal"
+  ],
+  "MathVista-Mini": [
+    "mathematics",
+    "multimodal"
+  ],
+  "MedCode - Overall": [
+    "software_engineering",
+    "natural_sciences"
+  ],
+  "MedQA": [
+    "knowledge",
+    "natural_sciences"
+  ],
+  "MedScribe - Overall": [
+    "linguistic_core",
+    "natural_sciences"
+  ],
+  "MedXpertQA": [
+    "knowledge",
+    "natural_sciences"
+  ],
+  "Meld": [
+    "linguistic_core",
+    "commonsense_reasoning"
+  ],
+  "MobileMiniWob++_SR": [
+    "agentic"
+  ],
+  "Mortgage Tax": [
+    "finance",
+    "applied_reasoning"
+  ],
+  "MotionBench": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "Mt Bench": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "MuSR": [
+    "commonsense_reasoning",
+    "applied_reasoning"
+  ],
+  "MuirBench": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "Multi-Challenge": [
+    "general"
+  ],
+  "Multi-IF": [
+    "applied_reasoning"
+  ],
+  "Multi-SWE-Bench Leaderboard": [
+    "software_engineering"
+  ],
+  "MultiLF": [
+    "logical_reasoning",
+    "applied_reasoning"
+  ],
+  "Multilingual MGSM (CoT)": [
+    "mathematics",
+    "linguistic_core"
+  ],
+  "Multilingual MMLU": [
+    "knowledge",
+    "linguistic_core"
+  ],
+  "Multipl E": [
+    "software_engineering"
+  ],
+  "MusicCaps": [
+    "multimodal"
+  ],
+  "NIH/Multi-needle": [
+    "hallucination"
+  ],
+  "NL2Repo": [
+    "software_engineering"
+  ],
+  "NMOS": [
+    "multimodal"
+  ],
+  "NOVA-63": [
+    "knowledge"
+  ],
+  "NQ": [
+    "knowledge"
+  ],
+  "NarrativeQA": [
+    "linguistic_core"
+  ],
+  "Natural Questions": [
+    "knowledge"
+  ],
+  "Natural2Code": [
+    "software_engineering"
+  ],
+  "NaturalQuestions": [
+    "knowledge"
+  ],
+  "Nexus": [
+    "agentic"
+  ],
+  "NoLiMa 128K": [
+    "robustness"
+  ],
+  "NoLiMa 32K": [
+    "robustness"
+  ],
+  "NoLiMa 64K": [
+    "robustness"
+  ],
+  "Nuscene": [
+    "multimodal"
+  ],
+  "OCRBench v2": [
+    "multimodal"
+  ],
+  "OCRBench-V2 (en)": [
+    "multimodal"
+  ],
+  "OCRBench-V2 (zh)": [
+    "multimodal"
+  ],
+  "ODinW": [
+    "multimodal"
+  ],
+  "OJBench": [
+    "software_engineering"
+  ],
+  "OJBench (C++)": [
+    "software_engineering"
+  ],
+  "OSWorld": [
+    "agentic"
+  ],
+  "OSWorld Extended": [
+    "agentic"
+  ],
+  "OSWorld Screenshot-only": [
+    "agentic"
+  ],
+  "OSWorld-G": [
+    "agentic"
+  ],
+  "OSWorld-Verified": [
+    "agentic"
+  ],
+  "Objectron": [
+    "multimodal"
+  ],
+  "OctoCodingBench": [
+    "software_engineering"
+  ],
+  "OfficeQA Pro": [
+    "agentic"
+  ],
+  "OlympiadBench": [
+    "mathematics"
+  ],
+  "Omni-MATH": [
+    "mathematics"
+  ],
+  "OmniBench": [
+    "general"
+  ],
+  "OmniBench Music": [
+    "multimodal"
+  ],
+  "OmniDocBench 1.5": [
+    "multimodal"
+  ],
+  "OmniGAIA": [
+    "applied_reasoning"
+  ],
+  "OmniMath": [
+    "mathematics"
+  ],
+  "Online Mind2Web": [
+    "agentic"
+  ],
+  "Open-rewrite": [
+    "software_engineering"
+  ],
+  "OpenAI MMLU": [
+    "knowledge"
+  ],
+  "OpenAI-MRCR: 2 needle 128k": [
+    "hallucination"
+  ],
+  "OpenAI-MRCR: 2 needle 1M": [
+    "hallucination"
+  ],
+  "OpenAI-MRCR: 2 needle 256k": [
+    "hallucination"
+  ],
+  "OpenEval": [
+    "general"
+  ],
+  "OpenRCA": [
+    "applied_reasoning"
+  ],
+  "OpenbookQA": [
+    "commonsense_reasoning"
+  ],
+  "Openeval": [
+    "general"
+  ],
+  "PIQA": [
+    "commonsense_reasoning"
+  ],
+  "PMC-VQA": [
+    "multimodal"
+  ],
+  "POPE": [
+    "hallucination"
+  ],
+  "PaperBench": [
+    "knowledge",
+    "applied_reasoning",
+    "agentic"
+  ],
+  "PathMCQA": [
+    "natural_sciences",
+    "knowledge"
+  ],
+  "PerceptionTest": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "PhiBench": [
+    "knowledge",
+    "applied_reasoning"
+  ],
+  "PhysicsFinals": [
+    "natural_sciences",
+    "mathematics"
+  ],
+  "PinchBench": [
+    "multimodal",
+    "applied_reasoning"
+  ],
+  "Piqa": [
+    "commonsense_reasoning"
+  ],
+  "PointGrounding": [
+    "multimodal"
+  ],
+  "PolyMATH": [
+    "mathematics",
+    "applied_reasoning"
+  ],
+  "PolyMath-en": [
+    "mathematics",
+    "applied_reasoning"
+  ],
+  "PopQA": [
+    "knowledge"
+  ],
+  "ProofBench - Overall": [
+    "logical_reasoning",
+    "mathematics"
+  ],
+  "ProtocolQA": [
+    "knowledge",
+    "applied_reasoning"
+  ],
+  "QMSum": [
+    "linguistic_core"
+  ],
+  "Qasper": [
+    "linguistic_core"
+  ],
+  "QuAC": [
+    "linguistic_core"
+  ],
+  "QwenWebBench": [
+    "knowledge",
+    "applied_reasoning"
+  ],
+  "RAFT": [
+    "linguistic_core",
+    "applied_reasoning"
+  ],
+  "RULER": [
+    "linguistic_core",
+    "robustness"
+  ],
+  "RULER 1000K": [
+    "linguistic_core",
+    "robustness"
+  ],
+  "RULER 128k": [
+    "linguistic_core",
+    "robustness"
+  ],
+  "RULER 2048K": [
+    "linguistic_core",
+    "robustness"
+  ],
+  "RULER 512K": [
+    "linguistic_core",
+    "robustness"
+  ],
+  "RULER 64k": [
+    "linguistic_core",
+    "robustness"
+  ],
+  "RealWorldQA": [
+    "knowledge",
+    "applied_reasoning"
+  ],
+  "RefCOCO-avg": [
+    "multimodal"
+  ],
+  "RefSpatialBench": [
+    "multimodal",
+    "commonsense_reasoning"
+  ],
+  "RepoBench": [
+    "software_engineering"
+  ],
+  "RepoQA": [
+    "software_engineering"
+  ],
+  "Reward-Bench": [
+    "applied_reasoning",
+    "general"
+  ],
+  "RewardBench": [
+    "applied_reasoning",
+    "general"
+  ],
+  "RoboSpatialHome": [
+    "agentic",
+    "multimodal"
+  ],
+  "SAGE": [
+    "knowledge",
+    "applied_reasoning"
+  ],
+  "SAT Math": [
+    "mathematics"
+  ],
+  "SIFO": [
+    "knowledge",
+    "applied_reasoning"
+  ],
+  "SIFO-Multiturn": [
+    "knowledge",
+    "applied_reasoning"
+  ],
+  "SQuALITY": [
+    "linguistic_core"
+  ],
+  "STEM": [
+    "natural_sciences",
+    "mathematics"
+  ],
+  "SUNRGBD": [
+    "multimodal"
+  ],
+  "SWE-Bench Multimodal": [
+    "software_engineering",
+    "multimodal"
+  ],
+  "SWE-Bench Pro": [
+    "software_engineering",
+    "agentic"
+  ],
+  "SWE-bench Verified Mini": [
+    "software_engineering"
+  ],
+  "SWE-Lancer": [
+    "software_engineering"
+  ],
+  "SWE-Lancer (IC-Diamond subset)": [
+    "software_engineering"
+  ],
+  "SWE-Perf": [
+    "software_engineering"
+  ],
+  "SWE-PolyBench": [
+    "software_engineering",
+    "applied_reasoning"
+  ],
+  "SWE-Review": [
+    "software_engineering"
+  ],
+  "SWE-bench": [
+    "software_engineering"
+  ],
+  "SWE-bench Multilingual": [
+    "software_engineering"
+  ],
+  "SWE-bench Verified": [
+    "software_engineering"
+  ],
+  "SWE-bench Verified (Agentic Coding)": [
+    "software_engineering",
+    "agentic"
+  ],
+  "SWE-bench Verified (Agentless)": [
+    "software_engineering"
+  ],
+  "SWE-bench Verified (Multiple Attempts)": [
+    "software_engineering"
+  ],
+  "SWT-Bench": [
+    "software_engineering"
+  ],
+  "SciArena": [
+    "natural_sciences",
+    "applied_reasoning"
+  ],
+  "SciArena leaderboard API": [
+    "natural_sciences",
+    "applied_reasoning"
+  ],
+  "SciCode": [
+    "natural_sciences",
+    "software_engineering"
+  ],
+  "ScienceAgentBench": [
+    "natural_sciences",
+    "agentic"
+  ],
+  "ScienceQA": [
+    "natural_sciences",
+    "knowledge"
+  ],
+  "ScienceQA Visual": [
+    "natural_sciences",
+    "multimodal"
+  ],
+  "ScreenSpot": [
+    "agentic",
+    "multimodal"
+  ],
+  "ScreenSpot Pro": [
+    "agentic",
+    "multimodal"
+  ],
+  "Seal-0": [
+    "safety"
+  ],
+  "SecCodeBench": [
+    "software_engineering",
+    "safety"
+  ],
+  "SimpleQA": [
+    "knowledge",
+    "hallucination"
+  ],
+  "SimpleSafetyTests": [
+    "safety"
+  ],
+  "SimpleVQA": [
+    "multimodal"
+  ],
+  "SkillsBench": [
+    "applied_reasoning"
+  ],
+  "SlakeVQA": [
+    "multimodal"
+  ],
+  "Social IQa": [
+    "commonsense_reasoning"
+  ],
+  "Spider": [
+    "software_engineering",
+    "logical_reasoning"
+  ],
+  "SummScreenFD": [
+    "linguistic_core"
+  ],
+  "SuperGLUE": [
+    "linguistic_core",
+    "general"
+  ],
+  "SuperGPQA": [
+    "knowledge",
+    "applied_reasoning"
+  ],
+  "TAU3-Bench": [
+    "agentic"
+  ],
+  "TIR-Bench": [
+    "agentic"
+  ],
+  "TLDR9+ (test)": [
+    "linguistic_core"
+  ],
+  "Tau Bench": [
+    "agentic"
+  ],
+  "Tau Bench Airline": [
+    "agentic"
+  ],
+  "Tau2-Bench": [
+    "agentic"
+  ],
+  "Tau2-Bench Airline": [
+    "agentic"
+  ],
+  "Tau2-Bench Retail": [
+    "agentic"
+  ],
+  "Tau2-Bench Telecom": [
+    "agentic"
+  ],
+  "Tax Eval v2": [
+    "finance",
+    "applied_reasoning"
+  ],
+  "TempCompass": [
+    "knowledge",
+    "robustness"
+  ],
+  "Terminal Bench": [
+    "agentic"
+  ],
+  "Terminal-Bench 2.0": [
+    "agentic"
+  ],
+  "TerminalBench Hard": [
+    "agentic"
+  ],
+  "Terminus": [
+    "agentic"
+  ],
+  "TextVQA": [
+    "multimodal"
+  ],
+  "TheoremQA": [
+    "mathematics",
+    "logical_reasoning"
+  ],
+  "Theory of Mind": [
+    "commonsense_reasoning"
+  ],
+  "Toolathlon": [
+    "agentic"
+  ],
+  "Translation Set1\u2192en COMET22": [
+    "linguistic_core"
+  ],
+  "Translation Set1\u2192en spBleu": [
+    "linguistic_core"
+  ],
+  "Translation en\u2192Set1 COMET22": [
+    "linguistic_core"
+  ],
+  "Translation en\u2192Set1 spBleu": [
+    "linguistic_core"
+  ],
+  "TriviaQA": [
+    "knowledge"
+  ],
+  "TruthfulQA": [
+    "hallucination"
+  ],
+  "TydiQA": [
+    "linguistic_core"
+  ],
+  "USACO": [
+    "mathematics",
+    "logical_reasoning"
+  ],
+  "USAMO25": [
+    "mathematics"
+  ],
+  "Uniform Bar Exam": [
+    "law"
+  ],
+  "V*": [
+    "general"
+  ],
+  "VATEX": [
+    "multimodal"
+  ],
+  "VCR_en_easy": [
+    "multimodal"
+  ],
+  "VIBE": [
+    "agentic"
+  ],
+  "VIBE Android": [
+    "agentic"
+  ],
+  "VIBE Backend": [
+    "agentic"
+  ],
+  "VIBE Simulation": [
+    "agentic"
+  ],
+  "VIBE Web": [
+    "agentic"
+  ],
+  "VIBE iOS": [
+    "agentic"
+  ],
+  "VIBE-Pro": [
+    "agentic"
+  ],
+  "VITA-Bench": [
+    "multimodal"
+  ],
+  "VLMsAreBlind": [
+    "multimodal"
+  ],
+  "VQA-Rad": [
+    "multimodal"
+  ],
+  "VQAv2": [
+    "multimodal"
+  ],
+  "VQAv2 (test)": [
+    "multimodal"
+  ],
+  "VQAv2 (val)": [
+    "multimodal"
+  ],
+  "Vals AI": [
+    "general"
+  ],
+  "Vals Index": [
+    "general"
+  ],
+  "Vals Multimodal Index": [
+    "multimodal"
+  ],
+  "Vending-Bench 2": [
+    "agentic"
+  ],
+  "Vibe Code Bench - Overall": [
+    "software_engineering"
+  ],
+  "Vibe-Eval": [
+    "applied_reasoning",
+    "multimodal"
+  ],
+  "Video-MME": [
+    "multimodal"
+  ],
+  "Video-MME (long, no subtitles)": [
+    "multimodal"
+  ],
+  "VideoMME w sub.": [
+    "multimodal"
+  ],
+  "VideoMME w/o sub.": [
+    "multimodal"
+  ],
+  "VideoMMMU": [
+    "multimodal"
+  ],
+  "Virology Capabilities Test": [
+    "natural_sciences"
+  ],
+  "Vision2Web": [
+    "agentic"
+  ],
+  "VisuLogic": [
+    "multimodal"
+  ],
+  "VisualWebBench": [
+    "agentic"
+  ],
+  "VocalSound": [
+    "multimodal"
+  ],
+  "VoiceBench Avg": [
+    "linguistic_core"
+  ],
+  "WMDP": [
+    "safety"
+  ],
+  "WMT 2014": [
+    "linguistic_core"
+  ],
+  "WMT23": [
+    "linguistic_core"
+  ],
+  "WMT24++": [
+    "linguistic_core"
+  ],
+  "We-Math": [
+    "mathematics"
+  ],
+  "WebVoyager": [
+    "agentic"
+  ],
+  "WideSearch": [
+    "agentic"
+  ],
+  "Wild Bench": [
+    "general"
+  ],
+  "WildBench": [
+    "general"
+  ],
+  "Winogrande": [
+    "commonsense_reasoning"
+  ],
+  "Wordle Arena": [
+    "logical_reasoning"
+  ],
+  "WorldVQA": [
+    "multimodal"
+  ],
+  "WritingBench": [
+    "linguistic_core"
+  ],
+  "XLSum English": [
+    "linguistic_core"
+  ],
+  "XSum": [
+    "linguistic_core"
+  ],
+  "Xstest": [
+    "safety"
+  ],
+  "ZClawBench": [
+    "law"
+  ],
+  "ZEROBench": [
+    "general"
+  ],
+  "ZEROBench-Sub": [
+    "general"
+  ],
+  "ZebraLogic": [
+    "logical_reasoning"
+  ]
+}

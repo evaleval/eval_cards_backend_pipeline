@@ -16,6 +16,10 @@ from typing import Any
 from huggingface_hub import snapshot_download
 
 from eval_card_backend.config import BENCHMARK_METADATA_DATASET_REPO
+from eval_card_backend.sources._revision_cache import (
+    cache_revision_ok as _cache_revision_ok,
+    write_cache_revision as _write_cache_revision,
+)
 
 
 def _has_cached(target: Path) -> bool:
@@ -24,23 +28,34 @@ def _has_cached(target: Path) -> bool:
     return flat.exists() or (cards_dir.exists() and any(cards_dir.glob("*.json")))
 
 
-def ensure_snapshot(local_dir: str, hf_token: str | None, force_refresh: bool) -> Path | None:
+def ensure_snapshot(
+    local_dir: str,
+    hf_token: str | None,
+    force_refresh: bool,
+    revision: str | None = None,
+) -> Path | None:
     target = Path(local_dir).resolve()
     if force_refresh and target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
 
-    if _has_cached(target):
+    if _has_cached(target) and _cache_revision_ok(target, revision):
         return target
+    if _has_cached(target):
+        # Revision-mismatched cache — clear and re-download at the pin.
+        shutil.rmtree(target)
+        target.mkdir(parents=True, exist_ok=True)
 
     try:
         snapshot_download(
             repo_id=BENCHMARK_METADATA_DATASET_REPO,
             repo_type="dataset",
+            revision=revision,
             local_dir=str(target),
             allow_patterns=["benchmark-metadata.json", "cards/**"],
             token=hf_token,
         )
+        _write_cache_revision(target, revision)
     except Exception:
         return target if _has_cached(target) else None
 

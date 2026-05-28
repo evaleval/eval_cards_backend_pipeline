@@ -32,6 +32,15 @@ class Settings:
     refresh_eee: bool
     refresh_benchmark_metadata: bool
     refresh_registry: bool
+    # Optional upstream revision pins (HF dataset commit SHA, branch, or tag).
+    # When set, the source is downloaded at that exact revision instead of
+    # latest HEAD. None = latest (default, unchanged behaviour). Used to run
+    # the pipeline against a known upstream state so code changes can be
+    # validated in isolation from upstream data changes (separate "did my
+    # code change the output" from "did the data change").
+    eee_revision: str | None
+    benchmark_metadata_revision: str | None
+    registry_revision: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -55,4 +64,9 @@ class Settings:
                 os.environ.get("BENCHMARK_METADATA_REFRESH") == "1"
             ),
             refresh_registry=os.environ.get("ENTITY_REGISTRY_REFRESH") == "1",
+            eee_revision=os.environ.get("EEE_REVISION") or None,
+            benchmark_metadata_revision=(
+                os.environ.get("BENCHMARK_METADATA_REVISION") or None
+            ),
+            registry_revision=os.environ.get("ENTITY_REGISTRY_REVISION") or None,
         )

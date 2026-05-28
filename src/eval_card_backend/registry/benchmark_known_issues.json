@@ -1,0 +1,84 @@
+{
+  "_doc": "Curated known issues for specific benchmarks. Keyed by lowercased benchmark identifier. Severity is info | warning | critical. Each entry: title, summary, severity, optional source_url, optional published date (YYYY-MM-DD). This registry is for benchmark-specific concerns documented in academic work or by maintainers — not generic AI risks. Lookup is case-insensitive and tolerant of separator differences (spaces, dashes, underscores).",
+  "issues": {
+    "mmlu": [
+      {
+        "title": "Test-set contamination in pretraining corpora",
+        "summary": "Multiple analyses find MMLU questions and exact answers in publicly scraped pretraining data, inflating scores for models trained on that data.",
+        "severity": "warning",
+        "source_url": "https://arxiv.org/abs/2310.16787",
+        "published": "2023-10-25"
+      },
+      {
+        "title": "Errors and ambiguities in test items",
+        "summary": "Independent audits found mislabeled answers, ambiguous wording, and duplicated questions across MMLU subjects, capping reliable accuracy below 100%.",
+        "severity": "warning",
+        "source_url": "https://arxiv.org/abs/2406.04127"
+      }
+    ],
+    "mmlu-pro": [
+      {
+        "title": "Inherits MMLU contamination concerns for some subjects",
+        "summary": "MMLU-Pro reuses items from MMLU and other public sources; subjects overlapping with the MMLU origin may exhibit similar pretraining-data leakage.",
+        "severity": "info",
+        "source_url": "https://arxiv.org/abs/2406.01574"
+      }
+    ],
+    "gsm8k": [
+      {
+        "title": "Memorization on the test split",
+        "summary": "Studies show large models reproduce verbatim GSM8K test problems, suggesting training-time exposure rather than reasoning. Independent replication on perturbed variants (GSM-Symbolic, GSM-1k) gives lower scores.",
+        "severity": "warning",
+        "source_url": "https://arxiv.org/abs/2410.05229"
+      }
+    ],
+    "hellaswag": [
+      {
+        "title": "Annotation noise and outdated cultural references",
+        "summary": "A non-trivial fraction of HellaSwag items are mislabeled or rely on now-stale references, capping ceiling performance and complicating cross-year comparisons.",
+        "severity": "info"
+      }
+    ],
+    "humaneval": [
+      {
+        "title": "Limited and saturated test set",
+        "summary": "Only 164 problems; top models exceed 90% pass@1 and the benchmark is widely viewed as saturated. Use newer code benchmarks (LiveCodeBench, SWE-bench) for current capability claims.",
+        "severity": "warning"
+      },
+      {
+        "title": "Test-case adequacy",
+        "summary": "HumanEval+ found that the original tests miss many incorrect solutions; reported scores can overstate real correctness.",
+        "severity": "info",
+        "source_url": "https://arxiv.org/abs/2305.01210"
+      }
+    ],
+    "narrativeqa": [
+      {
+        "title": "Largely deprecated in current evaluations",
+        "summary": "Few recent leading models report NarrativeQA. Treat scores as historical context rather than current capability evidence.",
+        "severity": "info"
+      }
+    ],
+    "boolq": [
+      {
+        "title": "Largely saturated",
+        "summary": "Top models score above 90%; small differences are noise. Use as a sanity check, not a discriminator.",
+        "severity": "info"
+      }
+    ],
+    "ifeval": [
+      {
+        "title": "Narrow instruction taxonomy",
+        "summary": "IFEval covers a fixed set of verifiable instruction types. High scores do not generalise to open-ended instruction following.",
+        "severity": "info"
+      }
+    ],
+    "humanity's last exam": [
+      {
+        "title": "Marketing framing vs. methodological scope",
+        "summary": "The name implies a definitive ceiling for AI capability; the underlying benchmark is a 3,000-item exam in selected academic disciplines and does not measure general intelligence or safety. Read scores in context.",
+        "severity": "warning"
+      }
+    ]
+  }
+}

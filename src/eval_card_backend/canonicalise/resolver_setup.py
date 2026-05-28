@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from eval_entity_resolver.eee import clean_eval_name, extract_metric
 
-from eval_card_backend import categorisation, slugs
-from eval_card_backend.canonicalise import udfs
+from eval_card_backend import slugs
+from eval_card_backend.canonicalise import evalcard_tags, udfs
 
 
 def register_udfs(con, resolver) -> None:
@@ -177,10 +177,29 @@ def register_udfs(con, resolver) -> None:
         null_handling="special",
     )
 
-    # Producer-owned benchmark categorisation. Output is constrained to
-    # the typed CategoryType enum; default 'General' on no-match.
+    # Producer-owned benchmark tagging (17-tag vocabulary, replaces
+    # the old 5-bucket categorise_benchmark_udf). Returns a
+    # JSON-encoded VARCHAR array of tags.
     con.create_function(
-        "categorise_benchmark_udf", categorisation.classify_benchmark,
-        ["VARCHAR[]", "VARCHAR[]", "VARCHAR[]"], "VARCHAR",
+        "resolve_benchmark_tags_udf", evalcard_tags.resolve_benchmark_tags_json,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+
+    con.create_function(
+        "extract_params_billions_udf", udfs.extract_params_billions_py,
+        ["VARCHAR"], "DOUBLE",
+        null_handling="special",
+    )
+
+    con.create_function(
+        "lookup_known_issues_udf", udfs.lookup_known_issues_py,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+
+    con.create_function(
+        "benchmark_priority_udf", udfs.benchmark_priority_py,
+        ["VARCHAR"], "INTEGER",
         null_handling="special",
     )

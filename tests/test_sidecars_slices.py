@@ -1,17 +1,14 @@
 """Sidecars — slice surfacing in `hierarchy.json`.
 
-`write_hierarchy` populates two slice-derived fields:
+`write_hierarchy` populates `composites[].benchmarks[].slices[]`: a
+per-(composite, benchmark) list of `{key, display_name, is_bare_stem,
+metrics[]}`. These tests exercise `_hierarchy_composite_slices` directly.
 
-  - `stats.slice_count`: distinct (benchmark_id, slice_key) pairs in
-    `fact_results` where slice_key is non-NULL. Drives the homepage strip.
-  - `composites[].benchmarks[].slices[]`: per-(composite, benchmark)
-    list of `{key, display_name, is_bare_stem, metrics[]}`.
-
-These tests build minimal synthetic `fact_results` + `canonical_metrics`
-+ `benchmarks` tables and call the sidecar helpers directly. The
-end-to-end fixture corpus is single-raw across all benchmarks, so it
-can't exercise the populated-slice path; that's why this test stays at
-the helper level.
+They build minimal synthetic `fact_results` + `canonical_metrics`
++ `benchmarks` tables and call the sidecar helper. The end-to-end
+fixture corpus is single-raw across all benchmarks, so it can't
+exercise the populated-slice path; that's why this test stays at the
+helper level.
 """
 from __future__ import annotations
 
@@ -20,7 +17,6 @@ import pytest
 
 from eval_card_backend.canonicalise.sidecars import (
     _hierarchy_composite_slices,
-    _hierarchy_stats,
 )
 
 
@@ -61,9 +57,8 @@ CREATE TABLE canonical_metrics (
 
 
 def _seed_minimal_tables(con):
-    """Slice-count SQL also reads `benchmarks` (for benchmark_count).
-    Provide a one-row stand-in so the sidecar query runs even though
-    those non-slice counts aren't what we're asserting on."""
+    """Provide the three tables the slice helper reads, plus a one-row
+    `benchmarks` stand-in so queries that join it run."""
     con.execute(_FACT_DDL)
     con.execute(_BENCH_DDL)
     con.execute(_METRICS_DDL)
@@ -75,49 +70,6 @@ def con():
     c = duckdb.connect()
     yield c
     c.close()
-
-
-# ---------------------------------------------------------------------------
-# slice_count
-# ---------------------------------------------------------------------------
-
-
-def test_slice_count_zero_when_no_slices(con):
-    """Single-raw corpus → every fact row has slice_key NULL → no slices."""
-    _seed_minimal_tables(con)
-    con.executemany(
-        "INSERT INTO fact_results VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-            ("helm-classic", "mmlu", None, None, "accuracy", "openai/gpt-4o", "OpenAI"),
-            ("helm-classic", "mmlu", None, None, "accuracy", "anthropic/claude", "Anthropic"),
-        ],
-    )
-
-    stats = _hierarchy_stats(con, [], [])
-    assert stats["slice_count"] == 0
-
-
-def test_slice_count_counts_distinct_benchmark_slice_pairs(con):
-    """slice_count is COUNT DISTINCT over (benchmark_id, slice_key);
-    duplicate (benchmark, slice) rows from different models / orgs
-    don't inflate it."""
-    _seed_minimal_tables(con)
-    con.execute("INSERT INTO benchmarks VALUES ('mmlu-pro-leaderboard', 'mmlu-pro', NULL, FALSE)")
-    con.executemany(
-        "INSERT INTO fact_results VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-            # 3 distinct (benchmark, slice) pairs total.
-            ("helm-classic",         "mmlu",     "anatomy",   "Anatomy",   "accuracy", "m1", "o1"),
-            ("helm-classic",         "mmlu",     "anatomy",   "Anatomy",   "accuracy", "m2", "o1"),  # dup
-            ("helm-classic",         "mmlu",     "astronomy", "Astronomy", "accuracy", "m1", "o1"),
-            ("mmlu-pro-leaderboard", "mmlu-pro", "physics",   "Physics",   "accuracy", "m1", "o1"),
-            # NULL slice_key shouldn't count.
-            ("helm-classic",         "mmlu",     None,        None,        "accuracy", "m3", "o2"),
-        ],
-    )
-
-    stats = _hierarchy_stats(con, [], [])
-    assert stats["slice_count"] == 3
 
 
 # ---------------------------------------------------------------------------

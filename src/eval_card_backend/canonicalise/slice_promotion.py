@@ -12,12 +12,6 @@ slice names resolve to canonicals) in Python and writes a
 `slice_promotion_overrides` temp table. Stage C consults this table
 after creating `results_resolved` and overrides `benchmark_id` for
 the rows v2 would have placed elsewhere.
-
-Vendored verbatim from `ref-build_hierarchy.py:39-149` plus the
-slice-extraction logic at `:610-668`.
-
-The simulation in `scripts/simulate_v2_pipeline.py` empirically
-recovers 427 of 432 missing canonicals (~99% of v3's coverage gap).
 """
 from __future__ import annotations
 
@@ -30,7 +24,7 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Vendored v2 literals (ref-build_hierarchy.py:39-149)
+# Slice-promotion literals (suffix/family/composite maps).
 # ---------------------------------------------------------------------------
 
 SUFFIX_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -106,7 +100,7 @@ EXCLUDED_FOLDERS = {"alphaxiv"}
 
 
 # ---------------------------------------------------------------------------
-# Helpers (vendored ref-build_hierarchy.py)
+# Helpers
 # ---------------------------------------------------------------------------
 
 
@@ -192,9 +186,9 @@ def resolve_canonical_strict(
 
 
 def extract_slice_candidate(family: str, ds_name: str, eval_name: str) -> str | None:
-    """Pull a slice-name candidate out of `evaluation_name` per v2's logic
-    (ref-build_hierarchy.py:610-668). Returns the slice name, or None when
-    the eval_name reduces to the dataset/family root.
+    """Pull a slice-name candidate out of `evaluation_name`. Returns the
+    slice name, or None when the eval_name reduces to the dataset/family
+    root.
     """
     if not eval_name:
         return None
@@ -382,10 +376,16 @@ def apply_overrides(con) -> int:
     if n_overrides == 0:
         return 0
 
+    # Stamp provenance: resolve_strategy logged 'no_match' against the full
+    # source-prefixed raw before this override resolved the real sub-benchmark.
+    # Marking the rows 'slice_promotion' makes them auditable — query this
+    # strategy to find every row relying on the vendored heuristic rather than
+    # a registry alias, and decide which to promote into the registry.
     n_updated = con.execute(
         """
         UPDATE results_resolved AS rr
-        SET benchmark_id = ovr.canonical_id
+        SET benchmark_id = ovr.canonical_id,
+            benchmark_resolution_strategy = 'slice_promotion'
         FROM slice_promotion_overrides AS ovr
         WHERE rr.evaluation_id = ovr.evaluation_id
           AND rr.result_idx     = ovr.result_idx
@@ -394,5 +394,8 @@ def apply_overrides(con) -> int:
         RETURNING 1
         """
     ).fetchall()
-    log.info("slice_promotion: updated benchmark_id on %d rows", len(n_updated))
+    log.info(
+        "slice_promotion: updated benchmark_id (+stamped strategy) on %d rows",
+        len(n_updated),
+    )
     return len(n_updated)

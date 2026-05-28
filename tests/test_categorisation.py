@@ -1,132 +1,95 @@
-"""Unit tests for benchmark categorisation."""
+"""Unit tests for benchmark tag resolution (replaces old categorisation)."""
 from __future__ import annotations
 
-import pytest
-
-from eval_card_backend import categorisation
+from eval_card_backend.canonicalise import evalcard_tags
 
 
-@pytest.fixture(autouse=True)
-def _reset_counters():
-    categorisation.reset_category_counter()
-    yield
-    categorisation.reset_category_counter()
+def test_valid_tags_count() -> None:
+    assert len(evalcard_tags.VALID_TAGS) == 17
 
 
-def test_default_category_is_general() -> None:
-    assert categorisation.default_category() == "General"
+def test_resolve_mmlu() -> None:
+    tags = evalcard_tags.resolve_benchmark_tags("MMLU", "mmlu")
+    assert "knowledge" in tags
 
 
-def test_categories_match_typed_enum() -> None:
-    assert set(categorisation.categories()) == {
-        "General", "Reasoning", "Agentic", "Safety", "Knowledge"
-    }
+def test_resolve_swe_bench() -> None:
+    tags = evalcard_tags.resolve_benchmark_tags("SWE-bench Verified", "swe-bench-verified")
+    assert "software_engineering" in tags
 
 
-def test_classify_by_domain_safety() -> None:
-    assert (
-        categorisation.classify_benchmark(
-            domains=["Safety"], tasks=None, registry_tags=None
-        )
-        == "Safety"
+def test_resolve_unknown_falls_back_to_general() -> None:
+    tags = evalcard_tags.resolve_benchmark_tags("Unknown Benchmark XYZ", "unknown-xyz")
+    assert tags == ["general"]
+
+
+def test_resolve_safety_regex_fallback() -> None:
+    tags = evalcard_tags.resolve_benchmark_tags("ToxicTest Safety", "toxic-test-safety")
+    assert "safety" in tags
+
+
+def test_parent_inheritance() -> None:
+    tags = evalcard_tags.resolve_benchmark_tags(
+        "UnknownSlice", "unknown-slice", parent_tags=["mathematics"]
     )
+    assert tags == ["mathematics"]
 
 
-def test_classify_by_domain_reasoning() -> None:
-    assert (
-        categorisation.classify_benchmark(
-            domains=["Mathematical Reasoning"], tasks=None, registry_tags=None
-        )
-        == "Reasoning"
+def test_json_wrapper() -> None:
+    result = evalcard_tags.resolve_benchmark_tags_json("MMLU", "mmlu")
+    assert isinstance(result, str)
+    import json
+    parsed = json.loads(result)
+    assert isinstance(parsed, list)
+    assert "knowledge" in parsed
+
+
+def test_all_tags_in_vocabulary() -> None:
+    """Spot-check that resolved tags are always from the 17-tag vocabulary."""
+    test_cases = [
+        ("MMLU", "mmlu"),
+        ("GSM8K", "gsm8k"),
+        ("HumanEval", "humaneval"),
+        ("SWE-bench", "swe-bench"),
+        ("GPQA", "gpqa"),
+        ("HellaSwag", "hellaswag"),
+    ]
+    for display, key in test_cases:
+        tags = evalcard_tags.resolve_benchmark_tags(display, key)
+        for t in tags:
+            assert t in evalcard_tags.VALID_TAGS, f"Tag '{t}' not in vocabulary for {display}"
+
+
+def test_decorate_hierarchy_tags() -> None:
+    families = [
+        {
+            "key": "test-family",
+            "display_name": "Test Family",
+            "benchmarks": [
+                {
+                    "key": "mmlu",
+                    "display_name": "MMLU",
+                    "slices": [
+                        {"key": "mmlu-math", "display_name": "MMLU Math"},
+                    ],
+                },
+            ],
+        },
+    ]
+    evalcard_tags.decorate_hierarchy_tags(families)
+    fam = families[0]
+    assert "derivedTags" in fam
+    assert len(fam["derivedTags"]) > 0
+    bench = fam["benchmarks"][0]
+    assert "derivedTags" in bench
+    sl = bench["slices"][0]
+    assert "derivedTags" in sl
+
+
+def test_paren_suffix_stripping() -> None:
+    """Stripping '(accuracy)' should still match GPQA Diamond."""
+    tags = evalcard_tags.resolve_benchmark_tags(
+        "GPQA Diamond (accuracy)", "gpqa-diamond-accuracy"
     )
-
-
-def test_classify_case_insensitive_substring() -> None:
-    assert (
-        categorisation.classify_benchmark(
-            domains=["TOXICITY DETECTION"], tasks=None, registry_tags=None
-        )
-        == "Safety"
-    )
-
-
-def test_priority_domains_beats_tasks() -> None:
-    # Domains say Safety, tasks say Knowledge — domains win.
-    assert (
-        categorisation.classify_benchmark(
-            domains=["Bias"],
-            tasks=["question_answering"],
-            registry_tags=None,
-        )
-        == "Safety"
-    )
-
-
-def test_priority_tasks_beats_tags() -> None:
-    # No domain match → tasks. Tags would map to Reasoning, but tasks wins.
-    assert (
-        categorisation.classify_benchmark(
-            domains=["unrelated"],
-            tasks=["agent"],
-            registry_tags=["math"],
-        )
-        == "Agentic"
-    )
-
-
-def test_classify_by_tag_when_no_domain_or_task() -> None:
-    assert (
-        categorisation.classify_benchmark(
-            domains=None, tasks=None, registry_tags=["MMLU"]
-        )
-        == "Knowledge"
-    )
-
-
-def test_unmapped_falls_through_to_default() -> None:
-    assert (
-        categorisation.classify_benchmark(
-            domains=["something obscure"],
-            tasks=["something else"],
-            registry_tags=["unknown"],
-        )
-        == "General"
-    )
-
-
-def test_handles_none_inputs() -> None:
-    assert categorisation.classify_benchmark(None, None, None) == "General"
-
-
-def test_handles_empty_lists() -> None:
-    assert categorisation.classify_benchmark([], [], []) == "General"
-
-
-def test_uncategorised_counter_tracks_default_fallthroughs() -> None:
-    categorisation.reset_category_counter()
-    categorisation.classify_benchmark(["Safety"], None, None)              # Safety
-    categorisation.classify_benchmark(["unrelated"], None, None)            # General
-    categorisation.classify_benchmark(["unrelated"], ["unrelated"], None)   # General
-    counts, uncategorised = categorisation.get_category_counts()
-    assert counts["Safety"] == 1
-    assert counts["General"] == 2
-    assert uncategorised == 2
-
-
-def test_categorised_counter_does_not_double_count_default_match() -> None:
-    # If a rule explicitly maps to General, the uncategorised counter must
-    # NOT increment — only true fallthroughs are uncategorised.
-    categorisation.reset_category_counter()
-    categorisation.classify_benchmark(["Safety"], None, None)
-    _, uncategorised = categorisation.get_category_counts()
-    assert uncategorised == 0
-
-
-def test_non_string_items_in_arrays_are_ignored() -> None:
-    # Defensive: stray non-string entries shouldn't crash classification.
-    assert (
-        categorisation.classify_benchmark(
-            domains=[None, 42, "Safety"], tasks=None, registry_tags=None
-        )
-        == "Safety"
-    )
+    assert len(tags) > 0
+    assert tags != ["general"], "Should resolve via paren-stripping, not fall to default"
