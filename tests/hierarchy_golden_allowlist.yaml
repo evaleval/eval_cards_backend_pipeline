@@ -34,7 +34,7 @@ schema_version_difference:
   ours: "v3.hierarchy.1"
   ref:  "v2.hierarchy.1"
   rationale: |
-    v3 is the family-rooted reshape per spec §5.1. v2 was the
+    v3 is the family-rooted reshape. v2 was the
     pre-alignment shape with composites[] at the top level. The schema
     version is itself a divergence point — both are valid; v3 is the
     target.

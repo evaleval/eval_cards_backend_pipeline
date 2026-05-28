@@ -120,14 +120,14 @@ def test_headline_top_level_shape(tmp_path, monkeypatch):
     for key in ("reproducibility", "completeness", "provenance", "comparability"):
         assert key in h
         assert "overall" in h[key]
-        assert "by_category" in h[key]
+        assert "by_tag" in h[key]
     assert "developers" in h
     # The model-family rollup got renamed `model_families` (was `families`)
     # to disambiguate from the benchmark-family taxonomy in hierarchy.json.
     assert "model_families" in h
     assert "families" not in h
     assert "composites" in h
-    assert "categories" in h
+    assert "tags" in h
 
 
 def test_headline_total_benchmarks_matches_dim(tmp_path, monkeypatch):
@@ -147,15 +147,15 @@ def test_headline_total_benchmarks_matches_dim(tmp_path, monkeypatch):
     assert h["total_benchmarks"] == hierarchy["stats"]["benchmark_count"]
 
 
-def test_headline_by_category_keys_match_typed_enum(tmp_path, monkeypatch):
-    """by_category blocks key on every CategoryType — even when empty."""
+def test_headline_by_tag_keys_are_valid(tmp_path, monkeypatch):
+    """by_tag blocks key on valid 17-tag vocabulary."""
     pytest.importorskip("duckdb")
+    from eval_card_backend.canonicalise.evalcard_tags import VALID_TAGS
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
     h = json.loads((out / "headline.json").read_text())
-    expected = {"General", "Reasoning", "Agentic", "Safety", "Knowledge"}
     for signal in ("reproducibility", "completeness", "provenance", "comparability"):
-        assert set(h[signal]["by_category"].keys()) == expected
+        assert set(h[signal]["by_tag"].keys()) == VALID_TAGS
 
 
 def test_reproducibility_per_field_missingness(tmp_path, monkeypatch):
@@ -186,15 +186,15 @@ def test_developers_list_route_id_set(tmp_path, monkeypatch):
         assert dev["model_count"] >= 0
 
 
-def test_categories_list_typed(tmp_path, monkeypatch):
-    """Each entry in categories[] uses the typed enum."""
+def test_tags_list_valid(tmp_path, monkeypatch):
+    """Each entry in tags[] uses the 17-tag vocabulary."""
     pytest.importorskip("duckdb")
+    from eval_card_backend.canonicalise.evalcard_tags import VALID_TAGS
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
     h = json.loads((out / "headline.json").read_text())
-    valid = {"General", "Reasoning", "Agentic", "Safety", "Knowledge"}
-    for entry in h["categories"]:
-        assert entry["category"] in valid
+    for entry in h["tags"]:
+        assert entry["tag"] in VALID_TAGS
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,7 @@ def test_hierarchy_top_level_shape(tmp_path, monkeypatch):
     nest under families[].composites[] when a family has multiple
     distinct named groupings; otherwise the family uses
     standalone_benchmarks[] (single-bench) or benchmarks[] (flat)
-    layouts. See notes/hierarchy-alignment.md §5.1."""
+    layouts."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
@@ -226,8 +226,8 @@ def test_hierarchy_top_level_shape(tmp_path, monkeypatch):
 def test_hierarchy_families_have_layout(tmp_path, monkeypatch):
     """Each family carries exactly one of standalone_benchmarks /
     benchmarks / composites. Top-level family fields (key, display_name,
-    category, tags, evals_count, eval_summary_ids, signal summaries)
-    are always present."""
+    derivedTags, tags, evals_count, constituent_evaluation_ids, signal
+    summaries) are always present."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
@@ -235,8 +235,8 @@ def test_hierarchy_families_have_layout(tmp_path, monkeypatch):
     assert hi["families"], "no families in hierarchy"
     for fam in hi["families"]:
         assert {
-            "key", "display_name", "category", "tags",
-            "evals_count", "eval_summary_ids",
+            "key", "display_name", "derivedTags", "tags",
+            "evals_count", "constituent_evaluation_ids",
             "reproducibility_summary", "provenance_summary",
             "comparability_summary",
         } <= fam.keys()
@@ -249,8 +249,8 @@ def test_hierarchy_families_have_layout(tmp_path, monkeypatch):
 
 def test_hierarchy_benchmark_records_intact(tmp_path, monkeypatch):
     """Per-benchmark fields (key, display_name, family_id, is_slice,
-    tags, metrics, slices, summary_eval_ids) are preserved through the
-    family-rooted reshape."""
+    tags, metrics, slices, constituent_evaluation_ids) are preserved
+    through the family-rooted reshape."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
@@ -266,7 +266,7 @@ def test_hierarchy_benchmark_records_intact(tmp_path, monkeypatch):
     for b in benches:
         assert {
             "key", "display_name", "family_id", "is_slice",
-            "tags", "metrics", "slices", "summary_eval_ids",
+            "tags", "metrics", "slices", "constituent_evaluation_ids",
         } <= b.keys()
 
 
@@ -421,7 +421,7 @@ def test_hierarchy_gpqa_diamond_emits_as_benchmark_not_slice(tmp_path):
             'wasp' AS composite_slug,
             'gpqa' AS benchmark_id,
             'GPQA' AS evaluation_name,
-            'Reasoning' AS category,
+            '["applied_reasoning"]' AS derived_tags,
             1::BIGINT AS models_count,
             NULL AS reproducibility_summary,
             NULL AS provenance_summary,
@@ -432,7 +432,7 @@ def test_hierarchy_gpqa_diamond_emits_as_benchmark_not_slice(tmp_path):
             'wasp',
             'gpqa-diamond',
             'GPQA Diamond',
-            'Reasoning',
+            '["natural_sciences"]',
             1::BIGINT,
             NULL,
             NULL,
@@ -611,18 +611,21 @@ def test_comparison_index_eval_entry_required_fields(tmp_path, monkeypatch):
     assert ci["evals"], "comparison-index has no evals; nothing to validate"
     sample = next(iter(ci["evals"].values()))
     assert {
-        "eval_summary_id",
+        "evaluation_id",
         "composite_slug", "composite_display_name",
         "benchmark_id",
         "family_id", "family_display_name",
         "parent_benchmark_id",
         "is_slice",
-        "display_name", "category", "is_summary_score",
-        "summary_score_for", "summary_eval_ids", "metrics",
+        "display_name", "derived_tags", "is_summary_score",
+        "summary_score_for", "metrics",
     } <= set(sample.keys())
     # Legacy fields removed in the composite/family/slice cutover:
     assert "benchmark_family_key" not in sample
     assert "benchmark_leaf_key" not in sample
+    # Renamed: eval_summary_id→evaluation_id; dropped dead summary_eval_ids.
+    assert "eval_summary_id" not in sample
+    assert "summary_eval_ids" not in sample
 
 
 def test_comparison_index_scores_ranked_best_first(tmp_path, monkeypatch):

@@ -85,7 +85,8 @@ def test_view_columns_match_spec(tmp_path, monkeypatch):
         "snapshot_id", "evaluation_id", "metric_summary_id",
         "benchmark_id", "metric_id", "model_id", "model_route_id",
         "model_info", "metric_display_name", "metric_unit", "lower_is_better",
-        "category", "score", "score_details", "fact_row_count",
+        "derived_tags", "min_score", "max_score", "score_normalized",
+        "metric_pair_key", "score", "score_details", "fact_row_count",
         "position", "total", "percentile",
         "evaluation_timestamp", "source_metadata", "source_data",
         "source_record_url", "eval_library",
@@ -96,7 +97,7 @@ def test_view_columns_match_spec(tmp_path, monkeypatch):
         "first_party_only", "has_variant_divergence", "has_cross_party_divergence",
         "evalcards_annotations",
         "instance_file_path", "instance_file_format", "instance_rows",
-        # Hierarchy-alignment §5.3: family / composite columns surface
+        # Family / composite columns surface
         # on the view so frontend filters don't need a dim join.
         "composite_slug", "family_id", "is_slice", "parent_benchmark_id",
     }
@@ -109,7 +110,7 @@ def test_view_columns_match_spec(tmp_path, monkeypatch):
     assert cols["score"] == "DOUBLE"
     assert cols["position"] == "INTEGER"
     assert cols["coverage_cell"] == "VARCHAR"
-    # Hierarchy-alignment §5.3 column types.
+    # Family / composite column types.
     assert cols["composite_slug"] == "VARCHAR"
     assert cols["family_id"] == "VARCHAR"
     assert cols["parent_benchmark_id"] == "VARCHAR"
@@ -189,7 +190,7 @@ def test_score_uses_median_across_fact_rows(tmp_path, monkeypatch):
 
 
 @pytest.mark.skip(
-    reason="Inactive while the stages.py:759 evaluator_relationship override is in place "
+    reason="Inactive while the llm-stats evaluator_relationship override is in place "
     "(EEE upstream-data-quality mitigation: only llm-stats+raw_verified='false' surfaces "
     "as first_party; everything else collapses to third_party). Re-enable when the override "
     "is removed and upstream emits the right value directly."
@@ -235,7 +236,7 @@ def test_position_total_percentile_with_unresolved_peer(tmp_path, monkeypatch):
 
 
 @pytest.mark.skip(
-    reason="Inactive while the stages.py:759 evaluator_relationship override is in place "
+    reason="Inactive while the llm-stats evaluator_relationship override is in place "
     "(EEE upstream-data-quality mitigation: only llm-stats+raw_verified='false' surfaces "
     "as first_party; everything else collapses to third_party). Re-enable when the override "
     "is removed and upstream emits the right value directly."
@@ -256,7 +257,7 @@ def test_coverage_cell_self_when_only_first_party(tmp_path, monkeypatch):
 
 
 @pytest.mark.skip(
-    reason="Inactive while the stages.py:759 evaluator_relationship override is in place "
+    reason="Inactive while the llm-stats evaluator_relationship override is in place "
     "(EEE upstream-data-quality mitigation: only llm-stats+raw_verified='false' surfaces "
     "as first_party; everything else collapses to third_party). Re-enable when the override "
     "is removed and upstream emits the right value directly."
@@ -284,7 +285,7 @@ def test_coverage_cell_both_when_cross_party(tmp_path, monkeypatch):
 
 
 @pytest.mark.skip(
-    reason="Inactive while the stages.py:759 evaluator_relationship override is in place "
+    reason="Inactive while the llm-stats evaluator_relationship override is in place "
     "(EEE upstream-data-quality mitigation: only llm-stats+raw_verified='false' surfaces "
     "as first_party; everything else collapses to third_party). Re-enable when the override "
     "is removed and upstream emits the right value directly."

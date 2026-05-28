@@ -1,8 +1,6 @@
 """comparison-index.json — schema-only golden test.
 
-Per Step 1 of the cross-project hierarchy-alignment effort
-(`/Users/jchim/projects/evaleval/notes/hierarchy-alignment.md` §5.2),
-each entry in `evals[]` carries a fixed shape that the frontend's
+Each entry in `evals[]` carries a fixed shape that the frontend's
 `getCompositeKey()` fallback chain reads. This test asserts presence
 + types of those fields against a real producer run on the
 `fixtures_clean` and `fixtures_slices` corpora.
@@ -78,10 +76,10 @@ def _materialise_views_and_sidecars(out_dir: Path):
     return con
 
 
-# Per §5.2 of the hierarchy-alignment spec: required keys + their
+# Required keys + their
 # allowed Python types (NoneType included where the field is nullable).
 _REQUIRED_FIELD_TYPES: dict[str, tuple[type, ...]] = {
-    "eval_summary_id":         (str,),
+    "evaluation_id":           (str,),
     "benchmark_id":            (str, type(None)),
     "family_id":               (str, type(None)),
     "family_display_name":     (str, type(None)),
@@ -108,7 +106,7 @@ def _assert_eval_entry_schema(eval_id: str, entry: dict) -> None:
 
 
 def test_comparison_index_schema_clean(tmp_path, monkeypatch):
-    """Every eval entry in the clean corpus carries the §5.2 fields with
+    """Every eval entry in the clean corpus carries the required fields with
     the expected types."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")

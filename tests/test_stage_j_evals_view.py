@@ -71,7 +71,7 @@ def test_evals_view_columns_match_spec(tmp_path, monkeypatch):
         "composite_slug", "composite_display_name",
         "family_id", "family_display_name", "is_slice",
         "parent_benchmark_id",
-        "category",
+        "derived_tags", "known_issues",
         "metric_config",
         "models_count", "evaluator_names", "source_types",
         "latest_source_name", "third_party_ratio",
@@ -80,7 +80,7 @@ def test_evals_view_columns_match_spec(tmp_path, monkeypatch):
         "avg_score", "avg_score_norm", "top_score",
         "has_card", "benchmark_card",
         "is_aggregated", "aggregate_sources",
-        "is_summary_score", "summary_eval_ids",
+        "is_summary_score",
         "tags", "source_data",
         "reproducibility_summary", "provenance_summary", "comparability_summary",
         "instance_data",
@@ -95,7 +95,7 @@ def test_evals_view_columns_match_spec(tmp_path, monkeypatch):
     assert "composite_benchmark_key" not in cols
     assert "benchmark_family_key" not in cols
     assert "benchmark_leaf_key" not in cols
-    # Hierarchy-alignment §5.3 column types — frontend filters read
+    # Family / composite column types — frontend filters read
     # these scalars without a dim join.
     assert cols["composite_slug"] == "VARCHAR"
     assert cols["family_id"] == "VARCHAR"
@@ -295,7 +295,7 @@ def test_third_party_ratio_xparty_fixture(tmp_path, monkeypatch):
 
 
 @pytest.mark.skip(
-    reason="Inactive while the stages.py:759 evaluator_relationship override is in place "
+    reason="Inactive while the llm-stats evaluator_relationship override is in place "
     "(EEE upstream-data-quality mitigation: only llm-stats+raw_verified='false' surfaces "
     "as first_party; everything else collapses to third_party). Re-enable when the override "
     "is removed and upstream emits the right value directly."

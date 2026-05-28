@@ -1,7 +1,8 @@
-"""Slice-grouping rules + slice-promotion overrides.
+"""Slice-grouping rules: alias-map only, no suffix heuristic.
 
-Covers the spec §4.3 examples plus the benchmarks the registry hasn't
-been hand-curated for (caparena, gaia, gpqa, videomme).
+With suffix stripping disabled, only the alias map and registry-authored
+parent_benchmark_id values create slice relationships. Benchmarks that
+share a name prefix (big-bench-hard, math-level-5) stay standalone.
 """
 from __future__ import annotations
 
@@ -19,22 +20,7 @@ from eval_card_backend.canonicalise.slice_grouping import (
 @pytest.mark.parametrize(
     "benchmark_id, expected",
     [
-        # Suffix rules
-        ("gaia",                "gaia"),
-        ("gaia-level-1",        "gaia"),
-        ("gaia-level-3",        "gaia"),
-        ("mmlu-l5",             "mmlu"),
-        ("apex-v1",             "apex"),
-        ("helm-classic-v1.0",   "helm-classic"),
-        ("gpqa-diamond",        "gpqa"),
-        ("global-mmlu-lite",    "global-mmlu"),
-        ("gpqa-diamond-v2",     "gpqa"),  # iterative
-        ("caparena-vs-gpt-4o",  "caparena"),
-        ("caparena-auto-avg",   "caparena"),
-        ("caparena-caption-length", "caparena"),
-        ("mmlu-cot",            "mmlu"),
-        ("mmlu_5shot",          "mmlu"),
-        # Alias map
+        # Alias map entries resolve to their stem
         ("hal_gaia",            "gaia"),
         ("hal_gaia_level_1",    "gaia"),
         ("helm_classic_foo",    "helm-classic"),
@@ -42,13 +28,23 @@ from eval_card_backend.canonicalise.slice_grouping import (
         ("mt_bench",            "mt-bench"),
         ("mtbench",             "mt-bench"),
         ("hfopenllm_v2_bbh",    "hf-open-llm-v2"),
-        # Variants registered via alias map
         ("videomme-w-sub",      "videomme"),
         ("videomme-w-o-sub",    "videomme"),
-        # Things that should NOT collapse
+        # Everything else returns its own normalised id (no suffix stripping)
+        ("gaia",                "gaia"),
+        ("gaia-level-1",        "gaia-level-1"),
+        ("gpqa",                "gpqa"),
+        ("gpqa-diamond",        "gpqa-diamond"),
+        ("global-mmlu-lite",    "global-mmlu-lite"),
+        ("big-bench-hard",      "big-bench-hard"),
+        ("math-level-5",        "math-level-5"),
+        ("livecodebench-pro",   "livecodebench-pro"),
+        ("arena-hard",          "arena-hard"),
         ("rewardbench-2",       "rewardbench-2"),
         ("ace",                 "ace"),
         ("appworld",            "appworld"),
+        ("caparena-vs-gpt-4o",  "caparena-vs-gpt-4o"),
+        ("mmlu-cot",            "mmlu-cot"),
     ],
 )
 def test_compute_slice_stem(benchmark_id, expected):
@@ -62,18 +58,31 @@ def test_normalize_stem_collapses_separators():
     assert normalize_stem("__foo--bar  baz_") == "foo-bar-baz"
 
 
-def test_group_benchmarks_buckets_by_stem():
+def test_group_benchmarks_no_suffix_stripping():
     grouped = group_benchmarks(
-        ["gaia", "gaia-level-1", "gpqa", "gpqa-diamond", "ace"]
+        ["gaia", "gaia-level-1", "gpqa", "gpqa-diamond", "ace",
+         "big-bench-hard", "big-bench"]
     )
-    assert grouped["gaia"] == ["gaia", "gaia-level-1"]
-    assert grouped["gpqa"] == ["gpqa", "gpqa-diamond"]
+    # Without suffix stripping, each is its own stem
+    assert grouped["gaia"] == ["gaia"]
+    assert grouped["gaia-level-1"] == ["gaia-level-1"]
+    assert grouped["gpqa"] == ["gpqa"]
+    assert grouped["gpqa-diamond"] == ["gpqa-diamond"]
+    assert grouped["ace"] == ["ace"]
+    assert grouped["big-bench-hard"] == ["big-bench-hard"]
+    assert grouped["big-bench"] == ["big-bench"]
+
+
+def test_group_benchmarks_alias_map_groups():
+    grouped = group_benchmarks(
+        ["videomme-w-sub", "videomme-w-o-sub", "ace"]
+    )
+    assert set(grouped["videomme"]) == {"videomme-w-sub", "videomme-w-o-sub"}
     assert grouped["ace"] == ["ace"]
 
 
-def test_apply_slice_grouping_sets_parent_for_siblings():
-    """Mutates canonical_benchmarks in-place: caparena variants get
-    parent=caparena (registry was missing this edge); ace stays NULL."""
+def test_apply_alias_map_grouping():
+    """Alias-mapped benchmarks get parent set; others stay NULL."""
     con = duckdb.connect()
     con.execute(
         "CREATE TABLE canonical_benchmarks "
@@ -82,35 +91,24 @@ def test_apply_slice_grouping_sets_parent_for_siblings():
     con.executemany(
         "INSERT INTO canonical_benchmarks VALUES (?, ?)",
         [
-            ("gaia",                    None),
-            ("gaia-level-1",            None),
-            ("gaia-level-2",            None),
-            ("gaia-level-3",            None),
-            ("caparena-auto-avg",       None),
-            ("caparena-vs-gpt-4o",      None),
-            ("ace",                     None),
-            # Singleton stem — should be left alone.
-            ("global-mmlu-lite",        None),
+            ("videomme-w-sub",   None),
+            ("videomme-w-o-sub", None),
+            ("ace",              None),
+            ("big-bench-hard",   None),
         ],
     )
-
     changed = apply_slice_grouping(con)
-    assert changed == 6
+    assert changed == 2
 
     parents = dict(
         con.execute(
-            "SELECT id, parent_benchmark_id FROM canonical_benchmarks "
-            "ORDER BY id"
+            "SELECT id, parent_benchmark_id FROM canonical_benchmarks ORDER BY id"
         ).fetchall()
     )
-    assert parents["gaia"]              == "gaia"   # self-parent
-    assert parents["gaia-level-1"]      == "gaia"
-    assert parents["gaia-level-2"]      == "gaia"
-    assert parents["gaia-level-3"]      == "gaia"
-    assert parents["caparena-auto-avg"] == "caparena"
-    assert parents["caparena-vs-gpt-4o"] == "caparena"
-    assert parents["ace"]               is None
-    assert parents["global-mmlu-lite"]  is None
+    assert parents["videomme-w-sub"]   == "videomme"
+    assert parents["videomme-w-o-sub"] == "videomme"
+    assert parents["ace"]              is None
+    assert parents["big-bench-hard"]   is None
 
 
 def test_apply_slice_grouping_idempotent():
@@ -121,7 +119,7 @@ def test_apply_slice_grouping_idempotent():
     )
     con.executemany(
         "INSERT INTO canonical_benchmarks VALUES (?, ?)",
-        [("gpqa", None), ("gpqa-diamond", None)],
+        [("videomme-w-sub", None), ("videomme-w-o-sub", None)],
     )
     apply_slice_grouping(con)
     second = apply_slice_grouping(con)
@@ -129,7 +127,7 @@ def test_apply_slice_grouping_idempotent():
 
 
 def test_apply_slice_grouping_preserves_registry_edges():
-    """Registry-set parents stay; the heuristic only fills NULLs."""
+    """Registry-set parents stay; the alias map only fills NULLs."""
     con = duckdb.connect()
     con.execute(
         "CREATE TABLE canonical_benchmarks "
@@ -157,11 +155,9 @@ def test_apply_slice_grouping_preserves_registry_edges():
     }
 
 
-def test_apply_slice_grouping_respects_conflicting_registry_parent():
-    """rewardbench-chat-hard would strip via "-hard" → stem
-    "rewardbench-chat", but the registry has it parented to
-    "rewardbench". Registry wins.
-    """
+def test_no_suffix_stripping_leaves_benchmarks_standalone():
+    """Benchmarks that share a name prefix but aren't in the alias map
+    stay standalone — no phantom parent created."""
     con = duckdb.connect()
     con.execute(
         "CREATE TABLE canonical_benchmarks "
@@ -170,97 +166,32 @@ def test_apply_slice_grouping_respects_conflicting_registry_parent():
     con.executemany(
         "INSERT INTO canonical_benchmarks VALUES (?, ?)",
         [
-            ("rewardbench",            None),
-            ("rewardbench-chat",       "rewardbench"),
-            ("rewardbench-chat-hard",  "rewardbench"),
-            ("rewardbench-reasoning",  "rewardbench"),
-            ("rewardbench-safety",     "rewardbench"),
+            ("big-bench",       None),
+            ("big-bench-hard",  None),
+            ("math",            None),
+            ("math-level-5",    None),
+            ("math-500",        None),
+            ("arena-hard",      None),
+            ("arena-hard-v2",   None),
+            ("livecodebench",   None),
+            ("livecodebench-pro", None),
+            ("global-mmlu",     None),
+            ("global-mmlu-lite", None),
         ],
     )
-    apply_slice_grouping(con)
+    changed = apply_slice_grouping(con)
+    assert changed == 0
+
     parents = dict(
         con.execute(
             "SELECT id, parent_benchmark_id FROM canonical_benchmarks"
         ).fetchall()
     )
-    assert parents["rewardbench-chat-hard"] == "rewardbench"
-    assert parents["rewardbench-chat"]      == "rewardbench"
-    assert parents["rewardbench"]           is None
-
-
-def test_apply_slice_grouping_self_parents_bare_stem():
-    """When registry has all variants but bare stem dangling, fill in
-    the bare stem as self-parent so it joins its variants in the
-    composite (GAIA: 4 benchmarks including bare-stem).
-    """
-    con = duckdb.connect()
-    con.execute(
-        "CREATE TABLE canonical_benchmarks "
-        "(id VARCHAR, parent_benchmark_id VARCHAR)"
-    )
-    con.executemany(
-        "INSERT INTO canonical_benchmarks VALUES (?, ?)",
-        [
-            ("gaia",          None),
-            ("gaia-level-1",  None),
-            ("gaia-level-2",  None),
-        ],
-    )
-    apply_slice_grouping(con)
-    parents = dict(
-        con.execute(
-            "SELECT id, parent_benchmark_id FROM canonical_benchmarks"
-        ).fetchall()
-    )
-    assert parents == {
-        "gaia":         "gaia",
-        "gaia-level-1": "gaia",
-        "gaia-level-2": "gaia",
-    }
-
-
-def test_apply_slice_grouping_promotion_keeps_parent_null():
-    """`bfcl-live`, `bfcl-multi-turn`, etc. share a `bfcl` stem but are
-    sibling benchmarks (each its own canonical, BFCL is the family slug
-    not a benchmark). promote_to_benchmark={bfcl-live, bfcl-multi-turn,
-    ...} keeps each row's parent_benchmark_id NULL.
-    """
-    con = duckdb.connect()
-    con.execute(
-        "CREATE TABLE canonical_benchmarks "
-        "(id VARCHAR, parent_benchmark_id VARCHAR)"
-    )
-    con.executemany(
-        "INSERT INTO canonical_benchmarks VALUES (?, ?)",
-        [
-            ("bfcl-live",       None),
-            ("bfcl-multi-turn", None),
-            ("bfcl-non-live",   None),
-            ("bfcl-web-search", None),
-        ],
-    )
-    apply_slice_grouping(
-        con,
-        promote_to_benchmark={
-            "bfcl-live", "bfcl-multi-turn", "bfcl-non-live", "bfcl-web-search",
-        },
-    )
-    parents = dict(
-        con.execute(
-            "SELECT id, parent_benchmark_id FROM canonical_benchmarks"
-        ).fetchall()
-    )
-    # All four stay parentless — they're benchmarks in the BFCL family,
-    # not slices of a phantom `bfcl` stem.
     assert all(p is None for p in parents.values())
 
 
 def test_apply_slice_grouping_promotion_resets_existing_parent():
-    """If the registry (or a prior heuristic run) already wired
-    `mmlu-pro` to `mmlu`, the promotion override resets it to NULL —
-    MMLU-Pro is a sibling benchmark in the MMLU family, not a slice
-    of MMLU.
-    """
+    """promote_to_benchmark resets a registry-authored parent to NULL."""
     con = duckdb.connect()
     con.execute(
         "CREATE TABLE canonical_benchmarks "
@@ -280,29 +211,3 @@ def test_apply_slice_grouping_promotion_resets_existing_parent():
         ).fetchall()
     )
     assert parents == {"mmlu": None, "mmlu-pro": None}
-
-
-def test_apply_slice_grouping_promotes_gpqa_diamond_to_benchmark():
-    """GPQA-Diamond shares the GPQA stem, but it is a benchmark sibling
-    in the GPQA family rather than a slice of bare GPQA.
-    """
-    con = duckdb.connect()
-    con.execute(
-        "CREATE TABLE canonical_benchmarks "
-        "(id VARCHAR, parent_benchmark_id VARCHAR)"
-    )
-    con.executemany(
-        "INSERT INTO canonical_benchmarks VALUES (?, ?)",
-        [
-            ("gpqa", None),
-            ("gpqa-diamond", None),
-        ],
-    )
-    apply_slice_grouping(con, promote_to_benchmark={"gpqa-diamond"})
-    parents = dict(
-        con.execute(
-            "SELECT id, parent_benchmark_id FROM canonical_benchmarks "
-            "ORDER BY id"
-        ).fetchall()
-    )
-    assert parents == {"gpqa": None, "gpqa-diamond": None}

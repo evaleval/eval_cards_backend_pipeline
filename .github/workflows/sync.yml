@@ -18,6 +18,15 @@ env:
   # Pin the registry resolver source for reproducible CI builds. Bump
   # when registry semantics change and we want CI to pick them up.
   RESOLVER_REF: main
+  # Pin upstream HF dataset revisions (commit SHAs) so CI runs the
+  # pipeline against a KNOWN upstream state. This isolates pipeline code
+  # changes from upstream data changes — new data won't flow in until
+  # these SHAs are bumped deliberately. Pinned to snapshot last validated
+  # on: 2026-05-28. To accept new upstream data, bump the SHA (or remove
+  # the var to track latest HEAD).
+  EEE_REVISION: 234017fbde38e8eceaad3d4e2389b13d8065c5c0
+  ENTITY_REGISTRY_REVISION: 4e7db3339c45aada4e0bfbb8d553b927e94bbfb3
+  BENCHMARK_METADATA_REVISION: 621bfc612e0f301457beb6e5d6811114583bcec0
 
 jobs:
   run-pipeline:
@@ -62,27 +71,36 @@ jobs:
       # --from-stage on prior runs. Caching it would just accumulate
       # stale snapshot dirs.
 
+      # Key incorporates the pinned EEE + cards revisions so a pin change
+      # invalidates the cache. When unpinned the revision slots are empty
+      # (key collapses to the prior `hf-bulk--` form) and restore-keys
+      # fall back to the latest bulk cache.
       - name: Cache EEE + benchmark-cards snapshots
         uses: actions/cache@v4
         with:
           path: |
             .cache/eee_datastore
             .cache/auto_benchmarkcards
-          key: hf-bulk-${{ github.run_id }}
+          key: hf-bulk-${{ env.EEE_REVISION }}-${{ env.BENCHMARK_METADATA_REVISION }}-${{ github.run_id }}
           restore-keys: |
+            hf-bulk-${{ env.EEE_REVISION }}-${{ env.BENCHMARK_METADATA_REVISION }}-
             hf-bulk-
 
-      # Registry cache is keyed on the entity-registry-data dataset's HEAD
-      # revision so that newly-seeded aliases/canonicals are picked up on
-      # the next sync. No restore-keys: a SHA mismatch must force a fresh
-      # download (otherwise the producer's `ensure_snapshot` short-circuits
-      # on a stale cache and never sees the new entities).
+      # Registry cache is keyed on the entity-registry-data revision so a
+      # SHA change forces a fresh download (the producer's ensure_snapshot
+      # short-circuits on a stale cache otherwise). When ENTITY_REGISTRY_REVISION
+      # is pinned, key on the pin; else key on current HEAD so newly-seeded
+      # aliases/canonicals are picked up. No restore-keys: a mismatch must miss.
       - name: Resolve entity-registry-data revision
         id: registry-rev
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          SHA=$(curl -fsSL -H "Authorization: Bearer $HF_TOKEN" "https://huggingface.co/api/datasets/evaleval/entity-registry-data" | jq -r .sha)
+          if [ -n "$ENTITY_REGISTRY_REVISION" ]; then
+            SHA="$ENTITY_REGISTRY_REVISION"
+          else
+            SHA=$(curl -fsSL -H "Authorization: Bearer $HF_TOKEN" "https://huggingface.co/api/datasets/evaleval/entity-registry-data" | jq -r .sha)
+          fi
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Cache entity-registry snapshot

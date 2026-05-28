@@ -26,7 +26,6 @@ from pathlib import Path
 
 import duckdb
 
-from eval_card_backend import categorisation
 from eval_card_backend.canonicalise import sidecars, stages, udfs
 from eval_card_backend.canonicalise.cache import (
     STAGE_ORDER,
@@ -214,15 +213,19 @@ def run(
     # always called so the resolver can load the alias store regardless of
     # which stages run.
     eee_root = eee.ensure_snapshot(
-        settings.eee_local_dir, settings.hf_token, settings.refresh_eee
+        settings.eee_local_dir, settings.hf_token, settings.refresh_eee,
+        revision=settings.eee_revision,
     )
     cards_root = benchmark_cards.ensure_snapshot(
         settings.benchmark_metadata_local_dir,
         settings.hf_token,
         settings.refresh_benchmark_metadata,
+        revision=settings.benchmark_metadata_revision,
     )
     registry_root = registry_src.ensure_snapshot(
-        registry_local_dir, settings.hf_token, force_refresh=settings.refresh_registry
+        registry_local_dir, settings.hf_token,
+        force_refresh=settings.refresh_registry,
+        revision=settings.registry_revision,
     )
 
     runs_stage_a = (from_stage in (None, "A"))
@@ -242,7 +245,6 @@ def run(
     reset_json_coerce_counter()
     reset_provenance_counter()
     reset_purpose_shape_counter()
-    categorisation.reset_category_counter()
     eee.reset_drop_counter()
 
     alias_store = registry_src.load_alias_store(registry_root)
@@ -383,7 +385,6 @@ def run(
         log_json_coerce_summary()
         log_purpose_shape_summary()
         log_metric_meta_summary(log)
-        categorisation.log_category_summary(log)
         eee.log_drop_summary()
         return None
 
@@ -489,7 +490,6 @@ def run(
     udfs.log_resolver_summary()
     log_json_coerce_summary()
     log_metric_meta_summary(log)
-    categorisation.log_category_summary(log)
     eee.log_drop_summary()
     _log_canonicalisation_summary(con, stage_e_stats.post)
 

@@ -1,13 +1,13 @@
 """Golden-file structural-parity test against ref-hierarchy_v2.json.
 
-Per `notes/hierarchy-alignment.md` §8 — assert that the producer's
+Asserts that the producer's
 `hierarchy.json` matches the *shape* of the reference (the colleague's
 gold standard) without requiring byte- or value-identity. Specifically:
 
   - Top-level keys: schema_version, families, benchmark_index, stats.
   - Each family carries exactly one of standalone_benchmarks /
     benchmarks / composites.
-  - Each family has the required fields per spec §5.1.
+  - Each family has the required fields.
   - Each benchmark inside any layout has the required fields.
   - Each benchmark_index entry has the required fields and represents
     a cross-suite appearance (≥2 distinct family_keys).
@@ -45,10 +45,10 @@ REF_PATH = REPO_ROOT.parent / "ref-hierarchy_v2.json"
 ALLOWLIST_PATH = Path(__file__).parent / "hierarchy_golden_allowlist.yaml"
 
 
-# Required field names per spec §5.1. Sets, so order doesn't matter.
+# Required field names. Sets, so order doesn't matter.
 _REQUIRED_FAMILY_FIELDS: set[str] = {
-    "key", "display_name", "category", "tags",
-    "evals_count", "eval_summary_ids",
+    "key", "display_name", "derivedTags", "tags",
+    "evals_count", "constituent_evaluation_ids",
     "reproducibility_summary", "provenance_summary", "comparability_summary",
 }
 _LAYOUT_FIELDS: set[str] = {"standalone_benchmarks", "benchmarks", "composites"}
@@ -56,11 +56,11 @@ _LAYOUT_FIELDS: set[str] = {"standalone_benchmarks", "benchmarks", "composites"}
 _REQUIRED_BENCHMARK_FIELDS: set[str] = {
     "key", "display_name", "family_id", "is_slice", "is_overall",
     "primary_metric_key", "has_card", "tags", "metrics", "slices",
-    "summary_eval_ids",
+    "constituent_evaluation_ids",
 }
 
 _REQUIRED_COMPOSITE_FIELDS: set[str] = {
-    "key", "display_name", "category", "tags", "benchmarks",
+    "key", "display_name", "tags", "benchmarks",
 }
 
 _REQUIRED_BENCHMARK_INDEX_FIELDS: set[str] = {
@@ -118,7 +118,7 @@ def ref() -> dict:
 
 
 def test_top_level_keys_match_spec(ours: dict) -> None:
-    """Spec §5.1: top-level keys are schema_version, generated_at,
+    """Top-level keys are schema_version, generated_at,
     stats, families, benchmark_index."""
     expected = {"schema_version", "stats", "families"}
     missing = expected - ours.keys()
@@ -132,7 +132,7 @@ def test_schema_version_v3(ours: dict) -> None:
 
 
 def test_top_level_has_benchmark_index(ours: dict) -> None:
-    """benchmark_index[] is the cross-suite lookup per spec §5.1."""
+    """benchmark_index[] is the cross-suite lookup."""
     assert "benchmark_index" in ours
     assert isinstance(ours["benchmark_index"], list)
 
@@ -157,7 +157,7 @@ def test_every_family_has_required_fields(ours: dict) -> None:
 
 
 def test_every_family_has_exactly_one_layout(ours: dict) -> None:
-    """Spec §3 / §5.1: each family chooses one of three layouts —
+    """Each family chooses one of three layouts —
     standalone_benchmarks (singleton), benchmarks (flat), or
     composites (multi-composite, e.g. HELM)."""
     for fam in ours["families"]:
@@ -191,7 +191,7 @@ def test_every_benchmark_has_required_fields(ours: dict) -> None:
 
 
 def test_benchmark_metrics_have_is_primary(ours: dict) -> None:
-    """Per spec §5.1 — each metric carries an is_primary flag, and at
+    """Each metric carries an is_primary flag, and at
     most one metric per benchmark is is_primary=True."""
     for fam in ours["families"]:
         for bench in _walk_benchmarks(fam):
@@ -273,7 +273,7 @@ def test_benchmark_index_entries_have_required_fields(ours: dict) -> None:
 
 
 def test_benchmark_index_appearances_are_cross_suite(ours: dict) -> None:
-    """Spec §5.1: benchmark_index entries surface canonicals that
+    """benchmark_index entries surface canonicals that
     appear under 2+ distinct families. Single-family appearances
     aren't cross-suite by definition."""
     for entry in ours["benchmark_index"]:
@@ -426,14 +426,26 @@ def test_v2_benchmark_keys_reachable_in_v3(ours: dict, ref: dict) -> None:
     )
 
 
+# v2 family keys that the v3 model intentionally does not surface as a
+# family/composite/benchmark key. These were per-stem "shell" families
+# the old per-benchmark grouping synthesised even when the bare stem had
+# no evaluation data of its own. v3 only surfaces entities that carry
+# data or are registry-curated; the real benchmark (a differently-keyed
+# split) remains reachable. `appworld` → data lives under
+# `appworld-test-normal` in the exgentic-open-agent family.
+_EXPECTED_ABSENT_V2_FAMILY_KEYS: frozenset[str] = frozenset({"appworld"})
+
+
 def test_v2_family_keys_reachable_in_v3(ours: dict, ref: dict) -> None:
     """Every family key that v2 surfaces as a top-level family must
     appear somewhere in v3 — either as a v3 family, a composite under
     a v3 family, or a benchmark key. The v3 grouping bucket can differ
-    from v2's, but the entity itself must be reachable."""
+    from v2's, but the entity itself must be reachable. Data-less v2
+    shell-stem families (see allowlist) are exempt — their real
+    benchmark surfaces under a different key."""
     v2_family_keys = {f["key"] for f in ref.get("families") or [] if f.get("key")}
     v3_keys = _v3_all_keys(ours)
-    missing = sorted(v2_family_keys - v3_keys)
+    missing = sorted(v2_family_keys - v3_keys - _EXPECTED_ABSENT_V2_FAMILY_KEYS)
     assert not missing, (
         f"v3 has no surface for {len(missing)} v2 top-level family key(s):\n  "
         + "\n  ".join(missing)

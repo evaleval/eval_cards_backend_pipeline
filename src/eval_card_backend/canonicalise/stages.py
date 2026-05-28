@@ -158,7 +158,7 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# MODEL DEVELOPER name-pattern fallback (Fix 2).
+# MODEL DEVELOPER name-pattern fallback.
 #
 # Applied in Stage G to orgless model rows — display-name strings that have
 # no `org/` slug prefix (e.g. `chatgpt-4o-latest-2025-01-30`,
@@ -512,9 +512,9 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
     ],
     # canonical_families — multi-benchmark / multi-composite groupings.
     # Loaded into the connection so write_hierarchy can read curation
-    # for the family-rooted tree (notes/hierarchy-alignment.md §5.1).
-    # Older registry snapshots that predate Step 2 don't ship this
-    # table; _load_dim falls back to an empty table with this schema
+    # for the family-rooted tree.
+    # Older registry snapshots that predate this table don't ship it;
+    # _load_dim falls back to an empty table with this schema
     # and the hierarchy degrades gracefully (every composite becomes
     # its own singleton family).
     "canonical_families": [
@@ -709,9 +709,8 @@ def stage_a_load_registry(
         _load_dim(con, name, dim_paths)
 
     # The benchmark-resolution alias table is registered as a DuckDB-side
-    # source so slice_promotion (Stage C) can replay v2's resolver path
-    # in Python without re-reading the parquet. Tiny table (~8k rows),
-    # cheap to materialise.
+    # source so slice_promotion (Stage C) can run its resolver replay
+    # in Python without re-reading the parquet. Small table, cheap to materialise.
     _load_aliases_table(con, registry_root)
 
     con.execute("ALTER TABLE canonical_models ADD COLUMN parent_model_id VARCHAR")
@@ -919,6 +918,13 @@ def stage_c_resolve_identities(con) -> None:
     from eval_card_backend.canonicalise import slice_promotion
     slice_promotion.apply_overrides(con)
 
+    # Fact-level hot fix: repair HELM composite-aggregate rows (metric name
+    # sits in the benchmark field upstream). Runs before _apply_slice_key so
+    # the helm_mmlu → `mmlu` mis-resolution never forms a bogus slice.
+    from eval_card_backend.canonicalise import resolution_hotfixes
+    resolution_hotfixes.fix_helm_composite_aggregates(con)
+    resolution_hotfixes.fix_vague_metric_labels(con)
+
     _apply_slice_key(con)
 
 
@@ -1065,7 +1071,7 @@ def stage_d_join_dims_and_flatten(con) -> None:
             )                                                                            AS evaluation_timestamp,
             -- benchmark_updated = when the source-of-truth (e.g.
             -- Vals.ai) last refreshed the benchmark itself. Carried on
-            -- ~34% of EEE records via
+            -- some EEE records via
             -- source_metadata.additional_details.benchmark_updated;
             -- distinct semantic from evaluation_timestamp (which is
             -- per-eval-run) and retrieved_timestamp (pipeline scrape).
@@ -2157,7 +2163,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             --      (registry miss, slug carries an org we know — e.g.
             --       `openai/gpt-5-...` matches canonical orgs.id='openai',
             --       so we render polished "OpenAI" rather than the slug)
-            --   4. name-pattern → co_pattern.*  (Fix 2)
+            --   4. name-pattern → co_pattern.*
             --      Orgless display names like `chatgpt-4o-latest`,
             --      `claude-3-5-opus`, `Qwen2-72B-Instruct` map to a
             --      canonical org via MODEL_DEVELOPER_NAME_PATTERNS.
@@ -2204,7 +2210,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
     # because the registry's auto-create path would normally have
     # populated those.
     # When the canonical lookup misses, `model_aggregation_key` falls
-    # back to the raw `model_raw` (Stage E line 930 COALESCE), so on
+    # back to the raw `model_raw` (the Stage E COALESCE), so on
     # the `models` dim that raw value lands in `model_key` itself —
     # detecting HF-shape there avoids a re-join to fact_results.
     miss_total, miss_hf_shaped = con.execute(
@@ -2282,7 +2288,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
         "Stage G developer coverage: %d/%d models (%.1f%%) have a developer; "
         "%d distinct developers in total. Breakdown — %d via canonical org "
         "(registry/slug match), %d via raw slug fallback (community "
-        "uploaders), %d orgless display names (Fix 2: needs name→org pattern "
+        "uploaders), %d orgless display names (needs name→org pattern "
         "table).",
         cov_canonical + cov_raw_slug, cov_total, cov_rate * 100,
         cov_distinct_devs, cov_canonical, cov_raw_slug, cov_orgless,
@@ -2409,15 +2415,10 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
     con.execute(
         f"""
         CREATE TABLE eval_results_view AS
-        WITH benchmark_categories AS (
-            -- Call categorise_benchmark_udf once per (composite, benchmark),
-            -- not once per triple. Without this CTE the UDF crosses the
-            -- Python boundary for every (model, benchmark, metric) row in
-            -- the view — wasted work since the input is constant per
-            -- (composite, benchmark) row in the dim.
+        WITH benchmark_tags AS (
             SELECT
                 composite_slug, benchmark_id,
-                categorise_benchmark_udf(domains, tasks, registry_tags) AS category
+                resolve_benchmark_tags_udf(display_name, benchmark_id) AS derived_tags
             FROM benchmarks
         ),
         tris AS (
@@ -2558,12 +2559,14 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
                 m.input_modalities            AS m_input_modalities,
                 m.output_modalities           AS m_output_modalities,
                 cmet.display_name             AS metric_display_name,
+                cmet.min_score                AS cmet_min_score,
+                cmet.max_score                AS cmet_max_score,
                 b.parent_benchmark_id         AS b_parent_benchmark_id,
                 b.composite_display_name      AS b_composite_display_name,
                 b.family_id                   AS b_family_id,
                 b.family_display_name         AS b_family_display_name,
                 b.is_slice                    AS b_is_slice,
-                bc.category                   AS b_category,
+                bt.derived_tags                AS b_derived_tags,
                 -- Pulled through so eval_results_view.source_data uses the
                 -- same fill rule as evals_view.source_data (was previously
                 -- hard-coded NULL on this view, causing schema drift).
@@ -2582,8 +2585,8 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
             LEFT JOIN models m              ON m.model_key    = ta.model_aggregation_key
             LEFT JOIN benchmarks b          ON b.composite_slug = ta.composite_slug
                                             AND b.benchmark_id  = ta.benchmark_key
-            LEFT JOIN benchmark_categories bc ON bc.composite_slug = ta.composite_slug
-                                              AND bc.benchmark_id  = ta.benchmark_key
+            LEFT JOIN benchmark_tags bt ON bt.composite_slug = ta.composite_slug
+                                      AND bt.benchmark_id  = ta.benchmark_key
             LEFT JOIN canonical_metrics cmet ON cmet.id       = ta.metric_key
         ),
         ranked AS (
@@ -2621,7 +2624,7 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
             b_family_display_name                                AS family_display_name,
             COALESCE(b_is_slice, FALSE)                          AS is_slice,
             -- parent_benchmark_id mirrors the contract on
-            -- comparison-index (notes/hierarchy-alignment.md §5.2):
+            -- the comparison-index sidecar:
             -- null for roots, the parent benchmark id for slices.
             -- The dim sometimes stores parent_benchmark_id == benchmark_id
             -- for roots, so gate on is_slice rather than trusting the raw
@@ -2753,7 +2756,24 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
             metric_display_name,
             rep_metric_unit                                       AS metric_unit,
             rep_lower_is_better                                   AS lower_is_better,
-            b_category                                            AS category,
+            b_derived_tags                                        AS derived_tags,
+            COALESCE(cmet_min_score, 0)                           AS min_score,
+            COALESCE(cmet_max_score, 1)                           AS max_score,
+            CASE
+                WHEN (COALESCE(cmet_max_score, 1) - COALESCE(cmet_min_score, 0)) <= 0 THEN 0
+                WHEN COALESCE(rep_lower_is_better, FALSE)
+                    THEN GREATEST(0, LEAST(1,
+                        1.0 - (rep_score - COALESCE(cmet_min_score, 0))
+                              / (COALESCE(cmet_max_score, 1) - COALESCE(cmet_min_score, 0))))
+                ELSE GREATEST(0, LEAST(1,
+                    (rep_score - COALESCE(cmet_min_score, 0))
+                    / (COALESCE(cmet_max_score, 1) - COALESCE(cmet_min_score, 0))))
+            END                                                   AS score_normalized,
+            regexp_replace(
+                regexp_replace(metric_summary_id_udf(benchmark_key, metric_key),
+                    '_(stderr|std_err|standard_error)$', '', 'i'),
+                '_(acc|accuracy|score|value|result)$', '', 'i'
+            )                                                     AS metric_pair_key,
 
             rep_score                                             AS score,
             CAST({{
@@ -2989,13 +3009,10 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 CAST(SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS gap_count,
                 AVG(completeness_score)                                   AS completeness_avg,
-                ARRAY_AGG(DISTINCT category)
-                    FILTER (WHERE category IS NOT NULL)                   AS categories_present,
-                CAST(SUM(CASE WHEN category = 'General'   THEN 1 ELSE 0 END) AS INTEGER) AS cat_general,
-                CAST(SUM(CASE WHEN category = 'Reasoning' THEN 1 ELSE 0 END) AS INTEGER) AS cat_reasoning,
-                CAST(SUM(CASE WHEN category = 'Agentic'   THEN 1 ELSE 0 END) AS INTEGER) AS cat_agentic,
-                CAST(SUM(CASE WHEN category = 'Safety'    THEN 1 ELSE 0 END) AS INTEGER) AS cat_safety,
-                CAST(SUM(CASE WHEN category = 'Knowledge' THEN 1 ELSE 0 END) AS INTEGER) AS cat_knowledge,
+                list_sort(list_distinct(flatten(
+                    list(from_json(derived_tags, '["VARCHAR"]'))
+                    FILTER (WHERE derived_tags IS NOT NULL)
+                )))                                                       AS derived_tags_union,
                 CAST(COUNT(score) AS INTEGER)                             AS score_count,
                 MIN(score)                                                AS score_min,
                 MAX(score)                                                AS score_max,
@@ -3035,29 +3052,42 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
              AND b.benchmark_id   = erv.benchmark_id
             GROUP BY 1
         ),
-        ranked_for_top AS (
-            -- For each (model, category), rank rows by score (lower_is_better aware).
+        erv_with_display AS (
             SELECT
                 erv.model_key,
-                erv.category,
-                COALESCE(b.display_name, erv.benchmark_id) AS benchmark_display,
-                erv.evaluation_id                          AS benchmark_key,
+                erv.derived_tags,
+                erv.benchmark_id                               AS raw_benchmark_id,
+                COALESCE(b.display_name, erv.benchmark_id)     AS benchmark_display,
+                erv.evaluation_id                              AS benchmark_key,
                 erv.score,
                 erv.metric_display_name,
-                ROW_NUMBER() OVER (
-                    PARTITION BY erv.model_key, erv.category
-                    ORDER BY
-                        CASE WHEN COALESCE(erv.lower_is_better, FALSE)
-                             THEN erv.score ELSE -erv.score
-                        END ASC,
-                        erv.evaluation_id ASC
-                ) AS _rk
+                erv.lower_is_better
             FROM eval_results_view erv
             LEFT JOIN benchmarks b
               ON b.composite_slug = erv.composite_slug
              AND b.benchmark_id   = erv.benchmark_id
             WHERE erv.score IS NOT NULL
-              AND erv.category IS NOT NULL
+              AND erv.derived_tags IS NOT NULL
+        ),
+        ranked_for_top AS (
+            SELECT
+                e.model_key,
+                tag.t                                          AS tag,
+                e.benchmark_display,
+                e.benchmark_key,
+                e.score,
+                e.metric_display_name,
+                ROW_NUMBER() OVER (
+                    PARTITION BY e.model_key, tag.t
+                    ORDER BY
+                        benchmark_priority_udf(e.raw_benchmark_id) DESC,
+                        CASE WHEN COALESCE(e.lower_is_better, FALSE)
+                             THEN e.score ELSE -e.score
+                        END ASC,
+                        e.benchmark_key ASC
+                ) AS _rk
+            FROM erv_with_display e,
+                 UNNEST(from_json(e.derived_tags, '["VARCHAR"]')) AS tag(t)
         ),
         top_scores AS (
             SELECT
@@ -3066,8 +3096,9 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                     benchmark    := benchmark_display,
                     benchmarkKey := benchmark_key,
                     score        := score,
-                    metric       := metric_display_name
-                ) ORDER BY category) AS top_scores
+                    metric       := metric_display_name,
+                    tag          := tag
+                ) ORDER BY tag) AS top_scores
             FROM ranked_for_top
             WHERE _rk = 1
             GROUP BY 1
@@ -3079,6 +3110,22 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                     FILTER (WHERE source_metadata.source_organization_url IS NOT NULL)
                     AS source_urls
             FROM eval_results_view
+            GROUP BY 1
+        ),
+        tag_counts AS (
+            SELECT
+                erv.model_key,
+                tag.t                                          AS tag,
+                CAST(COUNT(*) AS INTEGER)                      AS cnt
+            FROM eval_results_view erv,
+                 UNNEST(from_json(erv.derived_tags, '["VARCHAR"]')) AS tag(t)
+            GROUP BY 1, 2
+        ),
+        tag_stats_agg AS (
+            SELECT
+                model_key,
+                to_json(MAP(LIST(tag ORDER BY tag), LIST(cnt ORDER BY tag))) AS tag_stats
+            FROM tag_counts
             GROUP BY 1
         )
         SELECT
@@ -3103,7 +3150,9 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
             CAST(NULL AS VARCHAR)                       AS model_url,
             m.architecture,
             CAST(NULL AS VARCHAR)                       AS params,
-            m.params_billions,
+            COALESCE(m.params_billions,
+                     extract_params_billions_udf(m.display_name))
+                                                        AS params_billions,
             m.open_weights                              AS open_weights,
             -- Modalities pulled through from canonical_models. NULL when
             -- registry has no data; frontend treats NULL the same as []
@@ -3117,6 +3166,7 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
 
             COALESCE(ta.evaluations_count, 0)           AS evaluations_count,
             COALESCE(ta.benchmarks_count,  0)           AS benchmarks_count,
+            COALESCE(ta.benchmarks_count,  0)           AS benchmark_coverage_count,
             COALESCE(fa.variant_count,     0)           AS variant_count,
             COALESCE(fa.evaluator_count,   0)           AS evaluator_count,
             fa.evaluator_names,
@@ -3134,17 +3184,8 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
             fa.latest_source_name,
             bn.benchmark_names,
 
-            ta.categories_present                        AS categories,
-            CAST({{
-                'General':   COALESCE(ta.cat_general,   0),
-                'Reasoning': COALESCE(ta.cat_reasoning, 0),
-                'Agentic':   COALESCE(ta.cat_agentic,   0),
-                'Safety':    COALESCE(ta.cat_safety,    0),
-                'Knowledge': COALESCE(ta.cat_knowledge, 0)
-            }} AS STRUCT(
-                "General" INTEGER, "Reasoning" INTEGER, "Agentic" INTEGER,
-                "Safety" INTEGER, "Knowledge" INTEGER
-            )) AS category_stats,
+            ta.derived_tags_union                        AS derived_tags,
+            tsa.tag_stats,
 
             -- reproducibility band rule (legacy: 0/1/0<x<1 → complete/missing/partial)
             CASE
@@ -3209,14 +3250,14 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 'version_qualifier':    CAST(NULL AS VARCHAR),
                 'total_evaluations':    CAST(COALESCE(ta.evaluations_count, 0) AS INTEGER),
                 'last_updated':         fa.latest_timestamp,
-                'categories_covered':   ta.categories_present
+                'tags_covered':         ta.derived_tags_union
             }} AS STRUCT(
                 variant_id VARCHAR, variant_key VARCHAR,
                 variant_label VARCHAR, variant_display_name VARCHAR,
                 raw_model_ids VARCHAR[], family_id VARCHAR, family_name VARCHAR,
                 version_date VARCHAR, version_qualifier VARCHAR,
                 total_evaluations INTEGER, last_updated TIMESTAMP,
-                categories_covered VARCHAR[]
+                tags_covered VARCHAR[]
             ))]                                          AS variants,
 
             fa.raw_model_ids
@@ -3226,6 +3267,7 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
         LEFT JOIN benchmark_names bn ON bn.model_key = m.model_key
         LEFT JOIN top_scores   ts ON ts.model_key = m.model_key
         LEFT JOIN link_rollups lr ON lr.model_key = m.model_key
+        LEFT JOIN tag_stats_agg tsa ON tsa.model_key = m.model_key
         ORDER BY m.model_key
         """
     )
@@ -3590,7 +3632,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             b.family_display_name,
             b.is_slice,
             -- parent_benchmark_id mirrors the contract on
-            -- comparison-index (notes/hierarchy-alignment.md §5.2):
+            -- the comparison-index sidecar:
             -- null for roots, the parent benchmark id for slices.
             -- The dim sometimes stores parent_benchmark_id == benchmark_id
             -- for roots, so gate on is_slice rather than trusting the raw
@@ -3601,7 +3643,8 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
 
             b.display_name                              AS evaluation_name,
             b.display_name                              AS canonical_display_name,
-            categorise_benchmark_udf(b.domains, b.tasks, b.registry_tags) AS category,
+            resolve_benchmark_tags_udf(b.display_name, b.benchmark_id) AS derived_tags,
+            lookup_known_issues_udf(b.benchmark_id, b.display_name)  AS known_issues,
 
             CAST(struct_pack(
                 evaluation_description := pm.metric_display_name,
@@ -3705,7 +3748,6 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             is_summary_score_udf(
                 pm.metric_id, b.parent_benchmark_id, b.benchmark_id
             )                                             AS is_summary_score,
-            CAST([] AS VARCHAR[])                         AS summary_eval_ids,
 
             CAST(struct_pack(
                 domains   := b.domains,
@@ -3838,9 +3880,9 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
         -- were benchmark names. HELM family ("Mean win rate", "Mean
         -- score"), BFCL ("overall"), facts-grounding ("score"), etc.
         -- These are composite-level aggregate scores; surfacing them
-        -- as standalone evals is misleading. Step 3's hierarchy
-        -- reshape will surface them as composite rollup metrics in
-        -- hierarchy.json. Match case-insensitively because EEE's
+        -- as standalone evals is misleading. The hierarchy build
+        -- surfaces them as composite rollup metrics in hierarchy.json.
+        -- Match case-insensitively because EEE's
         -- casing is inconsistent ("Mean win rate" vs "Mean score").
         AND LOWER(b.benchmark_id) NOT IN (
             'mean win rate', 'mean score', 'overall', 'overall score',

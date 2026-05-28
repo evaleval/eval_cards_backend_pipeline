@@ -12,8 +12,8 @@ WHY HOTFIX
         `min_score`, `max_score`, and `lower_is_better` today; it has no
         `metric_kind` or `metric_unit`.
       - EEE per-record `metric_config` populates the spec-shaped fields
-        for ~27.5% of rows (sampled 2026-05). The remaining ~72.5% have
-        NULL `metric_kind` and `metric_unit`, but ~99.8% of those have
+        for a minority of rows. The remaining rows have NULL `metric_kind`
+        and `metric_unit`, but nearly all of those have
         `min_score=0, max_score=1, score_type='continuous'` — i.e. they
         ARE proportion-scale, just unlabelled.
 
@@ -97,7 +97,7 @@ def log_metric_meta_summary(log) -> None:
 # Heuristic regex: metric_name → metric_kind.
 #
 # Vocabulary mirrors values upstream EEE itself populates when it does fill
-# `metric_kind` (sampled 2026-05): accuracy, exact_match, f1, win_rate,
+# `metric_kind`: accuracy, exact_match, f1, win_rate,
 # pass_rate, elo, cost, latency, throughput, rank, count, score,
 # benchmark_score, refusal_rate, standard_deviation, ndcg, bleu, rouge.
 #
@@ -241,8 +241,8 @@ def derive_metric_meta(
         and _is_real_number(max_score) and max_score == 1
         and (isinstance(eee_score_type, str) and eee_score_type.lower() == "continuous")
     ):
-        # The most common NULL-unit shape (~99.8% of NULL rows in current
-        # data): unlabelled but [0,1] continuous-valued. Defensible inference.
+        # The most common NULL-unit shape: unlabelled but [0,1]
+        # continuous-valued. Defensible inference.
         metric_unit = "proportion"
         metric_unit_provenance = "heuristic_proportion_shape"
     else:
