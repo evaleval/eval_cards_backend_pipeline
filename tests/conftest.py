@@ -31,3 +31,10 @@ def _taxonomy_seed_stub(tmp_path_factory) -> Path:
 @pytest.fixture(autouse=True)
 def _set_taxonomy_seed_env(monkeypatch, _taxonomy_seed_stub) -> None:
     monkeypatch.setenv("EVALCARD_REGISTRY_SEED_DIR", str(_taxonomy_seed_stub))
+    # Tests run against local fixtures and must stay hermetic. CI pins the upstream
+    # HF dataset revisions via env vars; if those leak into Settings.from_env(),
+    # ensure_snapshot treats a fixture dir (which has no `.pinned_revision` marker)
+    # as a stale cache, wipes it, and downloads the real dataset — which hangs CI.
+    # Clear the pins so no test inherits them regardless of the ambient environment.
+    for _rev_var in ("EEE_REVISION", "ENTITY_REGISTRY_REVISION", "BENCHMARK_METADATA_REVISION"):
+        monkeypatch.delenv(_rev_var, raising=False)
