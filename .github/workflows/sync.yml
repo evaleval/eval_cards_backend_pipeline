@@ -25,13 +25,12 @@ env:
   # on: 2026-05-28. To accept new upstream data, bump the SHA (or remove
   # the var to track latest HEAD).
   EEE_REVISION: 234017fbde38e8eceaad3d4e2389b13d8065c5c0
-  # TODO(model-resolution-rework): bump to the registry.3.0 entity-registry-data
-  # publish SHA emitted by publish-registry-data.yml AFTER the registry rework
-  # merges to main. The value below is intentionally NOT a valid SHA so this
-  # cannot be run/pushed on main as-is — replace it as the first step of the
-  # backend merge (see migration order). Old schema-2 pin was
+  # Pinned to the registry.3.0 entity-registry-data publish (manifest
+  # schema_version registry.3.0, published 2026-06-05 by
+  # publish-registry-data.yml after the model-resolution-rework landed on
+  # registry main). Old schema-2 pin was
   # 4e7db3339c45aada4e0bfbb8d553b927e94bbfb3.
-  ENTITY_REGISTRY_REVISION: REPLACE_ME_registry_3_0_publish_sha
+  ENTITY_REGISTRY_REVISION: 88c0b292f2936eb4dc49672cc4f63781cf0da157
   BENCHMARK_METADATA_REVISION: 621bfc612e0f301457beb6e5d6811114583bcec0
 
 jobs:
