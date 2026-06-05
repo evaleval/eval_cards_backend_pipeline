@@ -89,7 +89,7 @@ def test_view_columns_match_spec(tmp_path, monkeypatch):
         "metric_pair_key", "score", "score_details", "fact_row_count",
         "position", "total", "percentile",
         "evaluation_timestamp", "source_metadata", "source_data",
-        "source_record_url", "eval_library",
+        "source_record_url", "eee_record_url", "eval_library",
         "evaluator_relationships", "has_first_party", "has_third_party",
         "coverage_cell", "reporting_orgs", "scores_by_organization",
         "is_summary_score", "summary_score_for", "aggregate_components",
@@ -114,6 +114,29 @@ def test_view_columns_match_spec(tmp_path, monkeypatch):
     assert cols["composite_slug"] == "VARCHAR"
     assert cols["family_id"] == "VARCHAR"
     assert cols["parent_benchmark_id"] == "VARCHAR"
+
+
+def test_eee_record_url_built_from_source_path(tmp_path, monkeypatch):
+    """eee_record_url deep-links each triple's representative row back to
+    its raw EEE source JSON on HuggingFace, built from the repo-relative
+    path carried since Stage A ingestion."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    con = _materialise_view(out)
+    urls = [r[0] for r in con.execute(
+        "SELECT eee_record_url FROM eval_results_view"
+    ).fetchall()]
+
+    assert urls, "no view rows produced"
+    # Every fixture record carries a `_record_path`, so every triple's
+    # representative row resolves to a raw EEE URL (none NULL).
+    assert all(u is not None for u in urls), "some rows have NULL eee_record_url"
+    prefix = "https://huggingface.co/datasets/evaleval/EEE_datastore/resolve/main/"
+    for u in urls:
+        assert u.startswith(prefix), u
+        # Path segment survives intact (e.g. data/fixtures_clean/.../*.json).
+        assert u[len(prefix):].startswith("data/fixtures_clean/"), u
+        assert u.endswith(".json"), u
 
 
 # ---------------------------------------------------------------------------

@@ -335,6 +335,24 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     assert "reproducibility" in headline
     assert "developers" in headline
 
+    # Divergence is a comparability-GROUP signal: the headline counts must equal
+    # distinct comparability groups, not eval_results_view rows (a triple reported
+    # under several evaluations must be counted once). Guards the row->group count
+    # fix; see sensitivity/docs/divergence-count-grain.md.
+    comp = headline["comparability"]["overall"]
+    for flag, count_key, check_key in (
+        ("has_variant_divergence", "variant_divergent_count", "groups_with_variant_check"),
+        ("has_cross_party_divergence", "cross_party_divergent_count", "groups_with_cross_party_check"),
+    ):
+        flagged, eligible = con.execute(
+            f"SELECT "
+            f"  COUNT(DISTINCT comparability_group_id) FILTER (WHERE {flag}), "
+            f"  COUNT(DISTINCT comparability_group_id) FILTER (WHERE {flag} IS NOT NULL) "
+            f"FROM read_parquet('{fact_path}')"
+        ).fetchone()
+        assert comp[count_key] == flagged, (count_key, comp[count_key], flagged)
+        assert comp[check_key] == eligible, (check_key, comp[check_key], eligible)
+
 
 def test_pipeline_from_stage_j_rebakes_view_layer(tmp_path, monkeypatch):
     """`--from-stage J` restores the canonical tables from cache, rebuilds
