@@ -359,7 +359,9 @@ def run(
             stages.stage_i_emit_warehouse_parquets(con, out_dir, snapshot_id)
         elif letter == "J":
             log.info("Stage J: building view layer …")
-            stages.stage_j_eval_results_view(con, snapshot_id)
+            stages.stage_j_eval_results_view(
+                con, snapshot_id, eee_revision=settings.eee_revision
+            )
             stages.stage_j_models_view(con, snapshot_id)
             stages.stage_j_evals_view(con, snapshot_id)
             # Re-anchor out_dir when --from-stage J skips Stage I; the

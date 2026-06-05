@@ -29,6 +29,7 @@ from eval_card_backend.signals.reproducibility import (
     AGENTIC_REPRODUCIBILITY_FIELDS,
     BASE_REPRODUCIBILITY_FIELDS,
 )
+from eval_card_backend.config import EEE_DATASET_REPO
 from eval_card_backend.sources.registry import read_parquet_arg
 
 
@@ -818,6 +819,12 @@ def stage_b_explode_evaluation_results(con) -> int:
             e.model_info,
             e.detailed_evaluation_results,
             e.source_config,
+            -- Repo-relative path of the EEE source JSON this record was
+            -- read from (e.g. data/HELM/<model>/<uuid>.json), injected at
+            -- Stage A ingestion. Carried through the pipeline so Stage J
+            -- can build a deep-link back to the upstream record
+            -- (eval_results_view.eee_record_url).
+            e._record_path AS source_record_path,
             (idx_1based - 1) AS result_idx,
             e.evaluation_results[idx_1based].evaluation_result_id AS evaluation_result_id_raw,
             e.evaluation_results[idx_1based].evaluation_name      AS evaluation_name,
@@ -1262,6 +1269,10 @@ def stage_d_join_dims_and_flatten(con) -> None:
             CAST(to_json(j.source_metadata.additional_details)   AS VARCHAR) AS source_additional_details,
             CAST(to_json(j.generation_config.additional_details) AS VARCHAR) AS generation_additional_details,
             CAST(to_json(j.metric_config.additional_details)     AS VARCHAR) AS metric_additional_details,
+
+            -- upstream EEE record pointer (repo-relative path of the source
+            -- JSON this row was exploded from; Stage J builds the HF URL).
+            j.source_record_path,
 
             -- instance pointer
             j.detailed_evaluation_results.file_path                                      AS instance_file_path,
@@ -2435,7 +2446,7 @@ def stage_i_emit_warehouse_parquets(con, out_dir: Path, snapshot_id: str) -> Non
 # ---------------------------------------------------------------------------
 
 
-def stage_j_eval_results_view(con, snapshot_id: str) -> None:
+def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = None) -> None:
     """Materialise `eval_results_view` — one row per (benchmark, metric, model)
     triple. Foundation view: models_view + evals_view fan out from this.
 
@@ -2458,6 +2469,14 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
     from `position` / `total`. `percentile` = `1 - (position-1) / (total-1)`.
     """
     sid = snapshot_id_to_sql(snapshot_id)
+
+    # Repo + revision for building eee_record_url deep-links back to the
+    # raw EEE source records. `main` is a safe default — records are
+    # addressed by a stable repo-relative file path, so /resolve/main/<path>
+    # resolves without pinning. Pass the resolved commit SHA in for
+    # immutable links.
+    eee_repo = EEE_DATASET_REPO
+    eee_rev = eee_revision or "main"
 
     eval_annotation_struct_type = (
         "STRUCT("
@@ -2632,6 +2651,7 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
                 tr.instance_file_path         AS rep_instance_file_path,
                 tr.instance_file_format       AS rep_instance_file_format,
                 tr.instance_rows              AS rep_instance_rows,
+                tr.source_record_path         AS rep_source_record_path,
                 -- Generation config from the representative fact row.
                 -- Re-assembled into a STRUCT below to round-trip the shape
                 -- the EEE source carried + the frontend's GenerationConfig
@@ -2950,7 +2970,22 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
                 dataset_url VARCHAR, dataset_version VARCHAR
             )) AS source_data,
 
+            -- Legacy slot: under v1 this pointed at a processed
+            -- card_backend record JSON. v2 emits Parquet, not per-row
+            -- JSON, so there is no such artifact — left NULL. The raw
+            -- upstream record is surfaced as eee_record_url below.
             CAST(NULL AS VARCHAR) AS source_record_url,
+
+            -- Deep-link back to the raw EEE source record this triple's
+            -- representative row was derived from. Built from the
+            -- repo-relative path carried since Stage A; NULL when the
+            -- representative row has no recorded path.
+            CASE
+                WHEN rep_source_record_path IS NOT NULL
+                THEN 'https://huggingface.co/datasets/{eee_repo}/resolve/{eee_rev}/'
+                     || rep_source_record_path
+                ELSE NULL
+            END AS eee_record_url,
 
             CAST({{
                 'name':    rep_eval_library_name,
@@ -3119,20 +3154,37 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                                                                           AS multi_source_groups,
                 CAST(SUM(CASE WHEN first_party_only THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS first_party_only_groups,
-                CAST(SUM(CASE WHEN has_variant_divergence THEN 1 ELSE 0 END) AS INTEGER)
-                                                                          AS variant_divergent_count,
-                CAST(SUM(CASE WHEN has_cross_party_divergence THEN 1 ELSE 0 END) AS INTEGER)
-                                                                          AS cross_party_divergent_count,
-                CAST(SUM(CASE WHEN has_variant_divergence IS NOT NULL THEN 1 ELSE 0 END) AS INTEGER)
-                                                                          AS groups_with_variant_check,
-                CAST(SUM(CASE WHEN has_cross_party_divergence IS NOT NULL THEN 1 ELSE 0 END) AS INTEGER)
-                                                                          AS groups_with_cross_party_check,
                 {_source_type_distribution_sql("erv")}
             FROM eval_results_view erv
             LEFT JOIN benchmarks b
               ON b.composite_slug = erv.composite_slug
              AND b.benchmark_id   = erv.benchmark_id
             GROUP BY 1
+        ),
+        model_comparability AS (
+            -- Divergence is a comparability-GROUP signal at the slice-aware
+            -- grain (comparability_group_id includes slice_key), so it cannot
+            -- be counted off eval_results_view (which collapses slices). We
+            -- source it from fact_results, counting each comparability_group_id
+            -- once per model (the flag is constant within a group).
+            -- See sensitivity/docs/divergence-count-grain.md.
+            SELECT
+                model_aggregation_key,
+                CAST(COUNT(DISTINCT comparability_group_id)
+                     FILTER (WHERE has_variant_divergence) AS INTEGER)
+                                                                          AS variant_divergent_count,
+                CAST(COUNT(DISTINCT comparability_group_id)
+                     FILTER (WHERE has_cross_party_divergence) AS INTEGER)
+                                                                          AS cross_party_divergent_count,
+                CAST(COUNT(DISTINCT comparability_group_id)
+                     FILTER (WHERE has_variant_divergence IS NOT NULL) AS INTEGER)
+                                                                          AS groups_with_variant_check,
+                CAST(COUNT(DISTINCT comparability_group_id)
+                     FILTER (WHERE has_cross_party_divergence IS NOT NULL) AS INTEGER)
+                                                                          AS groups_with_cross_party_check
+            FROM fact_results
+            WHERE comparability_group_id IS NOT NULL
+            GROUP BY model_aggregation_key
         ),
         benchmark_names AS (
             -- Excludes slice display names so the array length matches the
@@ -3330,10 +3382,10 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
 
             CAST({{
                 'total_groups':                  CAST(COALESCE(ta.evaluations_count, 0) AS INTEGER),
-                'groups_with_variant_check':     COALESCE(ta.groups_with_variant_check, 0),
-                'groups_with_cross_party_check': COALESCE(ta.groups_with_cross_party_check, 0),
-                'variant_divergent_count':       COALESCE(ta.variant_divergent_count, 0),
-                'cross_party_divergent_count':   COALESCE(ta.cross_party_divergent_count, 0)
+                'groups_with_variant_check':     COALESCE(mc.groups_with_variant_check, 0),
+                'groups_with_cross_party_check': COALESCE(mc.groups_with_cross_party_check, 0),
+                'variant_divergent_count':       COALESCE(mc.variant_divergent_count, 0),
+                'cross_party_divergent_count':   COALESCE(mc.cross_party_divergent_count, 0)
             }} AS {_COMPARABILITY_SUMMARY_STRUCT}) AS comparability_summary,
 
             fa.eval_libraries,
@@ -3379,6 +3431,7 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
         FROM models m
         LEFT JOIN fact_aggs    fa ON fa.model_key = m.model_key
         LEFT JOIN triple_aggs  ta ON ta.model_key = m.model_key
+        LEFT JOIN model_comparability mc ON mc.model_aggregation_key = m.model_key
         LEFT JOIN benchmark_names bn ON bn.model_key = m.model_key
         LEFT JOIN top_scores   ts ON ts.model_key = m.model_key
         LEFT JOIN link_rollups lr ON lr.model_key = m.model_key
@@ -3561,17 +3614,40 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                                                                        AS multi_source_groups,
                 CAST(SUM(CASE WHEN pt.first_party_only THEN 1 ELSE 0 END) AS INTEGER)
                                                                        AS first_party_only_groups,
-                {_source_type_distribution_sql("pt")},
-                CAST(SUM(CASE WHEN pt.has_variant_divergence THEN 1 ELSE 0 END) AS INTEGER)
-                                                                       AS variant_divergent_count,
-                CAST(SUM(CASE WHEN pt.has_cross_party_divergence THEN 1 ELSE 0 END) AS INTEGER)
-                                                                       AS cross_party_divergent_count,
-                CAST(SUM(CASE WHEN pt.has_variant_divergence IS NOT NULL THEN 1 ELSE 0 END) AS INTEGER)
-                                                                       AS groups_with_variant_check,
-                CAST(SUM(CASE WHEN pt.has_cross_party_divergence IS NOT NULL THEN 1 ELSE 0 END) AS INTEGER)
-                                                                       AS groups_with_cross_party_check
+                {_source_type_distribution_sql("pt")}
             FROM primary_triples pt
             GROUP BY pt.composite_slug, pt.benchmark_id
+        ),
+        primary_comparability AS (
+            -- Divergence is a comparability-GROUP signal at the slice-aware
+            -- grain (comparability_group_id includes slice_key), so it cannot
+            -- be counted off primary_triples (erv.*, which collapses slices).
+            -- We source it from fact_results restricted to the primary metric
+            -- (JOIN primary_metric on composite_slug, benchmark, metric),
+            -- counting each comparability_group_id once per (composite,
+            -- benchmark). See sensitivity/docs/divergence-count-grain.md.
+            SELECT
+                fr.composite_slug,
+                fr.benchmark_key                                       AS benchmark_id,
+                CAST(COUNT(DISTINCT fr.comparability_group_id)
+                     FILTER (WHERE fr.has_variant_divergence) AS INTEGER)
+                                                                       AS variant_divergent_count,
+                CAST(COUNT(DISTINCT fr.comparability_group_id)
+                     FILTER (WHERE fr.has_cross_party_divergence) AS INTEGER)
+                                                                       AS cross_party_divergent_count,
+                CAST(COUNT(DISTINCT fr.comparability_group_id)
+                     FILTER (WHERE fr.has_variant_divergence IS NOT NULL) AS INTEGER)
+                                                                       AS groups_with_variant_check,
+                CAST(COUNT(DISTINCT fr.comparability_group_id)
+                     FILTER (WHERE fr.has_cross_party_divergence IS NOT NULL) AS INTEGER)
+                                                                       AS groups_with_cross_party_check
+            FROM fact_results fr
+            JOIN primary_metric pm
+              ON pm.composite_slug = fr.composite_slug
+             AND pm.benchmark_id   = fr.benchmark_key
+             AND pm.metric_id      = fr.metric_key
+            WHERE fr.comparability_group_id IS NOT NULL
+            GROUP BY fr.composite_slug, fr.benchmark_key
         ),
         leaderboard_metrics_agg AS (
             SELECT
@@ -3903,10 +3979,10 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
 
             CAST(struct_pack(
                 total_groups                  := COALESCE(pf.gprov_total_groups, 0),
-                groups_with_variant_check     := COALESCE(pf.groups_with_variant_check, 0),
-                groups_with_cross_party_check := COALESCE(pf.groups_with_cross_party_check, 0),
-                variant_divergent_count       := COALESCE(pf.variant_divergent_count, 0),
-                cross_party_divergent_count   := COALESCE(pf.cross_party_divergent_count, 0)
+                groups_with_variant_check     := COALESCE(pcmp.groups_with_variant_check, 0),
+                groups_with_cross_party_check := COALESCE(pcmp.groups_with_cross_party_check, 0),
+                variant_divergent_count       := COALESCE(pcmp.variant_divergent_count, 0),
+                cross_party_divergent_count   := COALESCE(pcmp.cross_party_divergent_count, 0)
             ) AS {_COMPARABILITY_SUMMARY_STRUCT}) AS comparability_summary,
 
             CAST(struct_pack(
@@ -3959,6 +4035,8 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
         LEFT JOIN canonical_metrics cmet ON cmet.id = pm.metric_id
         LEFT JOIN primary_facts pf      ON pf.composite_slug = b.composite_slug
                                         AND pf.benchmark_id  = b.benchmark_id
+        LEFT JOIN primary_comparability pcmp ON pcmp.composite_slug = b.composite_slug
+                                             AND pcmp.benchmark_id  = b.benchmark_id
         LEFT JOIN evaluator_names_agg ena ON ena.composite_slug = b.composite_slug
                                           AND ena.benchmark_id  = b.benchmark_id
         LEFT JOIN source_types_agg    sta ON sta.composite_slug = b.composite_slug

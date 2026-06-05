@@ -356,16 +356,34 @@ def _comparability_block(con, tag: str | None) -> dict:
     tag_clause = _tag_filter_clause(tag)
     row = con.execute(
         f"""
+        -- Divergence is a comparability-GROUP signal. The comparability group
+        -- grain is slice-aware (comparability_group_id includes slice_key), so
+        -- it cannot be counted off eval_results_view, which collapses slices to
+        -- one triple row. We source the counts from fact_results, counting each
+        -- comparability_group_id once (the flag is constant within a group).
+        -- The by_tag filter still works via a deduped derived_tags lookup joined
+        -- on the (model, benchmark, metric) triple (tags are benchmark-level,
+        -- constant across a triple's slices). total_triples is now the count of
+        -- distinct comparability groups. See sensitivity/docs/divergence-count-grain.md.
         SELECT
-            COUNT(*)                                                  AS total_triples,
-            SUM(CASE WHEN erv.has_variant_divergence THEN 1 ELSE 0 END)     AS variant_divergent,
-            SUM(CASE WHEN erv.has_cross_party_divergence THEN 1 ELSE 0 END) AS cross_party_divergent,
-            SUM(CASE WHEN erv.has_variant_divergence IS NOT NULL THEN 1 ELSE 0 END)
-                AS variant_eligible,
-            SUM(CASE WHEN erv.has_cross_party_divergence IS NOT NULL THEN 1 ELSE 0 END)
-                AS cross_party_eligible
-        FROM eval_results_view erv
-        WHERE 1 = 1 {tag_clause}
+            COUNT(DISTINCT fr.comparability_group_id)                 AS total_triples,
+            COUNT(DISTINCT fr.comparability_group_id)
+                FILTER (WHERE fr.has_variant_divergence)              AS variant_divergent,
+            COUNT(DISTINCT fr.comparability_group_id)
+                FILTER (WHERE fr.has_cross_party_divergence)          AS cross_party_divergent,
+            COUNT(DISTINCT fr.comparability_group_id)
+                FILTER (WHERE fr.has_variant_divergence IS NOT NULL)  AS variant_eligible,
+            COUNT(DISTINCT fr.comparability_group_id)
+                FILTER (WHERE fr.has_cross_party_divergence IS NOT NULL) AS cross_party_eligible
+        FROM fact_results fr
+        LEFT JOIN (
+            SELECT DISTINCT model_key, benchmark_id, metric_id, derived_tags
+            FROM eval_results_view
+        ) erv
+          ON erv.model_key    = fr.model_aggregation_key
+         AND erv.benchmark_id = fr.benchmark_key
+         AND erv.metric_id    = fr.metric_key
+        WHERE fr.comparability_group_id IS NOT NULL {tag_clause}
         """
     ).fetchone()
     (total, var_div, cross_div, var_elig, cross_elig) = row
