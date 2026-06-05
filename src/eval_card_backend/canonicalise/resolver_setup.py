@@ -13,9 +13,14 @@ from eval_card_backend.canonicalise import evalcard_tags, udfs
 
 
 def register_udfs(con, resolver) -> None:
-    resolve_canonical_id_py, resolve_strategy_py, resolve_leaf_id_py = (
-        udfs.make_resolver_udfs(resolver)
-    )
+    (
+        resolve_canonical_id_py,
+        resolve_strategy_py,
+        resolve_leaf_id_py,
+        resolve_inference_platform_py,
+        resolve_resolution_source_py,
+        resolve_resolution_granularity_py,
+    ) = udfs.make_resolver_udfs(resolver)
 
     con.create_function(
         "resolve_canonical_id", resolve_canonical_id_py,
@@ -29,6 +34,24 @@ def register_udfs(con, resolver) -> None:
     )
     con.create_function(
         "resolve_leaf_id", resolve_leaf_id_py,
+        ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    # Model-resolution-rework per-row provenance: surfaced off the
+    # resolver's ResolutionResult so each fact/view row can carry the
+    # serving platform and the resolution provenance/granularity.
+    con.create_function(
+        "resolve_inference_platform", resolve_inference_platform_py,
+        ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    con.create_function(
+        "resolve_resolution_source", resolve_resolution_source_py,
+        ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    con.create_function(
+        "resolve_resolution_granularity", resolve_resolution_granularity_py,
         ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
         null_handling="special",
     )

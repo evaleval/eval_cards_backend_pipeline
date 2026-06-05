@@ -157,7 +157,40 @@ def make_resolver_udfs(resolver):
             return None
         return result.resolved_leaf_id
 
-    return resolve_canonical_id_py, resolve_strategy_py, resolve_leaf_id_py
+    def _resolve_field(field: str):
+        """Build a UDF that surfaces one scalar field off the resolver's
+        ResolutionResult for the resolved raw value. Used to thread the
+        model-resolution-rework per-row provenance fields
+        (`inference_platform`, `resolution_source`,
+        `resolution_granularity`) from the resolver output into the
+        producer's view layer without re-resolving. NULL-safe and
+        exception-safe like the other resolver UDFs."""
+
+        def _py(
+            raw: str | None, entity_type: str | None, source_config: str | None
+        ) -> str | None:
+            if not raw or not isinstance(raw, str) or not raw.strip():
+                return None
+            try:
+                result = _resolve_cached(raw, entity_type, source_config)
+            except Exception:
+                return None
+            return getattr(result, field, None)
+
+        return _py
+
+    resolve_inference_platform_py = _resolve_field("inference_platform")
+    resolve_resolution_source_py = _resolve_field("resolution_source")
+    resolve_resolution_granularity_py = _resolve_field("resolution_granularity")
+
+    return (
+        resolve_canonical_id_py,
+        resolve_strategy_py,
+        resolve_leaf_id_py,
+        resolve_inference_platform_py,
+        resolve_resolution_source_py,
+        resolve_resolution_granularity_py,
+    )
 
 
 def log_resolver_summary(top_n: int = 10) -> None:

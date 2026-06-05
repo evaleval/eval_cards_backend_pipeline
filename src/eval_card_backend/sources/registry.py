@@ -46,7 +46,7 @@ from eval_card_backend.sources._revision_cache import (
 # column the producer reads. Minor bumps (additive columns) don't
 # require a producer change. Coordinated with
 # `eval-card-registry/scripts/publish_registry_data.py:SCHEMA_VERSION`.
-EXPECTED_REGISTRY_SCHEMA_MAJOR = 2
+EXPECTED_REGISTRY_SCHEMA_MAJOR = 3
 
 
 class RegistrySchemaMismatch(RuntimeError):
@@ -64,6 +64,13 @@ DIM_TABLES: tuple[str, ...] = (
     "canonical_composites",
     "canonical_metrics",
     "eval_harnesses",
+    # New dim table from the model-resolution-rework. Older snapshots that
+    # predate it won't ship the parquet; `open_dim_paths` simply omits the
+    # key and `_load_dim` falls back to an empty table with the schema.
+    # NB: the registry publishes this as `canonical_inference_platforms`
+    # (consistent with the other canonical_* dims) — the name must match the
+    # published parquet or the dim silently loads empty in production.
+    "canonical_inference_platforms",
 )
 
 ALIASES_TABLE = "aliases"
