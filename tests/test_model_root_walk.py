@@ -1,14 +1,18 @@
 """Unit tests for `_derive_model_root_id` — the transitive variant /
-quantization root walk that overwrites `canonical_models.root_model_id`.
+quantization root walk that overwrites `canonical_models.model_group_id`.
+
+Model-resolution-rework: the registry column was renamed
+`root_model_id` -> `model_group_id` (in place). The walk now reads and
+overwrites `model_group_id`; semantics are unchanged.
 
 Each case sets up a minimal `canonical_models` table directly on a
 DuckDB connection (no registry fixture, no resolver), runs the helper,
-and reads back the resulting `root_model_id` column. The goal is to
+and reads back the resulting `model_group_id` column. The goal is to
 pin down the walk's semantics independently of the full pipeline:
 
   - A model with no parent of either kind → root = self.
   - A variant chain (parent_model_id) → root = topmost ancestor.
-  - A quantization chain (root_model_id pre-set on a leaf) → root
+  - A quantization chain (model_group_id pre-set on a leaf) → root
     follows the registry-set value.
   - Mixed chains (variant edge above a quantization root) walk both
     until a fixed point.
@@ -27,7 +31,7 @@ _DDL = """
 CREATE TABLE canonical_models (
     id              VARCHAR,
     parent_model_id VARCHAR,
-    root_model_id   VARCHAR
+    model_group_id  VARCHAR
 )
 """
 
@@ -42,7 +46,7 @@ def con():
 
 def _root_of(con) -> dict[str, str]:
     rows = con.execute(
-        "SELECT id, root_model_id FROM canonical_models"
+        "SELECT id, model_group_id FROM canonical_models"
     ).fetchall()
     return {r[0]: r[1] for r in rows}
 
@@ -98,7 +102,7 @@ def test_multi_hop_variant_chain(con):
 
 
 def test_quantization_root_followed(con):
-    """llama-3-70b-int4 has a registry-set root_model_id pointing at
+    """llama-3-70b-int4 has a registry-set model_group_id pointing at
     the unquantized base. Walk lands at the base."""
     con.executemany(
         "INSERT INTO canonical_models VALUES (?, ?, ?)",
@@ -180,6 +184,39 @@ def test_dangling_parent_id_left_as_self(con):
     # set yet), then on the next iteration `parent_of.get("ghost-parent")`
     # returns None (KeyError → default), so the walk terminates there.
     assert _root_of(con) == {"orphan": "ghost-parent"}
+
+
+def test_group_id_self_edge_terminates(con):
+    """Model-resolution-rework: the registry's `model_group_id` is now
+    ALWAYS-PRESENT and equals self at a group root (a self-edge). The
+    quant-root step must terminate on that self-edge (`!= current`
+    guard) rather than loop; the node stays its own root."""
+    con.executemany(
+        "INSERT INTO canonical_models VALUES (?, ?, ?)",
+        [
+            ("openai/gpt-4o", None, "openai/gpt-4o"),
+        ],
+    )
+    _derive_model_root_id(con)
+    assert _root_of(con) == {"openai/gpt-4o": "openai/gpt-4o"}
+
+
+def test_self_group_id_with_variant_parent_walks_to_variant_root(con):
+    """A leaf whose `model_group_id` is self (always-present) but which
+    also carries a variant parent: the self group-edge terminates, then
+    the variant edge advances to the structural ancestor."""
+    con.executemany(
+        "INSERT INTO canonical_models VALUES (?, ?, ?)",
+        [
+            ("anthropic/claude",        None,                None),
+            ("anthropic/claude-sonnet", "anthropic/claude",  "anthropic/claude-sonnet"),
+        ],
+    )
+    _derive_model_root_id(con)
+    assert _root_of(con) == {
+        "anthropic/claude":        "anthropic/claude",
+        "anthropic/claude-sonnet": "anthropic/claude",
+    }
 
 
 def test_empty_table_is_noop(con):

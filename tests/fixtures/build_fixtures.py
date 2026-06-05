@@ -440,7 +440,14 @@ def write_registry_fixtures():
         {"id": "openai/gpt-4o", "display_name": "GPT-4o", "developer": "OpenAI",
          "org_id": "openai", "family": "GPT-4", "architecture": "transformer",
          "params_billions": None, "parents": "[]",
-         "root_model_id": None, "lineage_origin_org_id": "openai",
+         # Model-resolution-rework end-state: model_group_id is the
+         # always-present GROUP key (self at a group root), model_family_id
+         # is the STRUCTURAL family-release id (the M3 family walk),
+         # lineage_origin_model_id is null-at-origin (provenance, not
+         # membership), lineage_origin_org_id -> lineage_origin_model_org_id.
+         "model_group_id": "openai/gpt-4o", "model_family_id": "openai/gpt-4",
+         "lineage_origin_model_id": None, "lineage_origin_model_org_id": "openai",
+         "resolution_source": None, "resolution_granularity": None,
          "open_weights": False, "release_date": "2024-05",
          "tags": "[]", "metadata": "{}", "review_status": "reviewed",
          "created_at": "", "updated_at": ""},
@@ -448,7 +455,9 @@ def write_registry_fixtures():
          "developer": "Anthropic", "org_id": "anthropic", "family": "Claude",
          "architecture": "transformer", "params_billions": None,
          "parents": '[{"id": "anthropic/claude", "relationship": "variant"}]',
-         "root_model_id": None, "lineage_origin_org_id": "anthropic",
+         "model_group_id": "anthropic/claude-sonnet", "model_family_id": "anthropic/claude",
+         "lineage_origin_model_id": None, "lineage_origin_model_org_id": "anthropic",
+         "resolution_source": None, "resolution_granularity": None,
          "open_weights": False, "release_date": "2024-06-20",
          "tags": "[]", "metadata": "{}", "review_status": "reviewed",
          "created_at": "", "updated_at": ""},

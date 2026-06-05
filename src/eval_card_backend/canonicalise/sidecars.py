@@ -409,21 +409,23 @@ def _developers_list(con) -> list[dict]:
 
 
 def _model_families_list(con) -> list[dict]:
-    """Per-model-family rollup (developer + variant lineage groupings
-    derived from `models_view.model_family_id`). Distinct from the
-    benchmark-family hierarchy under `families` in hierarchy.json —
-    name kept distinct to avoid the historical conflation.
+    """Per-model-group rollup (developer + variant lineage groupings
+    derived from `models_view.model_group_id`, the always-present GROUP
+    key). Distinct from the benchmark-family hierarchy under `families`
+    in hierarchy.json — name kept distinct to avoid the historical
+    conflation. The emitted `family_key` JSON field is left unchanged
+    (frontend contract); it carries the group key, as it always has.
     """
     rows = con.execute(
         """
         SELECT
-            model_family_id   AS family_key,
+            model_group_id   AS family_key,
             ANY_VALUE(model_family_name) AS display_name,
             COUNT(DISTINCT model_key)    AS model_count,
             SUM(evaluations_count)       AS eval_count
         FROM models_view
-        WHERE model_family_id IS NOT NULL
-        GROUP BY model_family_id
+        WHERE model_group_id IS NOT NULL
+        GROUP BY model_group_id
         ORDER BY eval_count DESC NULLS LAST, family_key ASC
         """
     ).fetchall()
@@ -1981,7 +1983,11 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             erv.model_key,
             erv.model_id,
             erv.model_route_id,
-            mv.model_family_id,
+            -- Group key (renamed `model_family_id` -> `model_group_id` on
+            -- models_view). Aliased back to `model_family_id` so the rest
+            -- of this builder and the emitted JSON field keep their name
+            -- (frontend contract) while carrying the same group-key value.
+            mv.model_group_id AS model_family_id,
             mv.model_family_name,
             mv.developer,
             mk.metric_kind

@@ -447,9 +447,19 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
     ],
     # canonical_models — mirrors the registry's `canonical_models` table.
     # Lineage is encoded as a typed `parents` JSON list (see decode_parents
-    # in eval_entity_resolver.canonical_store) plus scalar `root_model_id`
-    # / `lineage_origin_org_id`. Stage A derives `parent_model_id` from
+    # in eval_entity_resolver.canonical_store) plus scalar `model_group_id`
+    # / `lineage_origin_model_org_id`. Stage A derives `parent_model_id` from
     # the first `variant` edge so downstream SQL keeps a flat scalar.
+    #
+    # Model-resolution-rework end-state names (registry columns, renamed in
+    # place, NOT duplicated): `model_group_id` is the always-present GROUP
+    # key (membership; self at a group root), `model_family_id` is the
+    # STRUCTURAL family-release id (the M3 family walk), `lineage_origin_org_id`
+    # -> `lineage_origin_model_org_id`. Other columns: `lineage_origin_model_id`
+    # (deepest non-variant ancestor id, null-at-origin), and the resolution provenance
+    # enums `resolution_source` / `resolution_granularity`. `_load_dim`
+    # NULL-pads any column the published parquet doesn't carry yet, so the
+    # load stays backward-safe against an older registry snapshot.
     "canonical_models": [
         ("id", "VARCHAR"),
         ("display_name", "VARCHAR"),
@@ -459,8 +469,12 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("architecture", "VARCHAR"),
         ("params_billions", "DOUBLE"),
         ("parents", "VARCHAR"),
-        ("root_model_id", "VARCHAR"),
-        ("lineage_origin_org_id", "VARCHAR"),
+        ("model_group_id", "VARCHAR"),
+        ("model_family_id", "VARCHAR"),
+        ("lineage_origin_model_id", "VARCHAR"),
+        ("lineage_origin_model_org_id", "VARCHAR"),
+        ("resolution_source", "VARCHAR"),
+        ("resolution_granularity", "VARCHAR"),
         ("open_weights", "BOOLEAN"),
         ("release_date", "VARCHAR"),
         # JSON-encoded list of modality strings (e.g. ["text","image"]) per
@@ -543,6 +557,25 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("metadata", "VARCHAR"),
         ("review_status", "VARCHAR"),
     ],
+    # canonical_inference_platforms — new dim table introduced by the
+    # model-resolution-rework. PK `id` is a models.dev provider slug or
+    # EEE host token; rows describe the serving platform an alias maps to.
+    # `aliases.inference_platform` is an FK into this table. Loaded so the
+    # view layer (and downstream readers) can join platform display
+    # metadata; same back-compat fallback as canonical_families — older
+    # registry snapshots that predate the table get an empty table.
+    # Name matches the registry's published parquet (canonical_* prefix).
+    "canonical_inference_platforms": [
+        ("id", "VARCHAR"),
+        ("display_name", "VARCHAR"),
+        ("kind", "VARCHAR"),
+        ("aliases", "VARCHAR"),              # JSON-encoded list
+        ("canonical_org", "VARCHAR"),
+        ("variant_of", "VARCHAR"),
+        ("homepage", "VARCHAR"),
+        ("created_at", "VARCHAR"),
+        ("updated_at", "VARCHAR"),
+    ],
 }
 
 
@@ -560,6 +593,10 @@ def _load_aliases_table(con, registry_root: Path | None) -> None:
         ("entity_type",   "VARCHAR"),
         ("status",        "VARCHAR"),
         ("source_config", "VARCHAR"),
+        # Model-resolution-rework: per-alias serving platform (FK ->
+        # inference_platforms.id). NULL-safe — the CAST-NULL branch below
+        # handles an older aliases parquet that predates this column.
+        ("inference_platform", "VARCHAR"),
     )
     ddl = ", ".join(f"{c} {t}" for c, t in schema)
 
@@ -614,19 +651,24 @@ def _load_dim(con, name: str, dim_paths: dict) -> None:
 
 
 def _derive_model_root_id(con) -> None:
-    """Overwrite `canonical_models.root_model_id` with the genuine
-    transitive root for every row.
+    """Overwrite `canonical_models.model_group_id` with the genuine
+    transitive root (identity group) for every row.
 
-    The registry populates `root_model_id` only on quantization chains,
-    where the resolver also collapses leaves to the root before reaching
-    the producer. Variant chains — e.g. `grok-4-0407` whose
-    `parent_model_id` is `grok-4` — are not collapsed by the resolver
-    and stay visible as distinct canonical ids on fact rows. Without a
-    transitive walk, signal grouping fragments the same identity across
-    its variants.
+    Model-resolution-rework: the registry column that carries the
+    identity-group root was renamed `root_model_id` -> `model_group_id`
+    (renamed in place, NOT duplicated). This walk reads and overwrites
+    that renamed column; semantics are unchanged.
+
+    The registry populates `model_group_id` only on identity-preserving
+    chains (quantized + version snapshots), where the resolver also
+    collapses leaves to the group before reaching the producer. Variant
+    chains — e.g. `grok-4-0407` whose `parent_model_id` is `grok-4` —
+    are not collapsed by the resolver and stay visible as distinct
+    canonical ids on fact rows. Without a transitive walk, signal
+    grouping fragments the same identity across its variants.
 
     The walk alternates two edge kinds until fixed point: the registry's
-    incoming `root_model_id` (quantization root) and `parent_model_id`
+    incoming `model_group_id` (identity-group root) and `parent_model_id`
     (first `variant` edge, derived earlier in this stage from the typed
     `parents` list). A model with no parent of either kind resolves to
     itself. Cycle-safe: a revisited node terminates the chain.
@@ -636,7 +678,7 @@ def _derive_model_root_id(con) -> None:
     competing columns.
     """
     rows = con.execute(
-        "SELECT id, parent_model_id, root_model_id FROM canonical_models"
+        "SELECT id, parent_model_id, model_group_id FROM canonical_models"
     ).fetchall()
     variant_parent: dict[str, str | None] = {row[0]: row[1] for row in rows}
     quant_root: dict[str, str | None] = {row[0]: row[2] for row in rows}
@@ -645,6 +687,10 @@ def _derive_model_root_id(con) -> None:
         visited = {start}
         current = start
         while True:
+            # Self-edge guard (`!= current`): post model-resolution-rework the
+            # registry's `model_group_id` is ALWAYS-PRESENT and equals self at
+            # a group root (a self-edge), so the quant-root step must terminate
+            # rather than loop. Same guard on the variant-parent step.
             qr = quant_root.get(current)
             if qr and qr != current and qr not in visited:
                 visited.add(qr)
@@ -669,7 +715,7 @@ def _derive_model_root_id(con) -> None:
     )
     con.execute(
         "UPDATE canonical_models AS cm "
-        "SET root_model_id = u.root "
+        "SET model_group_id = u.root "
         "FROM _model_root_updates u "
         "WHERE cm.id = u.id"
     )
@@ -896,6 +942,13 @@ def stage_c_resolve_identities(con) -> None:
             -- it carries the snapshot canonical so Stage J can read
             -- per-snapshot release_date via leaf-coalesce.
             resolve_leaf_id(_model_raw,          'model',     source_config) AS model_leaf_id,
+            -- Model-resolution-rework per-row provenance, threaded from the
+            -- resolver's ResolutionResult (in-process path-dep). Each
+            -- carries the serving platform / how this id was minted / what
+            -- granularity it resolved at, surfaced per warehouse row.
+            resolve_inference_platform(_model_raw,     'model', source_config) AS inference_platform,
+            resolve_resolution_source(_model_raw,      'model', source_config) AS resolution_source,
+            resolve_resolution_granularity(_model_raw, 'model', source_config) AS resolution_granularity,
             resolve_canonical_id(_benchmark_raw, 'benchmark', source_config) AS benchmark_id,
             resolve_canonical_id(_metric_raw,    'metric',    source_config) AS metric_id,
             resolve_canonical_id(_org_raw,       'org',       source_config) AS org_id,
@@ -1007,7 +1060,15 @@ def stage_d_join_dims_and_flatten(con) -> None:
                 rr.*,
                 cb.parent_benchmark_id                                 AS _cb_parent_benchmark_id,
                 cm_model.parent_model_id                               AS _cm_parent_model_id,
-                cm_model.root_model_id                                 AS _cm_root_model_id,
+                -- Model-resolution-rework: `model_group_id` is the
+                -- always-present GROUP key. Stage A's `_derive_model_root_id`
+                -- has already overwritten it with the transitive group root,
+                -- so this carries the identity-group key for aggregation.
+                cm_model.model_group_id                                AS _cm_model_group_id,
+                -- New structural lineage fields (NULL-padded by _load_dim
+                -- when an older registry snapshot doesn't ship them).
+                cm_model.model_family_id                               AS _cm_model_family_id,
+                cm_model.lineage_origin_model_id                       AS _cm_lineage_origin_model_id,
                 c.card                                                 AS _card_payload,
                 CASE WHEN c.card IS NOT NULL THEN rr.benchmark_id ELSE NULL END AS _benchmark_card_id,
                 COALESCE(
@@ -1081,6 +1142,13 @@ def stage_d_join_dims_and_flatten(con) -> None:
                                                                                           AS benchmark_updated,
 
             j.model_raw,     j.model_id,     j.model_leaf_id,
+            -- Model-resolution-rework per-row provenance (from the resolver
+            -- output on Stage C). Carried through to fact_results and the
+            -- view layer so each warehouse row records its serving platform
+            -- and how the model id was resolved.
+            j.inference_platform,
+            j.resolution_source,
+            j.resolution_granularity,
             j.benchmark_raw, j.benchmark_id,
             j.slice_key,     j.slice_name,
             j.metric_raw,    j.metric_id,
@@ -1103,15 +1171,25 @@ def stage_d_join_dims_and_flatten(con) -> None:
             -- unresolved rows still pool by raw string and variants
             -- collapse to their transitive root for headline aggregation.
             -- `model_aggregation_key` collapses the variant chain via
-            -- `root_model_id`; `model_id` and `model_key` stay
-            -- variant-level for per-row addressability.
-            COALESCE(j._cm_root_model_id, j.model_id, j.model_raw)                       AS model_aggregation_key,
+            -- `model_group_id` (the always-present GROUP key); `model_id`
+            -- and `model_key` stay variant-level for per-row
+            -- addressability. Critically this groups via the GROUP id, not
+            -- the (now leaf) canonical_id, so post-flip aggregation is
+            -- unchanged.
+            COALESCE(j._cm_model_group_id, j.model_id, j.model_raw)                      AS model_aggregation_key,
             COALESCE(j.benchmark_id, j.benchmark_raw)                                    AS benchmark_key,
             COALESCE(j.metric_id, j.metric_raw)                                          AS metric_key,
 
             j._cb_parent_benchmark_id                                                   AS parent_benchmark_id,
             j._cm_parent_model_id                                                       AS parent_model_id,
-            j._cm_root_model_id                                                         AS root_model_id,
+            -- Identity-group root from the registry. The always-present GROUP
+            -- key on fact_results is `model_aggregation_key` (above); this
+            -- registry passthrough is kept only under the legacy
+            -- `root_model_id` alias for back-compat. `model_family_id` is the
+            -- registry's STRUCTURAL family-release id (the M3 family walk).
+            j._cm_model_group_id                                                        AS root_model_id,
+            j._cm_model_family_id                                                       AS model_family_id,
+            j._cm_lineage_origin_model_id                                               AS lineage_origin_model_id,
 
             j._composite_slug                                                           AS composite_slug,
             j._composite_display_name                                                   AS composite_display_name,
@@ -2135,8 +2213,20 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             cm.architecture,
             cm.params_billions,
             cm.parent_model_id,
-            cm.root_model_id,
-            cm.lineage_origin_org_id,
+            -- Model-resolution-rework end-state names (registry-side, in
+            -- place): `root_model_id` -> `model_group_id` (the always-present
+            -- group key; self at root), `model_family_id` is the STRUCTURAL
+            -- family-release id (the M3 family walk), `lineage_origin_org_id`
+            -- -> `lineage_origin_model_org_id`. Emit the new canonical names
+            -- plus the legacy `root_model_id` alias for back-compat.
+            cm.model_group_id,
+            cm.model_group_id                                AS root_model_id,
+            cm.model_family_id                               AS model_family_id,
+            cm.lineage_origin_model_id,
+            cm.lineage_origin_model_org_id,
+            cm.lineage_origin_model_org_id                   AS lineage_origin_org_id,
+            cm.resolution_source,
+            cm.resolution_granularity,
             cm.open_weights,
             -- Prefer the leaf-aggregated date over the family pointer's
             -- own release_date. NULL on both sides yields NULL, which
@@ -2157,7 +2247,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             -- raw slug prefix is a legitimate developer identity even when
             -- the registry has no canonical org for it.
             --   1. canonical_models.org_id → co.*  (registry-truthful)
-            --   2. canonical_models.lineage_origin_org_id → co_lineage.*
+            --   2. canonical_models.lineage_origin_model_org_id → co_lineage.*
             --      (registry hit but org_id missing, e.g. xiaomi/mimo-v2)
             --   3. split_part(model_key, '/', 1) → co_slug.*
             --      (registry miss, slug carries an org we know — e.g.
@@ -2193,7 +2283,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
         LEFT JOIN canonical_models cm ON cm.id = um.model_key
         LEFT JOIN leaf_release lr     ON lr.model_key = um.model_key
         LEFT JOIN canonical_orgs co         ON co.id         = cm.org_id
-        LEFT JOIN canonical_orgs co_lineage ON co_lineage.id = cm.lineage_origin_org_id
+        LEFT JOIN canonical_orgs co_lineage ON co_lineage.id = cm.lineage_origin_model_org_id
         LEFT JOIN canonical_orgs co_slug    ON co_slug.id    = split_part(um.model_key, '/', 1)
         LEFT JOIN canonical_orgs co_pattern ON co_pattern.id = ({dev_pattern_case})
         """
@@ -2272,7 +2362,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
         LEFT JOIN canonical_orgs co_match
             ON co_match.id = cm_match.org_id
         LEFT JOIN canonical_orgs co_lineage_match
-            ON co_lineage_match.id = cm_match.lineage_origin_org_id
+            ON co_lineage_match.id = cm_match.lineage_origin_model_org_id
         LEFT JOIN canonical_orgs co_slug_match
             ON co_slug_match.id = split_part(m.model_key, '/', 1)
         LEFT JOIN canonical_orgs co_pattern_match
@@ -2531,6 +2621,11 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
                 tr.metric_unit                AS rep_metric_unit,
                 tr.parent_benchmark_id        AS rep_parent_benchmark_id,
                 tr.model_raw                  AS rep_model_raw,
+                -- Model-resolution-rework per-row provenance from the
+                -- representative fact row (resolver output, Stage C).
+                tr.inference_platform         AS rep_inference_platform,
+                tr.resolution_source          AS rep_resolution_source,
+                tr.resolution_granularity     AS rep_resolution_granularity,
                 tr.repro_missing_fields       AS rep_repro_missing_fields,
                 tr.repro_populated_count      AS rep_repro_populated_count,
                 tr.repro_required_count       AS rep_repro_required_count,
@@ -2661,7 +2756,10 @@ def stage_j_eval_results_view(con, snapshot_id: str) -> None:
                         ELSE NULL
                     END
                 ),
-                'inference_platform': NULL,
+                -- Per-run serving platform from the resolver output
+                -- (model-resolution-rework). NULL when the resolution
+                -- carried no platform signal.
+                'inference_platform': rep_inference_platform,
                 'inference_engine':   NULL,
                 'model_version':     NULL,
                 'architecture':      m_architecture,
@@ -3135,11 +3233,13 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
             m.model_key                                 AS id,
             url_encode_udf(m.model_key)                 AS route_id,
             url_encode_udf(m.model_key)                 AS model_route_id,
-            -- model_family_id is the transitive root of the variant
-            -- chain. Because `models.model_key` already collapses to the
-            -- root via Stage A's `_derive_model_root_id`, the family
-            -- key is simply `model_key` here — no parent-walk needed.
-            m.model_key                                 AS model_family_id,
+            -- model_group_id is the always-present GROUP key (the
+            -- model_aggregation_key). Because `models.model_key` already
+            -- collapses to the group root via Stage A's
+            -- `_derive_model_root_id`, the group key is simply `model_key`
+            -- here — non-null for every model (self at root), no parent-walk
+            -- needed. `model_route_id` (above) is url_encode of this key.
+            m.model_key                                 AS model_group_id,
 
             m.display_name                              AS model_name,
             m.display_name                              AS canonical_model_name,
@@ -3159,9 +3259,24 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
             -- (no modality affordance shown).
             m.input_modalities                          AS input_modalities,
             m.output_modalities                         AS output_modalities,
-            m.root_model_id                             AS root_model_id,
-            m.lineage_origin_org_id                     AS lineage_origin_org_id,
+            -- Model-resolution-rework end-state names. `model_group_id`
+            -- (the always-present GROUP key) is emitted ONCE above as
+            -- `m.model_key AS model_group_id` — `model_route_id` is its
+            -- url_encode. `model_family_id` here is the registry's STRUCTURAL
+            -- family-release id (the M3 family walk; nullable, distinct
+            -- concept from the group key). `root_model_id` is the legacy
+            -- back-compat alias of the group key.
+            m.model_group_id                            AS root_model_id,
+            m.model_family_id                           AS model_family_id,
+            m.lineage_origin_model_id                   AS lineage_origin_model_id,
+            m.lineage_origin_model_org_id               AS lineage_origin_model_org_id,
+            m.lineage_origin_model_org_id               AS lineage_origin_org_id,
+            m.resolution_source                         AS resolution_source,
+            m.resolution_granularity                    AS resolution_granularity,
             CAST(NULL AS VARCHAR)                       AS inference_engine,
+            -- inference_platform is a PER-RUN fact (a model can be served by
+            -- many platforms), so it's populated per-row on
+            -- eval_results_view.model_info, not at this model-grain view.
             CAST(NULL AS VARCHAR)                       AS inference_platform,
 
             COALESCE(ta.evaluations_count, 0)           AS evaluations_count,

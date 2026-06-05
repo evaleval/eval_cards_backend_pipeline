@@ -67,11 +67,13 @@ def test_models_view_columns_match_spec(tmp_path, monkeypatch):
 
     expected = {
         "snapshot_id", "model_key", "model_id", "id", "route_id", "model_route_id",
-        "model_family_id", "model_name", "canonical_model_name",
+        # model_group_id = always-present GROUP key (= model_key);
+        # model_family_id = STRUCTURAL family-release id (nullable).
+        "model_group_id", "model_family_id", "model_name", "canonical_model_name",
         "model_family_name", "developer",
         "release_date", "model_url", "architecture", "params",
         "params_billions", "open_weights",
-        "root_model_id", "lineage_origin_org_id",
+        "root_model_id", "lineage_origin_model_id", "lineage_origin_org_id",
         "inference_engine", "inference_platform",
         "evaluations_count", "benchmarks_count", "variant_count",
         "evaluator_count", "evaluator_names",
