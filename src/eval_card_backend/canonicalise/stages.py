@@ -1049,6 +1049,28 @@ def stage_d_join_dims_and_flatten(con) -> None:
     shapes for these are still in flux). `generation_args_json` is the
     canonical serialised form fed to `variant_key_udf` and divergence UDFs.
     """
+    # Curated "was the evaluation submitted by the org that ran it" lookup,
+    # keyed by evaluation_id. Materialised as a deduped view (an evaluation_id can
+    # recur with a consistent value across records; bool_or collapses it to one
+    # row so the LEFT JOIN below can't fan out facts). Missing file -> empty view
+    # -> every row defaults to false, so the pipeline still runs without it.
+    validated_path = Path(__file__).resolve().parents[3] / "vendor" / "is_verified_evaluator.parquet"
+    if validated_path.exists():
+        con.execute(
+            f"""
+            CREATE OR REPLACE TEMP VIEW is_verified_evaluator AS
+            SELECT evaluation_id, bool_or(is_verified_evaluator) AS is_verified_evaluator
+            FROM read_parquet('{validated_path.as_posix()}')
+            WHERE evaluation_id IS NOT NULL AND evaluation_id <> ''
+            GROUP BY evaluation_id
+            """
+        )
+    else:
+        con.execute(
+            "CREATE OR REPLACE TEMP VIEW is_verified_evaluator AS "
+            "SELECT NULL::VARCHAR AS evaluation_id, FALSE AS is_verified_evaluator WHERE FALSE"
+        )
+
     con.execute(
         """
         CREATE TABLE fact_results_staging AS
@@ -1232,6 +1254,10 @@ def stage_d_join_dims_and_flatten(con) -> None:
                 THEN 'first_party'
                 ELSE 'third_party'
             END                                                                          AS evaluator_relationship,
+            -- Curated provenance flag: was this evaluation submitted by the org
+            -- that ran it (vs re-hosted from another leaderboard). Joined from the
+            -- vendored lookup on evaluation_id; unmatched rows default to false.
+            COALESCE(ev.is_verified_evaluator, FALSE)                                    AS is_verified_evaluator,
             j.source_metadata.source_type                                               AS source_type,
             j.source_metadata.source_organization_url                                   AS source_organization_url,
             j.eval_library.name                                                         AS eval_library_name,
@@ -1283,6 +1309,7 @@ def stage_d_join_dims_and_flatten(con) -> None:
 
             j._card_payload AS card_payload
         FROM joined j
+        LEFT JOIN is_verified_evaluator ev ON ev.evaluation_id = j.evaluation_id
         """
     )
 
@@ -2625,8 +2652,14 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 tr.evaluation_timestamp       AS rep_evaluation_timestamp,
                 tr.benchmark_updated          AS rep_benchmark_updated,
                 tr.evaluator_relationship     AS rep_evaluator_relationship,
+                tr.is_verified_evaluator      AS rep_is_verified_evaluator,
                 tr.provenance_source_type     AS rep_provenance_source_type,
                 tr.org_raw                    AS rep_org_raw,
+                -- De-aliased evaluator org per row (same name space as
+                -- evaluator_names). Consumed by evals_view to build
+                -- verified_evaluator_names; surfaced on the view as an
+                -- intermediate provenance column.
+                tr.org_display                AS rep_org_display,
                 tr.source_type                AS rep_source_type,
                 tr.source_organization_url    AS rep_source_org_url,
                 tr.eval_library_name          AS rep_eval_library_name,
@@ -2996,6 +3029,13 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             evaluator_relationships,
             has_first_party,
             has_third_party,
+            -- Curated badge flag for this triple's displayed (representative)
+            -- row: was the evaluation submitted by the org that ran it. Carried
+            -- from fact_results via the representative fact row.
+            rep_is_verified_evaluator AS is_verified_evaluator,
+            -- Per-row de-aliased evaluator org; building block for
+            -- evals_view.verified_evaluator_names (not read directly by the UI).
+            rep_org_display AS evaluator_display_name,
             CASE
                 WHEN has_first_party AND has_third_party THEN 'both'
                 WHEN has_first_party                     THEN 'self'
@@ -3569,7 +3609,15 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             -- (composite, benchmark). Done in a separate CTE so the
             -- unnest doesn't inflate the per-triple aggregations.
             SELECT pt.composite_slug, pt.benchmark_id,
-                   ARRAY_AGG(DISTINCT u) FILTER (WHERE u IS NOT NULL) AS evaluator_names
+                   ARRAY_AGG(DISTINCT u) FILTER (WHERE u IS NOT NULL) AS evaluator_names,
+                   -- The subset of evaluators that are validated submitters
+                   -- (de-aliased, same name space as evaluator_names) — powers
+                   -- the verified badge on the /evals list "Reported by" row.
+                   -- DISTINCT collapses the unnest-inflated rows.
+                   ARRAY_AGG(DISTINCT pt.evaluator_display_name)
+                       FILTER (WHERE pt.is_verified_evaluator
+                               AND pt.evaluator_display_name IS NOT NULL)
+                       AS verified_evaluator_names
             FROM primary_triples pt,
                  UNNEST(COALESCE(pt.reporting_orgs, [])) AS u_t(u)
             GROUP BY 1, 2
@@ -3852,6 +3900,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
 
             COALESCE(pf.models_count, 0)                AS models_count,
             ena.evaluator_names,
+            ena.verified_evaluator_names,
             sta.source_types,
             pf.latest_source_name,
             pf.third_party_ratio,
