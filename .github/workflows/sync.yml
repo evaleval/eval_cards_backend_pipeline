@@ -13,6 +13,15 @@ on:
       - "uv.lock"
       - ".github/workflows/sync.yml"
 
+# Only one publish to evaleval/card_backend at a time. Clustered pushes to
+# main (or a push overlapping the daily cron) otherwise launch concurrent
+# runs that upload to the same HF dataset simultaneously and trip its
+# preupload rate limit (429). Newer data supersedes older, so cancel the
+# in-flight run rather than queueing it behind.
+concurrency:
+  group: sync-pipeline-publish
+  cancel-in-progress: true
+
 env:
   HF_TARGET_DATASET: evaleval/card_backend
   # Pin the registry resolver source for reproducible CI builds. Bump
