@@ -18,9 +18,35 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 from huggingface_hub import HfApi
+from huggingface_hub.errors import HfHubHTTPError
+
+# HF throttles the LFS preupload endpoint under bursty load (merge + Space
+# rebuild + other syncs), returning 429. huggingface_hub's built-in backoff
+# gives up after ~5 tries in ~25s, which a multi-minute throttle outlasts.
+# Retry the whole upload_folder on 429 with a longer backoff; upload_folder is
+# idempotent (already-uploaded files no-op on preupload) so re-calling is safe.
+_RETRY_BACKOFF_SECONDS = (30, 60, 120, 240, 300)
+
+
+def _upload_with_retry(api: HfApi, **kwargs) -> None:
+    for attempt, delay in enumerate((*_RETRY_BACKOFF_SECONDS, None)):
+        try:
+            api.upload_folder(**kwargs)
+            return
+        except HfHubHTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status != 429 or delay is None:
+                raise
+            print(
+                f"HF 429 on {kwargs.get('path_in_repo')} "
+                f"(attempt {attempt + 1}); retrying in {delay}s.",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
 
 
 def main() -> int:
@@ -45,7 +71,8 @@ def main() -> int:
     latest = snapshots[-1]
 
     api = HfApi(token=token)
-    api.upload_folder(
+    _upload_with_retry(
+        api,
         folder_path=str(latest),
         path_in_repo=f"warehouse/{latest.name}",
         repo_id=target,
@@ -54,7 +81,8 @@ def main() -> int:
     )
     print(f"Uploaded {latest.name} → hf://{target}/warehouse/{latest.name}")
 
-    api.upload_folder(
+    _upload_with_retry(
+        api,
         folder_path=str(latest),
         path_in_repo="warehouse/latest",
         repo_id=target,
