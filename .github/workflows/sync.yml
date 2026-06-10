@@ -24,10 +24,16 @@ env:
   # these SHAs are bumped deliberately. Pinned to snapshot last validated
   # on: 2026-05-28. To accept new upstream data, bump the SHA (or remove
   # the var to track latest HEAD).
-  EEE_REVISION: 234017fbde38e8eceaad3d4e2389b13d8065c5c0
+  # TEMPORARY: read the flat view from our mirror (rebuilt from upstream
+  # data/ by refresh-flat.yml) until upstream regenerates flat/ on every
+  # merge. To retire: drop EEE_DATASET_REPO and pin EEE_REVISION back to an
+  # evaleval/EEE_datastore SHA whose flat/ is current.
+  EEE_DATASET_REPO: evaleval/EEE_datastore-flat-temp
+  EEE_REVISION: 1700dc027e00737a44e47851bd94a4575d6c62da
+  # Last nested-layout pin (pre-flat-migration): 234017fbde38e8eceaad3d4e2389b13d8065c5c0
   # Old schema-2 pin: 4e7db3339c45aada4e0bfbb8d553b927e94bbfb3.
   # Prev schema-3 pin: 88c0b292f2936eb4dc49672cc4f63781cf0da157
-  ENTITY_REGISTRY_REVISION: ce8a2ec93e9f9c1a214678af454a0b1618781723
+  ENTITY_REGISTRY_REVISION: 00f4f82a3a65c6311fbb96114536c965a3ce9b5e
   BENCHMARK_METADATA_REVISION: 621bfc612e0f301457beb6e5d6811114583bcec0
 
 jobs:

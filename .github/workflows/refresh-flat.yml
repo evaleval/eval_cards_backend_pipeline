@@ -1,0 +1,39 @@
+name: Refresh EEE flat mirror
+
+# Temporary: rebuilds the EEE_datastore flat/ view from its data/ tree and
+# publishes it to the evaleval/EEE_datastore-flat-temp mirror, because upstream
+# does not yet regenerate flat/ on data/ merges. No-ops when the mirror
+# already matches upstream HEAD. Retire (and repoint EEE_DATASET_REPO back
+# to evaleval/EEE_datastore) once upstream maintains flat/ itself.
+
+on:
+  schedule:
+    - cron: "30 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even when the mirror is current"
+        type: boolean
+        default: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Rebuild and publish flat mirror
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv run python scripts/refresh_flat_mirror.py \
+            ${{ inputs.force && '--force' || '' }}
