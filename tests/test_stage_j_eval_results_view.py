@@ -196,8 +196,8 @@ def test_eee_record_url_built_from_source_path(tmp_path, monkeypatch):
     prefix = "https://huggingface.co/datasets/evaleval/EEE_datastore/resolve/main/"
     for u in urls:
         assert u.startswith(prefix), u
-        # Path segment survives intact (e.g. data/fixtures_clean/.../*.json).
-        assert u[len(prefix):].startswith("data/fixtures_clean/"), u
+        # Path segment survives intact (e.g. flat/objects/<s1>/<s2>/*.json).
+        assert u[len(prefix):].startswith("flat/objects/"), u
         assert u.endswith(".json"), u
 
 

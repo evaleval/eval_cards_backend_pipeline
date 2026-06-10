@@ -1,7 +1,14 @@
 """Snapshot and read access for `evaleval/EEE_datastore`.
 
-Layout on disk after snapshot:
-    <local_dir>/data/<config>/<dev>/<model>/<uuid>.json
+Layout on disk after snapshot (upstream flat view):
+    <local_dir>/flat/latest_manifest.json
+    <local_dir>/flat/manifests/sha256_<hash>/entries.jsonl
+    <local_dir>/flat/objects/<uuid[0:2]>/<uuid[2:4]>/<uuid>.json
+
+The manifest's entries.jsonl indexes every record; the download is
+manifest-driven, so only `record_type == "aggregate"` objects outside
+`IGNORED_CONFIGS` are fetched (`<uuid>_samples.jsonl` instance companions
+are never downloaded — ~4 GB).
 
 `load_arrow_table` is the typed loader for Stage A: walks records,
 validates each via the vendored Pydantic models (the upstream contract
@@ -15,14 +22,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 import pyarrow as pa
-from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
+from huggingface_hub import hf_hub_download
 
 from eval_card_backend.config import EEE_DATASET_REPO, IGNORED_CONFIGS
 from eval_card_backend.sources._revision_cache import (
@@ -74,6 +81,54 @@ def _record_drop(config: str, reason: str, path: str, detail: str | None = None)
         )
 
 
+_MANIFEST_PATH = "flat/latest_manifest.json"
+
+# Parsed entries.jsonl memo — keyed on (resolved path, mtime_ns, size) so the
+# per-config callers below don't reparse a ~16 MB JSONL ~85 times per run.
+_entries_cache: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
+
+
+def _parse_entries(entries_path: Path) -> list[dict[str, Any]]:
+    st = entries_path.stat()
+    key = (str(entries_path.resolve()), st.st_mtime_ns, st.st_size)
+    if key not in _entries_cache:
+        with entries_path.open(encoding="utf-8") as fh:
+            _entries_cache[key] = [json.loads(line) for line in fh if line.strip()]
+    return _entries_cache[key]
+
+
+def _load_entries(local_dir: Path) -> list[dict[str, Any]]:
+    manifest = json.loads(
+        (Path(local_dir) / _MANIFEST_PATH).read_text(encoding="utf-8")
+    )
+    return _parse_entries(Path(local_dir) / manifest["entries_path"])
+
+
+def _load_entries_remote(hf_token: str | None) -> list[dict[str, Any]]:
+    """Manifest + entries via the default HF cache (no local snapshot)."""
+    manifest_file = hf_hub_download(
+        repo_id=EEE_DATASET_REPO,
+        filename=_MANIFEST_PATH,
+        repo_type="dataset",
+        token=hf_token,
+    )
+    manifest = json.loads(Path(manifest_file).read_text(encoding="utf-8"))
+    entries_file = hf_hub_download(
+        repo_id=EEE_DATASET_REPO,
+        filename=manifest["entries_path"],
+        repo_type="dataset",
+        token=hf_token,
+    )
+    return _parse_entries(Path(entries_file))
+
+
+def _wanted_entry(entry: dict[str, Any]) -> bool:
+    return (
+        entry.get("record_type") == "aggregate"
+        and entry.get("benchmark") not in IGNORED_CONFIGS
+    )
+
+
 def ensure_snapshot(
     local_dir: str,
     hf_token: str | None,
@@ -85,66 +140,98 @@ def ensure_snapshot(
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
 
-    data_dir = target / "data"
-    has_data = data_dir.exists() and any(data_dir.iterdir())
+    has_data = (target / _MANIFEST_PATH).exists()
     # When a revision is pinned, the cache is only valid if it was
     # downloaded at that same revision (tracked via a marker file).
     # Otherwise a stale cache would silently defeat the pin.
-    if has_data and _cache_revision_ok(target, revision):
-        log.info("EEE snapshot already present at %s — skipping download", target)
-        return target
-    if has_data:
+    if has_data and not _cache_revision_ok(target, revision):
         # Stale or revision-mismatched cache — clear and re-download.
         shutil.rmtree(target)
         target.mkdir(parents=True, exist_ok=True)
+        has_data = False
 
-    log.info("downloading EEE snapshot to %s (revision=%s) …", target, revision or "latest")
-    snapshot_download(
-        repo_id=EEE_DATASET_REPO,
-        repo_type="dataset",
-        revision=revision,
-        local_dir=str(target),
-        allow_patterns=["data/**"],
-        ignore_patterns=[f"data/{cfg}/**" for cfg in IGNORED_CONFIGS],
-        max_workers=16,
-        token=hf_token,
+    def _fetch(filename: str) -> None:
+        try:
+            hf_hub_download(
+                repo_id=EEE_DATASET_REPO,
+                filename=filename,
+                repo_type="dataset",
+                revision=revision,
+                local_dir=str(target),
+                token=hf_token,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"EEE download failed for {filename}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+    if not has_data:
+        log.info(
+            "downloading EEE flat manifest to %s (revision=%s) …",
+            target, revision or "latest",
+        )
+        _fetch(_MANIFEST_PATH)
+        manifest = json.loads(
+            (target / _MANIFEST_PATH).read_text(encoding="utf-8")
+        )
+        _fetch(manifest["entries_path"])
+        _write_cache_revision(target, revision)
+
+    entries = _load_entries(target)
+    wanted = [e for e in entries if _wanted_entry(e)]
+    n_ignored = sum(
+        1 for e in entries
+        if e.get("record_type") == "aggregate" and e.get("benchmark") in IGNORED_CONFIGS
     )
-    _write_cache_revision(target, revision)
-    log.info("EEE snapshot ready at %s", target)
+    n_instance = sum(1 for e in entries if e.get("instance_object_path"))
+    # Idempotent top-up: a presence/revision-valid cache may still be partial
+    # (interrupted download, or IGNORED_CONFIGS narrowed since the last run) —
+    # fetch whatever required objects are missing on disk.
+    missing = [
+        e["object_path"] for e in wanted if not (target / e["object_path"]).exists()
+    ]
+    log.info(
+        "EEE manifest: %d aggregate objects kept, %d ignored-config rows skipped, "
+        "%d instance files skipped",
+        len(wanted), n_ignored, n_instance,
+    )
+    if missing:
+        log.info(
+            "downloading %d / %d missing EEE objects to %s …",
+            len(missing), len(wanted), target,
+        )
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            list(pool.map(_fetch, missing))
+        log.info("EEE snapshot ready at %s", target)
+    else:
+        log.info("EEE snapshot already present at %s — skipping download", target)
     return target
 
 
 def discover_configs(local_dir: Path | None, hf_token: str | None) -> list[str]:
     if local_dir is not None:
-        data_root = Path(local_dir) / "data"
-        if not data_root.exists():
+        if not (Path(local_dir) / _MANIFEST_PATH).exists():
             return []
-        return sorted(p.name for p in data_root.iterdir() if p.is_dir())
-
-    fs = HfFileSystem(token=hf_token)
-    entries = fs.ls(f"datasets/{EEE_DATASET_REPO}/data", detail=True)
-    return sorted({entry["name"].split("/")[-1] for entry in entries if entry.get("name")})
+        entries = _load_entries(Path(local_dir))
+    else:
+        entries = _load_entries_remote(hf_token)
+    return sorted({e["benchmark"] for e in entries})
 
 
 def list_json_files(
     config: str, local_dir: Path | None, hf_token: str | None
 ) -> list[str]:
-    """Return repo-relative JSON paths (e.g. `data/<config>/.../record.json`)."""
+    """Return repo-relative JSON paths (e.g. `flat/objects/<s1>/<s2>/<uuid>.json`)."""
     if local_dir is not None:
-        root = Path(local_dir) / "data" / config
-        if not root.exists():
+        if not (Path(local_dir) / _MANIFEST_PATH).exists():
             return []
-        return sorted(
-            str(p.relative_to(local_dir)).replace(os.sep, "/")
-            for p in root.rglob("*.json")
-            if p.is_file() and not p.name.endswith(".jsonl")
-        )
-
-    fs = HfFileSystem(token=hf_token)
-    pattern = f"datasets/{EEE_DATASET_REPO}/data/{config}/**/*.json"
-    prefix = f"datasets/{EEE_DATASET_REPO}/"
+        entries = _load_entries(Path(local_dir))
+    else:
+        entries = _load_entries_remote(hf_token)
     return sorted(
-        p[len(prefix):] for p in fs.glob(pattern) if not p.endswith(".jsonl")
+        e["object_path"] for e in entries
+        if e["benchmark"] == config and e.get("record_type") == "aggregate"
     )
 
 

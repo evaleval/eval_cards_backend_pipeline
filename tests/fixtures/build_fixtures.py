@@ -3,9 +3,11 @@
 Run via: `uv run python tests/fixtures/build_fixtures.py`
 
 Each EEE record is a single JSON file under
-`tests/fixtures/eee/data/<config>/<dev>/<model>/<id>.json` (matches the
-upstream EEE_datastore on-disk layout). Each fixture deliberately exercises
-one behaviour; together they cover the pipeline's edge cases.
+`tests/fixtures/eee/flat/objects/<s1>/<s2>/<id>.json`, indexed by
+`flat/manifests/sha256_fixture/entries.jsonl` + `flat/latest_manifest.json`
+(matches the upstream EEE_datastore flat layout; shard dirs are sha256 of
+the filename stem). Each fixture deliberately exercises one behaviour;
+together they cover the pipeline's edge cases.
 
 Re-run this script if the fixture set changes — the JSON and parquet
 outputs are committed alongside the code so tests don't depend on script
@@ -13,13 +15,15 @@ execution at test time.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pandas as pd
 
 ROOT = Path(__file__).parent
-EEE = ROOT / "eee" / "data"
+EEE = ROOT / "eee"
 CARDS = ROOT / "auto_benchmarkcards" / "cards"
 REG = ROOT / "entity_registry"
 
@@ -99,12 +103,11 @@ def _eee_record(
 def write_eee_fixtures():
     """7 hand-built EEE records, one per edge case."""
     if EEE.exists():
-        for f in EEE.rglob("*.json"):
-            f.unlink()
+        shutil.rmtree(EEE)
 
     fixtures = [
         # 01: clean resolution. All 5 entities resolve via 'exact'; non-agentic.
-        # File path: data/<config>/<dev>/<model>/<eval_id>.json
+        # Object path: flat/objects/<s1>/<s2>/<eval_id>.json
         (
             "fixtures_clean", "openai", "gpt-4o", "01-resolves-cleanly",
             _eee_record(
@@ -273,10 +276,38 @@ def write_eee_fixtures():
         ),
     ]
 
+    entries = []
     for cfg, dev, model, fname, record in fixtures:
-        out_dir = EEE / cfg / dev / model
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"{fname}.json").write_text(json.dumps(record, indent=2))
+        shard = hashlib.sha256(fname.encode()).hexdigest()
+        object_path = f"flat/objects/{shard[0:2]}/{shard[2:4]}/{fname}.json"
+        out = EEE / object_path
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(record, indent=2))
+        payload = out.read_bytes()
+        entries.append({
+            "benchmark": cfg,
+            "eval_schema_version": "0.2.2",
+            "legacy_path": f"data/{cfg}/{dev}/{model}/{fname}.json",
+            "object_path": object_path,
+            "object_uuid": fname,
+            "record_type": "aggregate",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size_bytes": len(payload),
+        })
+
+    entries_path = "flat/manifests/sha256_fixture/entries.jsonl"
+    entries_file = EEE / entries_path
+    entries_file.parent.mkdir(parents=True, exist_ok=True)
+    entries_file.write_text("".join(json.dumps(e) + "\n" for e in entries))
+    (EEE / "flat" / "latest_manifest.json").write_text(json.dumps({
+        "entries_path": entries_path,
+        "aggregate_file_count": len(entries),
+        "benchmark_count": len({e["benchmark"] for e in entries}),
+        "created_at": "2026-06-01T00:00:00Z",
+        "eval_schema_versions": ["0.2.2"],
+        "manifest_core_sha256": "fixture",
+        "total_file_count": len(entries),
+    }, indent=2))
 
 
 # ---------------------------------------------------------------------------

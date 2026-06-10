@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from eval_card_backend.config import IGNORED_CONFIGS
+from tests.flat_layout import write_flat_datastore
 
 
 def test_alphaxiv_is_explicitly_ignored():
@@ -22,8 +23,6 @@ def test_alphaxiv_is_explicitly_ignored():
 
 
 def _write_minimal_eee(eee_root: Path, config: str) -> None:
-    cfg_dir = eee_root / "data" / config / "openai" / "gpt-4o"
-    cfg_dir.mkdir(parents=True)
     record = {
         "evaluation_id": f"ev_{config}",
         "schema_version": "0.2.2",
@@ -45,7 +44,9 @@ def _write_minimal_eee(eee_root: Path, config: str) -> None:
             }
         ],
     }
-    (cfg_dir / "rec.json").write_text(json.dumps(record))
+    write_flat_datastore(
+        eee_root, [(config, f"rec_{config}.json", json.dumps(record))]
+    )
 
 
 def _write_registry(reg_root: Path) -> None:

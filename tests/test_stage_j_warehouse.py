@@ -21,6 +21,8 @@ from urllib.parse import unquote
 import duckdb
 import pytest
 
+from tests.flat_layout import write_flat_datastore
+
 
 # ---------------------------------------------------------------------------
 # Custom 2-model fixture
@@ -33,8 +35,6 @@ def _write_eee_fixture_two_models(eee_root: Path) -> None:
     - gpt-4o    : score=0.9, temperature + max_tokens set        → no repro gap
     - claude-3  : score=0.5, neither temperature nor max_tokens   → repro gap
     """
-    base_dir = eee_root / "data" / "fixtures_two_models"
-
     def _record(eval_id: str, model_id: str, score: float, *, with_repro: bool) -> dict:
         gen_args: dict = {}
         if with_repro:
@@ -73,18 +73,12 @@ def _write_eee_fixture_two_models(eee_root: Path) -> None:
             ],
         }
 
-    for path, rec in [
-        (
-            base_dir / "openai" / "gpt-4o" / "ev_a.json",
-            _record("ev_a", "openai/gpt-4o", 0.9, with_repro=True),
-        ),
-        (
-            base_dir / "anthropic" / "claude-3-opus" / "ev_b.json",
-            _record("ev_b", "anthropic/claude-3-opus", 0.5, with_repro=False),
-        ),
-    ]:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(rec))
+    write_flat_datastore(eee_root, [
+        ("fixtures_two_models", "ev_a.json",
+         json.dumps(_record("ev_a", "openai/gpt-4o", 0.9, with_repro=True))),
+        ("fixtures_two_models", "ev_b.json",
+         json.dumps(_record("ev_b", "anthropic/claude-3-opus", 0.5, with_repro=False))),
+    ])
 
 
 def _write_two_model_registry(reg_root: Path) -> None:

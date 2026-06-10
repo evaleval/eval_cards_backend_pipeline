@@ -820,7 +820,7 @@ def stage_b_explode_evaluation_results(con) -> int:
             e.detailed_evaluation_results,
             e.source_config,
             -- Repo-relative path of the EEE source JSON this record was
-            -- read from (e.g. data/HELM/<model>/<uuid>.json), injected at
+            -- read from (e.g. flat/objects/<s1>/<s2>/<uuid>.json), injected at
             -- Stage A ingestion. Carried through the pipeline so Stage J
             -- can build a deep-link back to the upstream record
             -- (eval_results_view.eee_record_url).

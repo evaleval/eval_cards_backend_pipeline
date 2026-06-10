@@ -1,0 +1,11 @@
+{
+  "entries_path": "flat/manifests/sha256_fixture/entries.jsonl",
+  "aggregate_file_count": 13,
+  "benchmark_count": 5,
+  "created_at": "2026-06-01T00:00:00Z",
+  "eval_schema_versions": [
+    "0.2.2"
+  ],
+  "manifest_core_sha256": "fixture",
+  "total_file_count": 13
+}

@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.flat_layout import write_flat_datastore
+
 
 def _write_eee_fixture(eee_root: Path) -> None:
-    config_dir = eee_root / "data" / "minibench" / "openai" / "gpt-4o"
-    config_dir.mkdir(parents=True)
     record = {
         "evaluation_id": "ev_001",
         "schema_version": "0.2.2",
@@ -63,7 +63,7 @@ def _write_eee_fixture(eee_root: Path) -> None:
             },
         ],
     }
-    (config_dir / "rec.json").write_text(json.dumps(record))
+    write_flat_datastore(eee_root, [("minibench", "rec.json", json.dumps(record))])
 
 
 def _write_registry_fixture(reg_root: Path) -> None:
@@ -447,9 +447,6 @@ def test_metric_unit_inconsistency_is_deterministic_and_counted(tmp_path, monkey
     _write_minimal_seed_fixture(seed_root)
     _write_cards_fixture(cards_root)
 
-    config_dir = eee_root / "data" / "minibench" / "openai" / "gpt-4o"
-    config_dir.mkdir(parents=True)
-
     def _record(eval_id: str, score: float, metric_unit: str | None,
                 temperature: float) -> dict:
         # metric_name='Accuracy' resolves via the registry alias, so both
@@ -493,12 +490,14 @@ def test_metric_unit_inconsistency_is_deterministic_and_counted(tmp_path, monkey
     # Two records, same canonical (model, benchmark, metric=accuracy),
     # but the two report different EEE-side metric_units. Different
     # temperatures make divergence applicable so threshold_basis populates.
-    (config_dir / "percent.json").write_text(json.dumps(
-        _record("ev_pct", 0.85, metric_unit="percent", temperature=0.0)
-    ))
-    (config_dir / "proportion.json").write_text(json.dumps(
-        _record("ev_prop", 0.95, metric_unit="proportion", temperature=0.7)
-    ))
+    write_flat_datastore(eee_root, [
+        ("minibench", "percent.json", json.dumps(
+            _record("ev_pct", 0.85, metric_unit="percent", temperature=0.0)
+        )),
+        ("minibench", "proportion.json", json.dumps(
+            _record("ev_prop", 0.95, metric_unit="proportion", temperature=0.7)
+        )),
+    ])
 
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
     monkeypatch.setenv("BENCHMARK_METADATA_LOCAL_DIR", str(cards_root))
@@ -545,9 +544,6 @@ def test_score_scale_anomaly_fires_on_declared_range_violations(tmp_path, monkey
     _write_minimal_seed_fixture(seed_root)
     _write_cards_fixture(cards_root)
 
-    config_dir = eee_root / "data" / "minibench" / "openai" / "gpt-4o"
-    config_dir.mkdir(parents=True)
-
     def _record(eval_id: str, score: float, *, metric_name: str,
                 min_score: float, max_score: float) -> dict:
         return {
@@ -583,23 +579,25 @@ def test_score_scale_anomaly_fires_on_declared_range_violations(tmp_path, monkey
             ],
         }
 
-    # Row 1: percent-scale accuracy with score=120 (above max=100). Registry
-    # has min/max=[0,1] for `accuracy` so registry wins → in-range; we use a
-    # bespoke unresolved metric_name so EEE per-record [0, 100] survives.
-    (config_dir / "above.json").write_text(json.dumps(
-        _record("ev_above", 120.0, metric_name="custom_pct",
-                min_score=0.0, max_score=100.0)
-    ))
-    # Row 2: same metric, in-range → no anomaly.
-    (config_dir / "ok.json").write_text(json.dumps(
-        _record("ev_ok", 50.0, metric_name="custom_pct",
-                min_score=0.0, max_score=100.0)
-    ))
-    # Row 3: below the declared min.
-    (config_dir / "below.json").write_text(json.dumps(
-        _record("ev_below", -5.0, metric_name="custom_pct",
-                min_score=0.0, max_score=100.0)
-    ))
+    write_flat_datastore(eee_root, [
+        # Row 1: percent-scale accuracy with score=120 (above max=100). Registry
+        # has min/max=[0,1] for `accuracy` so registry wins → in-range; we use a
+        # bespoke unresolved metric_name so EEE per-record [0, 100] survives.
+        ("minibench", "above.json", json.dumps(
+            _record("ev_above", 120.0, metric_name="custom_pct",
+                    min_score=0.0, max_score=100.0)
+        )),
+        # Row 2: same metric, in-range → no anomaly.
+        ("minibench", "ok.json", json.dumps(
+            _record("ev_ok", 50.0, metric_name="custom_pct",
+                    min_score=0.0, max_score=100.0)
+        )),
+        # Row 3: below the declared min.
+        ("minibench", "below.json", json.dumps(
+            _record("ev_below", -5.0, metric_name="custom_pct",
+                    min_score=0.0, max_score=100.0)
+        )),
+    ])
 
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
     monkeypatch.setenv("BENCHMARK_METADATA_LOCAL_DIR", str(cards_root))
@@ -646,9 +644,6 @@ def test_harness_raw_strips_unknown_version_sentinel(tmp_path, monkeypatch):
     _write_minimal_seed_fixture(seed_root)
     _write_cards_fixture(cards_root)
 
-    config_dir = eee_root / "data" / "minibench" / "openai" / "gpt-4o"
-    config_dir.mkdir(parents=True)
-
     def _record(eval_id: str, version) -> dict:
         return {
             "evaluation_id": eval_id,
@@ -681,8 +676,10 @@ def test_harness_raw_strips_unknown_version_sentinel(tmp_path, monkeypatch):
             ],
         }
 
-    (config_dir / "unknown.json").write_text(json.dumps(_record("ev_unk", "unknown")))
-    (config_dir / "real.json").write_text(json.dumps(_record("ev_real", "1.0")))
+    write_flat_datastore(eee_root, [
+        ("minibench", "unknown.json", json.dumps(_record("ev_unk", "unknown"))),
+        ("minibench", "real.json", json.dumps(_record("ev_real", "1.0"))),
+    ])
 
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
     monkeypatch.setenv("BENCHMARK_METADATA_LOCAL_DIR", str(cards_root))
@@ -732,9 +729,6 @@ def test_pipeline_drops_score_sentinel_when_scale_excludes_it(tmp_path, monkeypa
     _write_minimal_seed_fixture(seed_root)
     _write_cards_fixture(cards_root)
 
-    config_dir = eee_root / "data" / "minibench" / "openai" / "gpt-4o"
-    config_dir.mkdir(parents=True)
-
     def _record(eval_id: str, score: float, *, metric_name: str,
                 min_score: float, max_score: float,
                 metric_unit: str | None) -> dict:
@@ -773,26 +767,28 @@ def test_pipeline_drops_score_sentinel_when_scale_excludes_it(tmp_path, monkeypa
             ],
         }
 
-    # Row 1: score=-1 on a [0,1] proportion accuracy metric. Registry has the
-    # accuracy alias → min_score=0 from the canonical metric → sentinel
-    # filter fires → row dropped.
-    (config_dir / "sentinel.json").write_text(json.dumps(
-        _record("ev_sent", -1.0, metric_name="Accuracy",
-                min_score=0.0, max_score=1.0, metric_unit="proportion")
-    ))
-    # Row 2: score=-1 on a metric whose declared scale spans [-1, 1].
-    # `correlation` has no registry alias so the per-record EEE min_score=-1
-    # wins via the metric_meta layered chain → sentinel filter does NOT fire
-    # → row kept. This is the "legitimate -1" case the policy must preserve.
-    (config_dir / "delta.json").write_text(json.dumps(
-        _record("ev_delta", -1.0, metric_name="correlation",
-                min_score=-1.0, max_score=1.0, metric_unit=None)
-    ))
-    # Row 3: a normal valid row so the rest of the pipeline has data.
-    (config_dir / "ok.json").write_text(json.dumps(
-        _record("ev_ok", 0.85, metric_name="Accuracy",
-                min_score=0.0, max_score=1.0, metric_unit="proportion")
-    ))
+    write_flat_datastore(eee_root, [
+        # Row 1: score=-1 on a [0,1] proportion accuracy metric. Registry has the
+        # accuracy alias → min_score=0 from the canonical metric → sentinel
+        # filter fires → row dropped.
+        ("minibench", "sentinel.json", json.dumps(
+            _record("ev_sent", -1.0, metric_name="Accuracy",
+                    min_score=0.0, max_score=1.0, metric_unit="proportion")
+        )),
+        # Row 2: score=-1 on a metric whose declared scale spans [-1, 1].
+        # `correlation` has no registry alias so the per-record EEE min_score=-1
+        # wins via the metric_meta layered chain → sentinel filter does NOT fire
+        # → row kept. This is the "legitimate -1" case the policy must preserve.
+        ("minibench", "delta.json", json.dumps(
+            _record("ev_delta", -1.0, metric_name="correlation",
+                    min_score=-1.0, max_score=1.0, metric_unit=None)
+        )),
+        # Row 3: a normal valid row so the rest of the pipeline has data.
+        ("minibench", "ok.json", json.dumps(
+            _record("ev_ok", 0.85, metric_name="Accuracy",
+                    min_score=0.0, max_score=1.0, metric_unit="proportion")
+        )),
+    ])
 
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
     monkeypatch.setenv("BENCHMARK_METADATA_LOCAL_DIR", str(cards_root))
@@ -849,9 +845,6 @@ def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
     # → both produce fact_id = sha256("ev_dup:0")[:16]. Different
     # retrieved_timestamps decide which wins; different scores let the test
     # observe which row was kept.
-    config_dir = eee_root / "data" / "minibench" / "openai" / "gpt-4o"
-    config_dir.mkdir(parents=True)
-
     def _record(timestamp: str, score: float) -> dict:
         return {
             "evaluation_id": "ev_dup",
@@ -885,8 +878,10 @@ def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
             ],
         }
 
-    (config_dir / "old.json").write_text(json.dumps(_record("2026-04-30T00:00:00Z", 0.30)))
-    (config_dir / "new.json").write_text(json.dumps(_record("2026-05-03T00:00:00Z", 0.85)))
+    write_flat_datastore(eee_root, [
+        ("minibench", "old.json", json.dumps(_record("2026-04-30T00:00:00Z", 0.30))),
+        ("minibench", "new.json", json.dumps(_record("2026-05-03T00:00:00Z", 0.85))),
+    ])
 
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
     monkeypatch.setenv("BENCHMARK_METADATA_LOCAL_DIR", str(cards_root))

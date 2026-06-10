@@ -11,13 +11,13 @@ The typed Arrow loader rejects records at three gates: read_error
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import duckdb
 import pytest
 
 from eval_card_backend.canonicalise import stages
 from eval_card_backend.sources import eee as eee_src
+from tests.flat_layout import write_flat_datastore
 
 
 @pytest.fixture(autouse=True)
@@ -51,19 +51,14 @@ def _conformant_record(eval_id: str = "ev_good") -> dict:
     }
 
 
-def _write_record(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
-
-
 def test_corrupt_json_increments_drop_counter(tmp_path, monkeypatch):
     eee_root = tmp_path / "eee"
-    cfg_dir = eee_root / "data" / "minicfg" / "openai" / "gpt-4o"
-    cfg_dir.mkdir(parents=True)
-    # One valid record (passes pydantic validation under the typed loader)
-    _write_record(cfg_dir / "good.json", _conformant_record())
-    # One corrupt JSON
-    (cfg_dir / "bad.json").write_text("{not valid json")
+    write_flat_datastore(eee_root, [
+        # One valid record (passes pydantic validation under the typed loader)
+        ("minicfg", "good.json", json.dumps(_conformant_record())),
+        # One corrupt JSON
+        ("minicfg", "bad.json", "{not valid json"),
+    ])
 
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
     monkeypatch.delenv("EEE_REFRESH_SNAPSHOT", raising=False)
@@ -90,14 +85,14 @@ def test_validation_error_increments_drop_counter(tmp_path, monkeypatch):
     propagates NULLs through to Stage E and the row gets dropped for
     'no_score' reasons that hide the real cause."""
     eee_root = tmp_path / "eee"
-    cfg_dir = eee_root / "data" / "minicfg" / "openai" / "gpt-4o"
-    cfg_dir.mkdir(parents=True)
-    # Conformant record
-    _write_record(cfg_dir / "good.json", _conformant_record())
     # Record with a type error: score must be a number per the contract.
     bad = _conformant_record("ev_bad")
     bad["evaluation_results"][0]["score_details"]["score"] = "not a number"
-    _write_record(cfg_dir / "bad_score.json", bad)
+    write_flat_datastore(eee_root, [
+        # Conformant record
+        ("minicfg", "good.json", json.dumps(_conformant_record())),
+        ("minicfg", "bad_score.json", json.dumps(bad)),
+    ])
 
     con = duckdb.connect()
     table = eee_src.load_arrow_table(eee_root, ["minicfg"], hf_token=None)
@@ -112,10 +107,9 @@ def test_validation_error_increments_drop_counter(tmp_path, monkeypatch):
 
 def test_drop_counter_distinguishes_configs(tmp_path, monkeypatch):
     eee_root = tmp_path / "eee"
-    for cfg in ("a", "b"):
-        cfg_dir = eee_root / "data" / cfg / "dev" / "model"
-        cfg_dir.mkdir(parents=True)
-        (cfg_dir / "bad.json").write_text("nope")
+    write_flat_datastore(eee_root, [
+        (cfg, f"bad_{cfg}.json", "nope") for cfg in ("a", "b")
+    ])
 
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
     monkeypatch.delenv("EEE_REFRESH_SNAPSHOT", raising=False)
