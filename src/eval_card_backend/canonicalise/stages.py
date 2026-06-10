@@ -2721,7 +2721,9 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 b.display_name                AS b_display_name,
                 b.dataset_repo                AS b_dataset_repo,
                 b.data_format                 AS b_data_format,
-                b.resources                   AS b_resources
+                b.resources                   AS b_resources,
+                -- Parent benchmark's display name (dim self-join below).
+                pb.display_name               AS pb_display_name
             FROM tri_agg ta
             JOIN tri_rep tr USING (composite_slug, model_aggregation_key, benchmark_key, metric_key)
             -- Join keys are root-grain. `models.model_key` is the
@@ -2735,6 +2737,12 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                                             AND b.benchmark_id  = ta.benchmark_key
             LEFT JOIN benchmark_tags bt ON bt.composite_slug = ta.composite_slug
                                       AND bt.benchmark_id  = ta.benchmark_key
+            -- Self-join the benchmarks dim on the row's parent so slice
+            -- rows can surface the parent's actual display name (the dim
+            -- already carries the parent row per composite — phantom
+            -- roots included).
+            LEFT JOIN benchmarks pb         ON pb.composite_slug = ta.composite_slug
+                                            AND pb.benchmark_id  = b.parent_benchmark_id
             LEFT JOIN canonical_metrics cmet ON cmet.id       = ta.metric_key
         ),
         ranked AS (
@@ -2780,6 +2788,13 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             CASE WHEN COALESCE(b_is_slice, FALSE)
                  THEN b_parent_benchmark_id
                  ELSE NULL END                                   AS parent_benchmark_id,
+            -- The parent benchmark's own display name (NOT the composite
+            -- label) — slice-fold titles read this so cross-benchmark
+            -- suites don't title groups with the suite name. Same
+            -- fallback-to-id rule as the dim's display_name.
+            CASE WHEN COALESCE(b_is_slice, FALSE)
+                 THEN COALESCE(pb_display_name, b_parent_benchmark_id)
+                 ELSE NULL END                                   AS parent_benchmark_display_name,
             metric_key                                           AS metric_id,
             model_aggregation_key                                AS model_key,
             m_model_id                                           AS model_id,
@@ -3878,6 +3893,13 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             -- column value.
             CASE WHEN b.is_slice THEN b.parent_benchmark_id ELSE NULL END
                                                         AS parent_benchmark_id,
+            -- The parent benchmark's own display name (NOT the composite
+            -- label) — slice-fold titles read this so cross-benchmark
+            -- suites don't title groups with the suite name. Same
+            -- fallback-to-id rule as the dim's display_name.
+            CASE WHEN b.is_slice
+                 THEN COALESCE(pb.display_name, b.parent_benchmark_id)
+                 ELSE NULL END                          AS parent_benchmark_display_name,
             pm.metric_id                                AS primary_metric_id,
 
             b.display_name                              AS evaluation_name,
@@ -4079,6 +4101,11 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             )[])                                         AS subtasks,
             COALESCE(sub.subtasks_count, 0)              AS subtasks_count
         FROM benchmarks b
+        -- Self-join the dim on the row's parent so slice rows can surface
+        -- the parent's actual display name (the dim already carries the
+        -- parent row per composite — phantom roots included).
+        LEFT JOIN benchmarks pb         ON pb.composite_slug = b.composite_slug
+                                        AND pb.benchmark_id  = b.parent_benchmark_id
         LEFT JOIN primary_metric pm     ON pm.composite_slug = b.composite_slug
                                         AND pm.benchmark_id  = b.benchmark_id
         LEFT JOIN canonical_metrics cmet ON cmet.id = pm.metric_id

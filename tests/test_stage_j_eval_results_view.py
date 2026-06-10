@@ -45,10 +45,11 @@ def _run_through_stage_i(tmp_path, monkeypatch, config: str) -> Path:
     return out_dir
 
 
-def _materialise_view(out_dir: Path):
+def _materialise_view(out_dir: Path, mutate=None):
     """Load canonical parquets into a fresh DuckDB connection, register
     UDFs, and run Stage J. Returns the connection (caller does
-    assertions)."""
+    assertions). `mutate(con)` runs after the table load and before the
+    view materialisation, so tests can adjust the dims."""
     from eval_card_backend.canonicalise import stages
     from eval_card_backend.canonicalise.resolver_setup import register_udfs
     from eval_card_backend.sources import registry as registry_src
@@ -65,8 +66,29 @@ def _materialise_view(out_dir: Path):
             f"CREATE TABLE {table} AS "
             f"SELECT * FROM read_parquet('{out_dir}/{table}.parquet')"
         )
+    if mutate is not None:
+        mutate(con)
     stages.stage_j_eval_results_view(con, "2026-04-30T00:00:00Z")
     return con
+
+
+def _reparent_mmlu_under_suite(con) -> None:
+    """Dim mutation: add a synthetic parent benchmark ('mmlu-suite') and
+    turn the fixture's mmlu row into its slice. Exercises the
+    parent_benchmark_display_name self-join without new fixture data."""
+    con.execute(
+        "INSERT INTO benchmarks SELECT * REPLACE ("
+        "  'mmlu-suite' AS benchmark_id,"
+        "  'MMLU Suite' AS display_name,"
+        "  'MMLU Suite' AS benchmark_display_name,"
+        "  FALSE AS is_slice,"
+        "  CAST(NULL AS VARCHAR) AS parent_benchmark_id"
+        ") FROM benchmarks WHERE benchmark_id = 'mmlu'"
+    )
+    con.execute(
+        "UPDATE benchmarks SET parent_benchmark_id = 'mmlu-suite', "
+        "is_slice = TRUE WHERE benchmark_id = 'mmlu'"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +122,7 @@ def test_view_columns_match_spec(tmp_path, monkeypatch):
         # Family / composite columns surface
         # on the view so frontend filters don't need a dim join.
         "composite_slug", "family_id", "is_slice", "parent_benchmark_id",
+        "parent_benchmark_display_name",
     }
     missing = expected - cols.keys()
     assert not missing, f"missing columns: {missing}"
@@ -114,6 +137,45 @@ def test_view_columns_match_spec(tmp_path, monkeypatch):
     assert cols["composite_slug"] == "VARCHAR"
     assert cols["family_id"] == "VARCHAR"
     assert cols["parent_benchmark_id"] == "VARCHAR"
+    assert cols["parent_benchmark_display_name"] == "VARCHAR"
+
+
+def test_parent_benchmark_display_name_null_for_roots(tmp_path, monkeypatch):
+    """Parentless (root) rows carry NULL parent_benchmark_display_name."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    con = _materialise_view(out)
+    rows = con.execute(
+        "SELECT parent_benchmark_id, parent_benchmark_display_name "
+        "FROM eval_results_view"
+    ).fetchall()
+    assert rows
+    for parent_id, parent_display in rows:
+        assert parent_id is None
+        assert parent_display is None
+
+
+def test_parent_benchmark_display_name_for_slice_rows(tmp_path, monkeypatch):
+    """A slice row surfaces its parent benchmark's own display name (not
+    the composite label), via the dim self-join. Row counts stay intact —
+    the self-join must not fan out."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    baseline = _materialise_view(out)
+    baseline_count = baseline.execute(
+        "SELECT COUNT(*) FROM eval_results_view"
+    ).fetchone()[0]
+
+    con = _materialise_view(out, mutate=_reparent_mmlu_under_suite)
+    rows = con.execute(
+        "SELECT DISTINCT parent_benchmark_id, parent_benchmark_display_name "
+        "FROM eval_results_view WHERE benchmark_id = 'mmlu'"
+    ).fetchall()
+    assert rows == [("mmlu-suite", "MMLU Suite")]
+    # Additive: the parent self-join must not change row counts.
+    assert con.execute(
+        "SELECT COUNT(*) FROM eval_results_view"
+    ).fetchone()[0] == baseline_count
 
 
 def test_eee_record_url_built_from_source_path(tmp_path, monkeypatch):
