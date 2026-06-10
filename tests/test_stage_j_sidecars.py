@@ -705,6 +705,48 @@ def test_comparison_index_by_model_inverse_consistent(tmp_path, monkeypatch):
                 assert forward["score"] == by_model_entry["score"]
                 assert forward["rank"]  == by_model_entry["rank"]
                 assert forward["total"] == by_model_entry["total"]
+                assert forward["temperature"] == by_model_entry["temperature"]
+                assert forward["max_tokens"]  == by_model_entry["max_tokens"]
+
+
+def test_comparison_index_score_cells_carry_generation_params(tmp_path, monkeypatch):
+    """Every score cell carries temperature/max_tokens from the row's
+    generation config. fixtures_clean reports temperature=0.0 and
+    max_tokens=1024 on every scored row, so the known values must
+    round-trip onto each cell."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    _materialise_views_and_sidecars(out)
+    ci = json.loads((out / "comparison-index.json").read_text())
+    assert ci["evals"], "comparison-index has no evals; nothing to validate"
+    for eval_entry in ci["evals"].values():
+        for metric in eval_entry["metrics"]:
+            for cell in metric["scores"]:
+                assert "temperature" in cell
+                assert "max_tokens" in cell
+                assert cell["temperature"] == 0.0
+                assert cell["max_tokens"] == 1024
+
+
+def test_comparison_index_generation_params_null_when_unreported(tmp_path, monkeypatch):
+    """Rows without a generation config emit temperature/max_tokens as
+    null, never a sentinel and never a missing key."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    con = _materialise_views_and_sidecars(out)
+    con.execute("UPDATE eval_results_view SET generation_config = NULL")
+    snap = json.loads((out / "snapshot_meta.json").read_text())
+    from eval_card_backend.canonicalise import sidecars
+    sidecars.write_comparison_index(con, out, snap)
+    ci = json.loads((out / "comparison-index.json").read_text())
+    assert ci["evals"], "comparison-index has no evals; nothing to validate"
+    for eval_entry in ci["evals"].values():
+        for metric in eval_entry["metrics"]:
+            for cell in metric["scores"]:
+                assert "temperature" in cell
+                assert "max_tokens" in cell
+                assert cell["temperature"] is None
+                assert cell["max_tokens"] is None
 
 
 # ---------------------------------------------------------------------------

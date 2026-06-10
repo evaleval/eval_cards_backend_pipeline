@@ -2001,6 +2001,11 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             erv.model_key,
             erv.model_id,
             erv.model_route_id,
+            -- Decoder knobs from the row's generation_config struct; the
+            -- per-source detail rows on the model page read these off the
+            -- score cells (no eval-id join is possible from reported-results).
+            erv.generation_config.generation_args.temperature AS temperature,
+            erv.generation_config.generation_args.max_tokens  AS max_tokens,
             -- Group key (renamed `model_family_id` -> `model_group_id` on
             -- models_view). Aliased back to `model_family_id` so the rest
             -- of this builder and the emitted JSON field keep their name
@@ -2111,6 +2116,8 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                 "total":             total,
                 "submission_count":  1,
                 "submission_axis":   "default",
+                "temperature":       rec["temperature"],
+                "max_tokens":        rec["max_tokens"],
             })
             by_model[rec["model_route_id"]][eval_id][metric_summary_id] = {
                 "score":            sc,
@@ -2118,6 +2125,8 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                 "total":            total,
                 "submission_count": 1,
                 "submission_axis":  "default",
+                "temperature":      rec["temperature"],
+                "max_tokens":       rec["max_tokens"],
             }
 
         group = _classify_metric_group(
