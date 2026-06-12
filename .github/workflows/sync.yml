@@ -64,7 +64,7 @@ jobs:
           path: evalcard-registry
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
 
@@ -84,7 +84,7 @@ jobs:
       # (key collapses to the prior `hf-bulk--` form) and restore-keys
       # fall back to the latest bulk cache.
       - name: Cache EEE + benchmark-cards snapshots
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .cache/eee_datastore
@@ -112,7 +112,7 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Cache entity-registry snapshot
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .cache/entity_registry
           key: entity-registry-${{ steps.registry-rev.outputs.sha }}
@@ -144,7 +144,7 @@ jobs:
 
       - name: Upload snapshot_meta as run artifact
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: snapshot-meta
           path: warehouse/*/snapshot_meta.json
