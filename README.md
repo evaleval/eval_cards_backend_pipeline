@@ -127,10 +127,4 @@ warehouse snapshot tree to `evaleval/card_backend` on HF. Override via
 the `HF_TARGET_DATASET` env at the workflow level. The `HF_TOKEN` secret
 must be set on the repo.
 
-## Design notes
 
-- `CLAUDE.md` is the operational source of truth (architecture pointers,
-  ignored-config policy, hotfix retirement plans).
-- `notes/01-` through `notes/08-` are the design specs for the canonical
-  schema, producer pipeline, EEE schema vendoring, and Stage J view
-  layer.
