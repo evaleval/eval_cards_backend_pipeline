@@ -33,7 +33,8 @@ env:
   # Last nested-layout pin (pre-flat-migration): 234017fbde38e8eceaad3d4e2389b13d8065c5c0
   # Old schema-2 pin: 4e7db3339c45aada4e0bfbb8d553b927e94bbfb3.
   # Prev schema-3 pin: 88c0b292f2936eb4dc49672cc4f63781cf0da157
-  ENTITY_REGISTRY_REVISION: 657f24c2054781ec0c051881dab81f924309d852
+  # Prev registry pin: 657f24c2054781ec0c051881dab81f924309d852
+  ENTITY_REGISTRY_REVISION: b099e70eba1ac4ea4c90d33ef1d816fc818a82e8
   BENCHMARK_METADATA_REVISION: 621bfc612e0f301457beb6e5d6811114583bcec0
 
 jobs:
