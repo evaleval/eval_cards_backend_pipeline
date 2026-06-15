@@ -1462,7 +1462,30 @@ def stage_e_per_row_signals(con) -> StageEStats:
             -- Dedup on (snapshot_id, fact_id): same fact_id appearing more
             -- than once is real upstream (multi-run reports of one eval);
             -- keep the latest by retrieved_timestamp, break ties on
-            -- evaluation_id so the choice is byte-stable across re-runs.
+            -- evaluation_id then evaluation_result_id so the choice is
+            -- byte-stable across re-runs.
+            --
+            -- The evaluation_result_id + source_record_path tiebreaks are
+            -- load-bearing: distinct EEE source records can collide on
+            -- (evaluation_id, result_idx) — hence on fact_id, which is
+            -- sha256(evaluation_id:result_idx) — while carrying identical
+            -- retrieved_timestamp AND evaluation_id. Two cases seen in the
+            -- corpus:
+            --   • LiveBench: two records share one evaluation_id, each with
+            --     its own evaluation_results[] array, distinguished by
+            --     evaluation_result_id.
+            --   • HF-OpenLLM: two near-duplicate record uploads carry the
+            --     SAME evaluation_result_id (a synthesised
+            --     <eid>#<bench>#<metric> form) and the same timestamp, with
+            --     slightly different scores — tied even on
+            --     evaluation_result_id.
+            -- Without a fully-disambiguating final key the surviving row is
+            -- arbitrary and varies run-to-run under multi-threaded scan
+            -- order. source_record_path is the repo-relative path of the
+            -- EEE source JSON (one file per record), unique per physical
+            -- record, so it completes the total order. All tiebreaks sort
+            -- after retrieved_timestamp, so latest-by-retrieved_timestamp
+            -- semantics are unchanged — only genuine ties are pinned.
             -- CASE pins NULL fact_ids to rank 1 — they can't collide and
             -- shouldn't be silently merged by a NULL-collapsing PARTITION BY.
             SELECT *,
@@ -1470,7 +1493,9 @@ def stage_e_per_row_signals(con) -> StageEStats:
                      ELSE ROW_NUMBER() OVER (
                          PARTITION BY fact_id
                          ORDER BY retrieved_timestamp DESC NULLS LAST,
-                                  evaluation_id DESC
+                                  evaluation_id DESC,
+                                  evaluation_result_id DESC,
+                                  source_record_path DESC
                      )
                 END AS _dedup_rank
             FROM signaled
@@ -1596,6 +1621,14 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
         WITH group_payloads AS (
             SELECT
                 model_aggregation_key, benchmark_key, slice_key, metric_key,
+                -- ORDER BY fact_id is load-bearing for determinism: the
+                -- comparability UDFs that consume group_rows record
+                -- `differing_setup_fields` in first-seen order and build
+                -- `scores_by_organization` in row-encounter order, so an
+                -- unordered array_agg (DuckDB scan order varies run-to-run)
+                -- would shuffle those array elements / dict keys between
+                -- runs. The divergence magnitudes/booleans are order-free,
+                -- but a stable input order makes the whole pass byte-stable.
                 array_agg(struct_pack(
                     fact_id                  := fact_id,
                     evaluation_id            := evaluation_id,
@@ -1603,7 +1636,7 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
                     generation_args          := generation_args_json,
                     evaluator_relationship   := evaluator_relationship,
                     source_organization_name := org_raw
-                )) AS group_rows,
+                ) ORDER BY fact_id) AS group_rows,
                 struct_pack(
                     metric_kind := MAX(metric_kind) FILTER (WHERE metric_kind IS NOT NULL),
                     metric_unit := MAX(metric_unit) FILTER (WHERE metric_unit IS NOT NULL),
@@ -2114,7 +2147,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             SELECT
                 fr.composite_slug,
                 ANY_VALUE(fr.composite_display_name) AS composite_display_name,
-                ARRAY_AGG(DISTINCT fr.source_config)
+                ARRAY_AGG(DISTINCT fr.source_config ORDER BY fr.source_config)
                     FILTER (WHERE fr.source_config IS NOT NULL) AS source_configs,
                 COUNT(DISTINCT (fr.benchmark_key, fr.metric_key))
                     FILTER (WHERE fr.benchmark_key IS NOT NULL
@@ -2191,13 +2224,13 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             SELECT
                 model_aggregation_key                             AS model_key,
                 ANY_VALUE(model_raw)                              AS model_raw_sample,
-                ARRAY_AGG(DISTINCT model_raw)
+                ARRAY_AGG(DISTINCT model_raw ORDER BY model_raw)
                     FILTER (WHERE model_raw IS NOT NULL)          AS raw_model_ids,
-                ARRAY_AGG(DISTINCT model_key)
+                ARRAY_AGG(DISTINCT model_key ORDER BY model_key)
                     FILTER (WHERE model_key IS NOT NULL)          AS variant_keys,
-                ARRAY_AGG(DISTINCT model_id)
+                ARRAY_AGG(DISTINCT model_id ORDER BY model_id)
                     FILTER (WHERE model_id IS NOT NULL)           AS leaf_model_ids,
-                ARRAY_AGG(DISTINCT model_leaf_id)
+                ARRAY_AGG(DISTINCT model_leaf_id ORDER BY model_leaf_id)
                     FILTER (WHERE model_leaf_id IS NOT NULL)      AS resolved_leaf_ids
             FROM fact_results
             WHERE model_aggregation_key IS NOT NULL
@@ -2587,10 +2620,13 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 ) AS rep_score,
                 BOOL_OR(evaluator_relationship = 'first_party') AS has_first_party,
                 BOOL_OR(evaluator_relationship = 'third_party') AS has_third_party,
-                ARRAY_AGG(DISTINCT evaluator_relationship)
+                -- ORDER BY the distinct expr so the array element order is
+                -- run-to-run stable (set content is already deterministic;
+                -- only the ordering varied under unordered aggregation).
+                ARRAY_AGG(DISTINCT evaluator_relationship ORDER BY evaluator_relationship)
                     FILTER (WHERE evaluator_relationship IS NOT NULL)
                     AS evaluator_relationships,
-                ARRAY_AGG(DISTINCT org_display)
+                ARRAY_AGG(DISTINCT org_display ORDER BY org_display)
                     FILTER (WHERE org_display IS NOT NULL)
                     AS reporting_orgs,
                 -- Provenance signals (`is_multi_source`, `first_party_only`)
@@ -2629,14 +2665,22 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
         ),
         tri_rep_ranked AS (
             -- Pick one representative fact row per triple.
-            -- Order: scored rows first → first-party first → lowest evaluation_id.
+            -- Order: scored rows first → first-party first → lowest
+            -- evaluation_id → lowest fact_id. fact_id is the final total
+            -- tiebreak: a triple can hold several fact rows sharing the
+            -- same evaluation_id (different result_idx) or several
+            -- first-party scored rows, leaving evaluation_id ASC tied and
+            -- the representative — which sources rep_score and every other
+            -- rep_* scalar surfaced on eval_results_view — arbitrary and
+            -- run-to-run unstable. fact_id is unique per fact row.
             SELECT *,
                 ROW_NUMBER() OVER (
                     PARTITION BY composite_slug, model_aggregation_key, benchmark_key, metric_key
                     ORDER BY
                         CASE WHEN score IS NULL THEN 1 ELSE 0 END ASC,
                         CASE WHEN evaluator_relationship = 'first_party' THEN 0 ELSE 1 END ASC,
-                        evaluation_id ASC
+                        evaluation_id ASC,
+                        fact_id ASC
                 ) AS _rep_rank
             FROM tris
         ),
@@ -3145,7 +3189,8 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 -- eval-run timestamps (NOT scrape times). NULL when
                 -- none of this model's evaluations carry timestamps.
                 MAX({ts_cast_sql("evaluation_timestamp")}) AS latest_timestamp,
-                arg_max(org_raw, {ts_cast_sql("evaluation_timestamp")})
+                arg_max(org_raw,
+                        struct_pack(t := {ts_cast_sql("evaluation_timestamp")}, n := org_raw))
                     FILTER (WHERE org_raw IS NOT NULL)        AS latest_source_name,
                 -- evaluator_count uses the de-aliased identity (`org_display`)
                 -- so models evaluated by both `Ai2` and `Allen Institute for
@@ -3154,16 +3199,20 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 -- of being filtered out by an `org_id IS NOT NULL` predicate.
                 CAST(COUNT(DISTINCT org_display) FILTER (WHERE org_display IS NOT NULL) AS BIGINT)
                                                               AS evaluator_count,
-                ARRAY_AGG(DISTINCT org_display)
+                ARRAY_AGG(DISTINCT org_display ORDER BY org_display)
                     FILTER (WHERE org_display IS NOT NULL)    AS evaluator_names,
                 CAST(COUNT(DISTINCT provenance_source_type)
                      FILTER (WHERE provenance_source_type IS NOT NULL) AS INTEGER)
                                                               AS source_type_count,
-                ARRAY_AGG(DISTINCT provenance_source_type)
+                ARRAY_AGG(DISTINCT provenance_source_type ORDER BY provenance_source_type)
                     FILTER (WHERE provenance_source_type IS NOT NULL) AS source_types,
-                ARRAY_AGG(DISTINCT model_raw)
+                ARRAY_AGG(DISTINCT model_raw ORDER BY model_raw)
                     FILTER (WHERE model_raw IS NOT NULL)      AS raw_model_ids,
                 ARRAY_AGG(DISTINCT struct_pack(
+                    "name"    := eval_library_name,
+                    "version" := eval_library_version,
+                    fork      := CAST(NULL AS VARCHAR)
+                ) ORDER BY struct_pack(
                     "name"    := eval_library_name,
                     "version" := eval_library_version,
                     fork      := CAST(NULL AS VARCHAR)
@@ -3248,7 +3297,7 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
             -- on /models, "X benchmarks" tags on model cards.
             SELECT
                 erv.model_key,
-                ARRAY_AGG(DISTINCT b.display_name)
+                ARRAY_AGG(DISTINCT b.display_name ORDER BY b.display_name)
                     FILTER (WHERE b.display_name IS NOT NULL
                             AND NOT COALESCE(b.is_slice, FALSE)) AS benchmark_names
             FROM eval_results_view erv
@@ -3289,7 +3338,13 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                         CASE WHEN COALESCE(e.lower_is_better, FALSE)
                              THEN e.score ELSE -e.score
                         END ASC,
-                        e.benchmark_key ASC
+                        e.benchmark_key ASC,
+                        -- Final total tiebreak: one (model_key, tag) can hold
+                        -- several metrics on the same benchmark_key (same
+                        -- benchmark, different metric) with equal scores,
+                        -- leaving benchmark_key ASC tied. metric_display_name
+                        -- pins which metric's row becomes the tag's top score.
+                        e.metric_display_name ASC
                 ) AS _rk
             FROM erv_with_display e,
                  UNNEST(from_json(e.derived_tags, '["VARCHAR"]')) AS tag(t)
@@ -3311,7 +3366,8 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
         link_rollups AS (
             SELECT
                 model_key,
-                ARRAY_AGG(DISTINCT source_metadata.source_organization_url)
+                ARRAY_AGG(DISTINCT source_metadata.source_organization_url
+                          ORDER BY source_metadata.source_organization_url)
                     FILTER (WHERE source_metadata.source_organization_url IS NOT NULL)
                     AS source_urls
             FROM eval_results_view
@@ -3624,12 +3680,13 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             -- (composite, benchmark). Done in a separate CTE so the
             -- unnest doesn't inflate the per-triple aggregations.
             SELECT pt.composite_slug, pt.benchmark_id,
-                   ARRAY_AGG(DISTINCT u) FILTER (WHERE u IS NOT NULL) AS evaluator_names,
+                   ARRAY_AGG(DISTINCT u ORDER BY u) FILTER (WHERE u IS NOT NULL) AS evaluator_names,
                    -- The subset of evaluators that are validated submitters
                    -- (de-aliased, same name space as evaluator_names) — powers
                    -- the verified badge on the /evals list "Reported by" row.
                    -- DISTINCT collapses the unnest-inflated rows.
-                   ARRAY_AGG(DISTINCT pt.evaluator_display_name)
+                   ARRAY_AGG(DISTINCT pt.evaluator_display_name
+                             ORDER BY pt.evaluator_display_name)
                        FILTER (WHERE pt.is_verified_evaluator
                                AND pt.evaluator_display_name IS NOT NULL)
                        AS verified_evaluator_names
@@ -3639,7 +3696,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
         ),
         source_types_agg AS (
             SELECT pt.composite_slug, pt.benchmark_id,
-                   ARRAY_AGG(DISTINCT t) FILTER (WHERE t IS NOT NULL) AS source_types
+                   ARRAY_AGG(DISTINCT t ORDER BY t) FILTER (WHERE t IS NOT NULL) AS source_types
             FROM primary_triples pt,
                  UNNEST(COALESCE(pt.evaluator_relationships, [])) AS t_t(t)
             GROUP BY 1, 2
@@ -3652,7 +3709,9 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 pt.composite_slug, pt.benchmark_id,
                 CAST(COUNT(DISTINCT pt.model_key) AS BIGINT)           AS models_count,
                 arg_max(pt.source_metadata.source_organization_name,
-                        pt.evaluation_timestamp)                       AS latest_source_name,
+                        struct_pack(t := pt.evaluation_timestamp,
+                                    n := pt.source_metadata.source_organization_name))
+                                                                       AS latest_source_name,
                 AVG(CASE WHEN pt.coverage_cell IN ('third', 'both')
                          THEN 1.0 ELSE 0.0 END)                        AS third_party_ratio,
                 CAST(SUM(CASE
@@ -3665,8 +3724,14 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 -- top/bottom are addressable identifiers — use model_key so
                 -- unresolved models can also occupy these slots and the
                 -- downstream JOIN to `models` resolves their display name.
-                arg_max(pt.model_key, pt.scoring_score)                AS top_model_id,
-                arg_min(pt.model_key, pt.scoring_score)                AS bottom_model_id,
+                -- The ordering value is a (score, model_key) struct so score
+                -- ties break deterministically on model_key (rather than
+                -- arg_max/arg_min picking an arbitrary tied row, which
+                -- varied run-to-run); the primary key stays scoring_score.
+                arg_max(pt.model_key,
+                        struct_pack(s := pt.scoring_score, k := pt.model_key)) AS top_model_id,
+                arg_min(pt.model_key,
+                        struct_pack(s := pt.scoring_score, k := pt.model_key)) AS bottom_model_id,
                 AVG(CASE WHEN pt.has_reproducibility_gap THEN 1.0 ELSE 0.0 END)
                                                                        AS gap_rate,
                 CAST(SUM(CASE WHEN pt.has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
