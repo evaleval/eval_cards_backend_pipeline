@@ -119,10 +119,18 @@ def family_stem(
     canonical_set: set[str],
     alias_to_canonical: dict[str, str],
     parent: dict[str, str],
+    scoped_alias_to_canonical: dict[tuple[str, str], str] | None = None,
 ) -> str:
     if folder in EXPLICIT_FAMILY_MAP:
         return EXPLICIT_FAMILY_MAP[folder]
-    cid = resolve_canonical(folder, canonical_set, alias_to_canonical)
+    # The folder IS the source_config, so resolve it config-scoped-first.
+    cid = resolve_canonical(
+        folder,
+        canonical_set,
+        alias_to_canonical,
+        scoped_alias_to_canonical=scoped_alias_to_canonical,
+        source_config=folder,
+    )
     if cid:
         cur = cid
         seen: set[str] = set()
@@ -143,10 +151,19 @@ def resolve_canonical(
     raw: str | None,
     canonical_set: set[str],
     alias_to_canonical: dict[str, str],
+    scoped_alias_to_canonical: dict[tuple[str, str], str] | None = None,
+    source_config: str | None = None,
 ) -> str | None:
     if not raw:
         return None
-    for k in (raw, raw.lower(), slugify(raw)):
+    keys = (raw, raw.lower(), slugify(raw))
+    # Config-scoped first (matches AliasStore.lookup precedence).
+    if source_config and scoped_alias_to_canonical:
+        for k in keys:
+            scoped = scoped_alias_to_canonical.get((source_config, k))
+            if scoped is not None:
+                return scoped
+    for k in keys:
         if k in alias_to_canonical:
             return alias_to_canonical[k]
     if raw in canonical_set:
@@ -160,16 +177,27 @@ def resolve_canonical_strict(
     raw: str | None,
     canonical_set: set[str],
     alias_to_canonical: dict[str, str] | None = None,
+    scoped_alias_to_canonical: dict[tuple[str, str], str] | None = None,
+    source_config: str | None = None,
 ) -> str | None:
     """Strict resolution for slice→benchmark promotion.
 
     Accepts a slice name as a canonical reference when it either:
       (1) slug-equals an existing canonical_id, OR
-      (2) hits an alias in `alias_to_canonical`
-          (e.g. registry alias `LCR` → `aa-lcr`, `artificial_analysis.lcr`
-          → `aa-lcr`). The alias path is gated by the generic-words
-          blacklist so suite-scoped tokens ("Overall", "Score") don't
-          accidentally promote.
+      (2) hits an alias (e.g. registry alias `LCR` → `aa-lcr`,
+          `artificial_analysis.lcr` → `aa-lcr`). The alias path is gated
+          by the generic-words blacklist so suite-scoped tokens
+          ("Overall", "Score") don't accidentally promote.
+
+    Alias resolution is CONFIG-AWARE, mirroring the resolver's own
+    `AliasStore.lookup` precedence (config-scoped before global): when a
+    `source_config` is given and `scoped_alias_to_canonical` carries a
+    scoped alias for that config, the scoped canonical wins; otherwise we
+    fall back to the global/unscoped `alias_to_canonical`. This prevents
+    a config-blind global map from picking the wrong canonical for a
+    surface form scoped to different canonicals in different EEE folders
+    (e.g. "Investment Banking" → apex-agents under the apex-agents folder
+    but apex-v1 under the apex-v1 folder).
     """
     if not raw:
         return None
@@ -178,8 +206,16 @@ def resolve_canonical_strict(
         return None
     if s in canonical_set:
         return s
+    keys = (raw, raw.lower(), s)
+    # Config-scoped first (matches AliasStore.lookup precedence).
+    if source_config and scoped_alias_to_canonical:
+        for k in keys:
+            scoped = scoped_alias_to_canonical.get((source_config, k))
+            if scoped is not None:
+                return scoped
+    # Global / unscoped fallback.
     if alias_to_canonical:
-        for k in (raw, raw.lower(), s):
+        for k in keys:
             if k in alias_to_canonical:
                 return alias_to_canonical[k]
     return None
@@ -222,9 +258,19 @@ def extract_slice_candidate(family: str, ds_name: str, eval_name: str) -> str | 
 # ---------------------------------------------------------------------------
 
 
-def _load_registry_maps(con) -> tuple[set[str], dict[str, str], dict[str, str]]:
-    """Build {canonical_set, alias_to_canonical, parent} from the
-    canonical_benchmarks + aliases tables already loaded on the connection.
+def _load_registry_maps(
+    con,
+) -> tuple[set[str], dict[str, str], dict[tuple[str, str], str], dict[str, str]]:
+    """Build {canonical_set, alias_to_canonical, scoped_alias_to_canonical,
+    parent} from the canonical_benchmarks + aliases tables already loaded
+    on the connection.
+
+    `alias_to_canonical` holds GLOBAL (unscoped, `source_config IS NULL`)
+    benchmark aliases. `scoped_alias_to_canonical` holds config-scoped
+    aliases keyed by `(source_config, alias_key)`, where `alias_key` is one
+    of the raw/lower/slug spellings — mirroring how the resolver scopes
+    aliases per EEE folder. Slice-promotion resolution prefers a scoped
+    entry for the bucket's folder before falling back to the global map.
     """
     canonical_set: set[str] = set()
     parent: dict[str, str] = {}
@@ -238,22 +284,37 @@ def _load_registry_maps(con) -> tuple[set[str], dict[str, str], dict[str, str]]:
                 parent[cid] = pid
 
     alias_to_canonical: dict[str, str] = {}
+    scoped_alias_to_canonical: dict[tuple[str, str], str] = {}
     rows = con.execute(
-        "SELECT raw_value, canonical_id FROM aliases "
+        "SELECT raw_value, canonical_id, source_config FROM aliases "
         "WHERE entity_type='benchmark' AND status IN ('confirmed','auto')"
     ).fetchall()
-    for raw, cid in rows:
+    for raw, cid, source_config in rows:
         if not raw or not cid:
             continue
-        alias_to_canonical[raw] = cid
-        alias_to_canonical[raw.lower()] = cid
-        alias_to_canonical[slugify(raw)] = cid
-    return canonical_set, alias_to_canonical, parent
+        keys = (raw, raw.lower(), slugify(raw))
+        if source_config:
+            for k in keys:
+                scoped_alias_to_canonical[(source_config, k)] = cid
+        else:
+            for k in keys:
+                alias_to_canonical[k] = cid
+    return canonical_set, alias_to_canonical, scoped_alias_to_canonical, parent
 
 
-def _iter_exploded_rows(con) -> Iterable[tuple[str, int, str, str, str]]:
-    """Yield (evaluation_id, result_idx, source_config, ds_name, eval_name)
-    for every row in `results_exploded`.
+def _iter_exploded_rows(con) -> Iterable[tuple[str, int, str, str, str, str]]:
+    """Yield (evaluation_id, result_idx, source_config, ds_name, eval_name,
+    evaluation_result_id) for every row in `results_exploded`.
+
+    The `ORDER BY` is load-bearing for determinism: `compute_overrides`
+    consumes this stream with first-seen-wins accumulation (`setdefault`
+    for the bucket's `ds_canonical`), so an unordered scan — whose row
+    order varies run-to-run under DuckDB's multi-threaded execution —
+    would let the bucket's resolved canonical flip between runs. A total
+    order on (evaluation_id, result_idx, evaluation_result_id) pins it.
+    `evaluation_result_id` is the per-physical-record disambiguator:
+    distinct EEE source records can collide on (evaluation_id,
+    result_idx) but never on evaluation_result_id.
     """
     # `source_data` materialises as VARCHAR (JSON-serialised) on
     # `results_exploded`, not a STRUCT, so dataset_name is extracted via
@@ -269,8 +330,10 @@ def _iter_exploded_rows(con) -> Iterable[tuple[str, int, str, str, str]]:
                 json_extract_string(source_data, '$.dataset_name'),
                 source_config
             ) AS ds_name,
-            evaluation_name
+            evaluation_name,
+            evaluation_result_id
         FROM results_exploded
+        ORDER BY evaluation_id, result_idx, evaluation_result_id
         """
     ).fetchall()
     for r in rows:
@@ -279,14 +342,26 @@ def _iter_exploded_rows(con) -> Iterable[tuple[str, int, str, str, str]]:
 
 def compute_overrides(con) -> int:
     """Replay v2's pass1+pass2 logic over the rows in `results_exploded`,
-    write `slice_promotion_overrides(evaluation_id, result_idx,
-    canonical_id)` into the connection. Returns row count.
+    write `slice_promotion_overrides(evaluation_result_id, canonical_id)`
+    into the connection. Returns row count.
 
     The override is non-None only for rows where v2's logic produced an
     answer that v3's row-level resolver would not (the "promoted slice"
     case). All other rows are no-ops at apply time.
+
+    Overrides are keyed by `evaluation_result_id`, NOT (evaluation_id,
+    result_idx): distinct EEE source records can collide on the latter
+    (e.g. two LiveBench records that share one evaluation_id, each with
+    its own evaluation_results[] array, land on the same result_idx).
+    Keying by (evaluation_id, result_idx) would emit two override rows
+    for the same key with different canonicals and let the apply-time
+    UPDATE pick whichever the scan reached last — a run-to-run flip.
+    `evaluation_result_id` is unique per physical row, so each record
+    keeps its own correct slice canonical and the UPDATE join is 1:1.
     """
-    canonical_set, alias_to_canonical, parent = _load_registry_maps(con)
+    canonical_set, alias_to_canonical, scoped_alias_to_canonical, parent = (
+        _load_registry_maps(con)
+    )
     if not canonical_set:
         log.warning(
             "slice_promotion: canonical_benchmarks is empty; "
@@ -294,7 +369,7 @@ def compute_overrides(con) -> int:
         )
         con.execute(
             "CREATE OR REPLACE TEMP TABLE slice_promotion_overrides "
-            "(evaluation_id VARCHAR, result_idx INTEGER, canonical_id VARCHAR)"
+            "(evaluation_result_id VARCHAR, canonical_id VARCHAR)"
         )
         return 0
 
@@ -303,28 +378,42 @@ def compute_overrides(con) -> int:
     #         bucket also records its candidate canonical (resolved from
     #         dataset_name) for the non-promoted path.
     candidates: dict[tuple, dict] = {}
-    row_records: list[tuple] = []  # (evaluation_id, result_idx, bucket_key, slice_candidate)
-    for evaluation_id, result_idx, folder, ds_name, eval_name in _iter_exploded_rows(con):
+    # (evaluation_result_id, bucket_key, slice_candidate)
+    row_records: list[tuple] = []
+    for (
+        evaluation_id, result_idx, folder, ds_name, eval_name, evaluation_result_id
+    ) in _iter_exploded_rows(con):
         if folder in EXCLUDED_FOLDERS:
             continue
-        family = family_stem(folder, canonical_set, alias_to_canonical, parent)
+        family = family_stem(
+            folder, canonical_set, alias_to_canonical, parent,
+            scoped_alias_to_canonical=scoped_alias_to_canonical,
+        )
         composite = EXPLICIT_COMPOSITE_MAP.get(folder)
         ds_slug = slugify(ds_name) or slugify(folder)
         bucket_key = (folder, family, composite, ds_slug)
 
         cand = candidates.setdefault(bucket_key, {
-            "ds_canonical":     resolve_canonical(ds_name, canonical_set, alias_to_canonical),
+            "ds_canonical": resolve_canonical(
+                ds_name, canonical_set, alias_to_canonical,
+                scoped_alias_to_canonical=scoped_alias_to_canonical,
+                source_config=folder,
+            ),
             "slice_names":      set(),
             "slice_canonicals": set(),
         })
         slice_candidate = extract_slice_candidate(family, ds_name, eval_name or "")
         if slice_candidate:
             cand["slice_names"].add(slice_candidate)
-            sc = resolve_canonical_strict(slice_candidate, canonical_set, alias_to_canonical)
+            sc = resolve_canonical_strict(
+                slice_candidate, canonical_set, alias_to_canonical,
+                scoped_alias_to_canonical=scoped_alias_to_canonical,
+                source_config=folder,
+            )
             if sc:
                 cand["slice_canonicals"].add(sc)
 
-        row_records.append((evaluation_id, result_idx, bucket_key, slice_candidate))
+        row_records.append((evaluation_result_id, bucket_key, slice_candidate))
 
     # Pass 2: per bucket, decide promotion (≥2 distinct slice canonicals).
     promoted_buckets: set[tuple] = {
@@ -338,24 +427,33 @@ def compute_overrides(con) -> int:
     #       → use that canonical (the llm-stats / per-record-distinct-ds_name
     #       case where v3's clean_eval_name path mishandles the source-prefixed
     #       evaluation_name).
-    overrides: list[tuple[str, int, str]] = []
-    for evaluation_id, result_idx, bucket_key, slice_candidate in row_records:
+    overrides: list[tuple[str, str]] = []
+    for evaluation_result_id, bucket_key, slice_candidate in row_records:
         cand = candidates[bucket_key]
+        folder = bucket_key[0]
         override: str | None = None
         if bucket_key in promoted_buckets and slice_candidate:
-            override = resolve_canonical_strict(slice_candidate, canonical_set, alias_to_canonical)
+            # Resolve the slice candidate config-scoped-first so a surface
+            # form scoped to different canonicals across EEE folders picks
+            # this bucket's folder canonical, not whichever the (former
+            # config-blind) global map happened to hold last.
+            override = resolve_canonical_strict(
+                slice_candidate, canonical_set, alias_to_canonical,
+                scoped_alias_to_canonical=scoped_alias_to_canonical,
+                source_config=folder,
+            )
         if override is None and cand["ds_canonical"]:
             override = cand["ds_canonical"]
-        if override:
-            overrides.append((evaluation_id, int(result_idx), override))
+        if override and evaluation_result_id is not None:
+            overrides.append((evaluation_result_id, override))
 
     con.execute(
         "CREATE OR REPLACE TEMP TABLE slice_promotion_overrides "
-        "(evaluation_id VARCHAR, result_idx INTEGER, canonical_id VARCHAR)"
+        "(evaluation_result_id VARCHAR, canonical_id VARCHAR)"
     )
     if overrides:
         con.executemany(
-            "INSERT INTO slice_promotion_overrides VALUES (?, ?, ?)",
+            "INSERT INTO slice_promotion_overrides VALUES (?, ?)",
             overrides,
         )
     log.info(
@@ -387,8 +485,7 @@ def apply_overrides(con) -> int:
         SET benchmark_id = ovr.canonical_id,
             benchmark_resolution_strategy = 'slice_promotion'
         FROM slice_promotion_overrides AS ovr
-        WHERE rr.evaluation_id = ovr.evaluation_id
-          AND rr.result_idx     = ovr.result_idx
+        WHERE rr.evaluation_result_id = ovr.evaluation_result_id
           AND ovr.canonical_id IS NOT NULL
           AND rr.benchmark_id IS DISTINCT FROM ovr.canonical_id
         RETURNING 1
