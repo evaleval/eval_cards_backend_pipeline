@@ -484,9 +484,10 @@ def run(
         sidecars.write_comparison_index(con, out_dir, meta)
         sidecars.write_benchmark_index(con, out_dir, meta)
         sidecars.write_peer_ranks(con, out_dir, meta)
+        sidecars.write_organizations(con, out_dir, meta)
         log.info(
             "Stage J: wrote sidecars (manifest, headline, hierarchy, "
-            "comparison-index, benchmark_index, peer-ranks) to %s",
+            "comparison-index, benchmark_index, peer-ranks, organizations) to %s",
             out_dir,
         )
 

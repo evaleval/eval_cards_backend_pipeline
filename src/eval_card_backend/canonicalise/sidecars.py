@@ -104,6 +104,7 @@ def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
             "eval_hierarchy":    "hierarchy.json",
             "comparison_index":  "comparison-index.json",
             "benchmark_index":   "benchmark_index.json",
+            "organizations":     "organizations.json",
         },
     }
     path = out_dir / "manifest.json"
@@ -572,6 +573,76 @@ def write_headline(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "tags":            _tags_list(con),
     }
     path = out_dir / "headline.json"
+    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# organizations.json
+# ---------------------------------------------------------------------------
+
+def _normalize_org_key(name: str) -> str:
+    """Lower-case + collapse whitespace so the sidecar key matches the
+    frontend's normalizeOrgKey(evaluator_name). Keep in sync with
+    general-eval-card/lib/evaluator-logo.ts."""
+    return " ".join(name.strip().lower().split())
+
+
+def write_organizations(con, out_dir: Path, snapshot_meta: dict) -> Path:
+    """organizations.json — per-evaluator-org metadata (homepage URL + logo
+    pointer) sourced from the registry's `canonical_orgs` dim.
+
+    Keyed by the NORMALISED org display name so the frontend can look an
+    evaluator up directly from the `evaluator_names` string it already holds
+    (those names are the de-aliased canonical display names — see
+    `_reporting_org_count`). Every reporting org that resolves to a registry
+    entity is emitted carrying its canonical `id` (even with no url/logo): the
+    frontend slugs evaluator URLs from that STABLE id, so renaming an org's
+    display name never changes its /evaluators/<slug> URL. `url` / `logo` are
+    included when present; absent ones simply yield a monogram + no link.
+    Unresolved raw orgs (no canonical row) are omitted — they keep their
+    display-name slug, which is as stable as the raw string itself.
+
+    The registry is the source of truth: `url` is `canonical_orgs.website`,
+    `logo` is `canonical_orgs.logo_url` (a frontend-relative path or absolute
+    URL — bytes are served by the frontend).
+    """
+    rows = con.execute(
+        """
+        WITH reporting AS (
+            SELECT DISTINCT u AS display_name
+            FROM eval_results_view erv,
+                 UNNEST(COALESCE(erv.reporting_orgs, [])) AS u_t(u)
+            WHERE u IS NOT NULL
+        )
+        SELECT r.display_name AS display_name,
+               co.id          AS org_id,
+               co.website     AS url,
+               co.logo_url    AS logo
+        FROM reporting r
+        JOIN canonical_orgs co ON co.display_name = r.display_name
+        ORDER BY r.display_name
+        """
+    ).fetchall()
+
+    orgs: dict[str, dict] = {}
+    for display_name, org_id, url, logo in rows:
+        if not display_name:
+            continue
+        entry: dict[str, str] = {"name": display_name}
+        if org_id:
+            entry["id"] = org_id
+        if url:
+            entry["url"] = url
+        if logo:
+            entry["logo"] = logo
+        orgs[_normalize_org_key(display_name)] = entry
+
+    payload = {
+        "generated_at": snapshot_meta["snapshot_id"],
+        "orgs": orgs,
+    }
+    path = out_dir / "organizations.json"
     path.write_text(json.dumps(payload, indent=2, default=_json_default))
     return path
 

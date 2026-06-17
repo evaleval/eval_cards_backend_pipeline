@@ -440,6 +440,7 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("display_name", "VARCHAR"),
         ("parent_org_id", "VARCHAR"),
         ("website", "VARCHAR"),
+        ("logo_url", "VARCHAR"),
         ("hf_org", "VARCHAR"),
         ("kind", "VARCHAR"),
         ("tags", "VARCHAR"),
