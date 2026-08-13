@@ -21,7 +21,7 @@ from urllib.parse import unquote
 import duckdb
 import pytest
 
-from tests.flat_layout import write_flat_datastore
+from tests.eee_layout import write_eee_datastore
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ def _write_eee_fixture_two_models(eee_root: Path) -> None:
             ],
         }
 
-    write_flat_datastore(eee_root, [
+    write_eee_datastore(eee_root, [
         ("fixtures_two_models", "ev_a.json",
          json.dumps(_record("ev_a", "openai/gpt-4o", 0.9, with_repro=True))),
         ("fixtures_two_models", "ev_b.json",

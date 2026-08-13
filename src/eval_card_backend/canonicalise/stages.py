@@ -2390,7 +2390,8 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
     if miss_total:
         log.warning(
             "Stage G: %d models row(s) had no canonical_models match "
-            "(%d look like HF ids — likely stale registry snapshot). "
+            "(%d look like HF ids — stale registry snapshot, or new "
+            "upstream models not yet seeded in the registry). "
             "Consumers will see NULL metadata for these models; "
             "view-layer falls developer back to the raw org prefix.",
             miss_total, miss_hf_shaped,

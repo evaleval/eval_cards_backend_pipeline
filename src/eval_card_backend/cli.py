@@ -25,7 +25,7 @@ def _cmd_summary(args: argparse.Namespace) -> int:
     cards_local = Path(settings.benchmark_metadata_local_dir).resolve()
 
     eee_root: Path | None = (
-        eee_local if (eee_local / "flat" / "latest_manifest.json").exists() else None
+        eee_local if (eee_local / "data").is_dir() else None
     )
     cards_root: Path | None = cards_local if cards_local.exists() else None
 

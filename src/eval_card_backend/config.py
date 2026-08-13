@@ -3,9 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-# Env-overridable so deployments can point at a flat-view mirror while the
-# upstream repo's flat/ is not yet rebuilt on every data/ merge. The same
-# repo serves both the snapshot download and the eee_record_url deep-links.
+# Env-overridable for testing against a fork/mirror. The same repo serves
+# both the snapshot download and the eee_record_url deep-links.
 EEE_DATASET_REPO = os.environ.get("EEE_DATASET_REPO", "evaleval/EEE_datastore")
 BENCHMARK_METADATA_DATASET_REPO = "evaleval/auto-benchmarkcards"
 ENTITY_REGISTRY_DATASET_REPO = "evaleval/entity-registry-data"

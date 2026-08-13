@@ -502,7 +502,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "huggingface-hub", specifier = ">=0.23.0" },
+    { name = "huggingface-hub", specifier = ">=0.26.0" },
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "pyarrow", specifier = ">=16.0.0" },
 ]

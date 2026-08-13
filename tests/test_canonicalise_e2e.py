@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.flat_layout import write_flat_datastore
+from tests.eee_layout import write_eee_datastore
 
 
 def _write_eee_fixture(eee_root: Path) -> None:
@@ -63,7 +63,7 @@ def _write_eee_fixture(eee_root: Path) -> None:
             },
         ],
     }
-    write_flat_datastore(eee_root, [("minibench", "rec.json", json.dumps(record))])
+    write_eee_datastore(eee_root, [("minibench", "rec.json", json.dumps(record))])
 
 
 def _write_registry_fixture(reg_root: Path) -> None:
@@ -490,7 +490,7 @@ def test_metric_unit_inconsistency_is_deterministic_and_counted(tmp_path, monkey
     # Two records, same canonical (model, benchmark, metric=accuracy),
     # but the two report different EEE-side metric_units. Different
     # temperatures make divergence applicable so threshold_basis populates.
-    write_flat_datastore(eee_root, [
+    write_eee_datastore(eee_root, [
         ("minibench", "percent.json", json.dumps(
             _record("ev_pct", 0.85, metric_unit="percent", temperature=0.0)
         )),
@@ -579,7 +579,7 @@ def test_score_scale_anomaly_fires_on_declared_range_violations(tmp_path, monkey
             ],
         }
 
-    write_flat_datastore(eee_root, [
+    write_eee_datastore(eee_root, [
         # Row 1: percent-scale accuracy with score=120 (above max=100). Registry
         # has min/max=[0,1] for `accuracy` so registry wins → in-range; we use a
         # bespoke unresolved metric_name so EEE per-record [0, 100] survives.
@@ -676,7 +676,7 @@ def test_harness_raw_strips_unknown_version_sentinel(tmp_path, monkeypatch):
             ],
         }
 
-    write_flat_datastore(eee_root, [
+    write_eee_datastore(eee_root, [
         ("minibench", "unknown.json", json.dumps(_record("ev_unk", "unknown"))),
         ("minibench", "real.json", json.dumps(_record("ev_real", "1.0"))),
     ])
@@ -767,7 +767,7 @@ def test_pipeline_drops_score_sentinel_when_scale_excludes_it(tmp_path, monkeypa
             ],
         }
 
-    write_flat_datastore(eee_root, [
+    write_eee_datastore(eee_root, [
         # Row 1: score=-1 on a [0,1] proportion accuracy metric. Registry has the
         # accuracy alias → min_score=0 from the canonical metric → sentinel
         # filter fires → row dropped.
@@ -878,7 +878,7 @@ def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
             ],
         }
 
-    write_flat_datastore(eee_root, [
+    write_eee_datastore(eee_root, [
         ("minibench", "old.json", json.dumps(_record("2026-04-30T00:00:00Z", 0.30))),
         ("minibench", "new.json", json.dumps(_record("2026-05-03T00:00:00Z", 0.85))),
     ])

@@ -12,11 +12,11 @@ import pandas as pd
 import pytest
 
 from eval_card_backend.canonicalise import pipeline
-from tests.flat_layout import write_flat_datastore
+from tests.eee_layout import write_eee_datastore
 
 
 def _write_minimal_eee(eee_root: Path) -> None:
-    write_flat_datastore(eee_root, [("minicfg", "rec.json", "{}")])
+    write_eee_datastore(eee_root, [("minicfg", "rec.json", "{}")])
 
 
 def test_preflight_passes_when_alias_store_has_rows(tmp_path):

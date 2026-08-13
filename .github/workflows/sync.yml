@@ -22,19 +22,14 @@ env:
   # pipeline against a KNOWN upstream state. This isolates pipeline code
   # changes from upstream data changes — new data won't flow in until
   # these SHAs are bumped deliberately. Pinned to snapshot last validated
-  # on: 2026-05-28. To accept new upstream data, bump the SHA (or remove
+  # on: 2026-08-13. To accept new upstream data, bump the SHA (or remove
   # the var to track latest HEAD).
-  # TEMPORARY: read the flat view from our mirror (rebuilt from upstream
-  # data/ by refresh-flat.yml) until upstream regenerates flat/ on every
-  # merge. To retire: drop EEE_DATASET_REPO and pin EEE_REVISION back to an
-  # evaleval/EEE_datastore SHA whose flat/ is current.
-  EEE_DATASET_REPO: evaleval/EEE_datastore-flat-temp
-  EEE_REVISION: 1700dc027e00737a44e47851bd94a4575d6c62da
-  # Last nested-layout pin (pre-flat-migration): 234017fbde38e8eceaad3d4e2389b13d8065c5c0
-  # Old schema-2 pin: 4e7db3339c45aada4e0bfbb8d553b927e94bbfb3.
-  # Prev schema-3 pin: b099e70eba1ac4ea4c90d33ef1d816fc818a82e8
-  ENTITY_REGISTRY_REVISION: ecc7c78589d8d90b87a04774c56fdf6c812d6e51
-  BENCHMARK_METADATA_REVISION: 621bfc612e0f301457beb6e5d6811114583bcec0
+  # Prev pin (flat-view mirror era, repo evaleval/EEE_datastore-flat-temp):
+  # 1700dc027e00737a44e47851bd94a4575d6c62da
+  EEE_REVISION: 657b83bcb1a718dbd2c6f2ddf5437cbbca4fdf42
+  # Prev schema-3 pin: ecc7c78589d8d90b87a04774c56fdf6c812d6e51
+  ENTITY_REGISTRY_REVISION: 7306c9398b3cd2033851d91449905aeb5e0a9ad6
+  BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
 
 jobs:
   run-pipeline:

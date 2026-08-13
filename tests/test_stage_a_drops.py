@@ -17,7 +17,7 @@ import pytest
 
 from eval_card_backend.canonicalise import stages
 from eval_card_backend.sources import eee as eee_src
-from tests.flat_layout import write_flat_datastore
+from tests.eee_layout import write_eee_datastore
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +53,7 @@ def _conformant_record(eval_id: str = "ev_good") -> dict:
 
 def test_corrupt_json_increments_drop_counter(tmp_path, monkeypatch):
     eee_root = tmp_path / "eee"
-    write_flat_datastore(eee_root, [
+    write_eee_datastore(eee_root, [
         # One valid record (passes pydantic validation under the typed loader)
         ("minicfg", "good.json", json.dumps(_conformant_record())),
         # One corrupt JSON
@@ -88,7 +88,7 @@ def test_validation_error_increments_drop_counter(tmp_path, monkeypatch):
     # Record with a type error: score must be a number per the contract.
     bad = _conformant_record("ev_bad")
     bad["evaluation_results"][0]["score_details"]["score"] = "not a number"
-    write_flat_datastore(eee_root, [
+    write_eee_datastore(eee_root, [
         # Conformant record
         ("minicfg", "good.json", json.dumps(_conformant_record())),
         ("minicfg", "bad_score.json", json.dumps(bad)),
@@ -107,7 +107,7 @@ def test_validation_error_increments_drop_counter(tmp_path, monkeypatch):
 
 def test_drop_counter_distinguishes_configs(tmp_path, monkeypatch):
     eee_root = tmp_path / "eee"
-    write_flat_datastore(eee_root, [
+    write_eee_datastore(eee_root, [
         (cfg, f"bad_{cfg}.json", "nope") for cfg in ("a", "b")
     ])
 

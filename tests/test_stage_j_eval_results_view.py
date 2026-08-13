@@ -194,15 +194,15 @@ def test_eee_record_url_built_from_source_path(tmp_path, monkeypatch):
     # representative row resolves to a raw EEE URL (none NULL).
     assert all(u is not None for u in urls), "some rows have NULL eee_record_url"
     # The repo segment follows EEE_DATASET_REPO (env-overridable so CI can
-    # point at the flat mirror) — assert against the same constant the
+    # point at a fork/mirror) — assert against the same constant the
     # stage J SQL is built from, not a hardcoded repo.
     from eval_card_backend.config import EEE_DATASET_REPO
 
     prefix = f"https://huggingface.co/datasets/{EEE_DATASET_REPO}/resolve/main/"
     for u in urls:
         assert u.startswith(prefix), u
-        # Path segment survives intact (e.g. flat/objects/<s1>/<s2>/*.json).
-        assert u[len(prefix):].startswith("flat/objects/"), u
+        # Path segment survives intact (e.g. data/<config>/<dev>/<model>/*.json).
+        assert u[len(prefix):].startswith("data/"), u
         assert u.endswith(".json"), u
 
 

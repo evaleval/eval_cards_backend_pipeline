@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from eval_card_backend.config import IGNORED_CONFIGS
-from tests.flat_layout import write_flat_datastore
+from tests.eee_layout import write_eee_datastore
 
 
 def test_alphaxiv_is_explicitly_ignored():
@@ -44,7 +44,7 @@ def _write_minimal_eee(eee_root: Path, config: str) -> None:
             }
         ],
     }
-    write_flat_datastore(
+    write_eee_datastore(
         eee_root, [(config, f"rec_{config}.json", json.dumps(record))]
     )
 

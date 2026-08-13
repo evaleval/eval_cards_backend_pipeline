@@ -105,11 +105,10 @@ def preflight(
 
     if (
         eee_root is None
-        or not (eee_root / "flat" / "latest_manifest.json").exists()
-        or not any((eee_root / "flat" / "objects").rglob("*.json"))
+        or not any((eee_root / "data").rglob("*.json"))
     ):
         errors.append(
-            f"EEE source empty/missing at {eee_root}/flat (HF download failed?). "
+            f"EEE source empty/missing at {eee_root}/data (HF download failed?). "
             f"Set EEE_REFRESH_SNAPSHOT=1 to force re-download."
         )
 
