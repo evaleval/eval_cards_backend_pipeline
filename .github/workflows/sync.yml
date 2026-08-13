@@ -24,9 +24,8 @@ env:
   # these SHAs are bumped deliberately. Pinned to snapshot last validated
   # on: 2026-08-13. To accept new upstream data, bump the SHA (or remove
   # the var to track latest HEAD).
-  # Prev pin (flat-view mirror era, repo evaleval/EEE_datastore-flat-temp):
-  # 1700dc027e00737a44e47851bd94a4575d6c62da
-  EEE_REVISION: 7f8a40b0aa6b3d49f041a06bd25ef139948a160e
+  # Prev pin: 7f8a40b0aa6b3d49f041a06bd25ef139948a160e
+  EEE_REVISION: 4fca25c96a4c1015ae662fcd343fefad9951ea06
   # Prev pin: cbff6fcef940377daed091fb35970d012a067026
   ENTITY_REGISTRY_REVISION: 8a2a48f6d0bd805e8ca9e107f9c6b2edccb2510a
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba

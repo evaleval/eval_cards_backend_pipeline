@@ -165,6 +165,21 @@ def pad_record_for_cast(record: dict[str, Any], schema: pa.Schema) -> dict[str, 
 def _pad(value: Any, dtype: pa.DataType) -> Any:
     if value is None:
         return None
+    if pa.types.is_floating(dtype):
+        # Upstream converters occasionally serialize IEEE non-finite values
+        # as STRINGS ("Infinity", "-Infinity", "NaN") because JSON has no
+        # literal for them (first seen: llm-stats metric_config.max_score).
+        # Pydantic validation coerces the string, but the Arrow cast of the
+        # raw record does not — and one such value fails the whole config's
+        # batch. A non-finite bound carries nothing the warehouse can use
+        # (JSON sidecars can't encode it either), so normalize to NULL.
+        # Guarded by dtype: a STRING field whose value happens to be
+        # "Infinity" is untouched.
+        if isinstance(value, str) and value.strip() in ("Infinity", "-Infinity", "NaN"):
+            return None
+        if isinstance(value, float) and (value != value or value == float("inf") or value == float("-inf")):
+            return None
+        return value
     if pa.types.is_struct(dtype):
         if not isinstance(value, dict):
             return None
