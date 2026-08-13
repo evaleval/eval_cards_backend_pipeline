@@ -135,3 +135,64 @@ def fix_vague_metric_labels(con) -> None:
         "WHERE metric_resolution_strategy = 'hotfix_vague_metric'"
     ).fetchone()[0]
     log.info("resolution_hotfixes: namespaced %d vague/malformed metric label(s)", n)
+
+
+# ── 3. inspect_ai/harbor scorer-wrapper benchmark labels ─────────────
+# TODO(upstream): these EEE submissions were converted from inspect_ai /
+# harbor logs whose *task* name is per-model ("full-solver-<model>") or
+# per-run ("swebenchpro/S-adaptive/+1ep/<hash>"), and the converter wrote
+# the whole "<metric> on <task> for scorer <scorer>" label into
+# evaluation_name — the field the pipeline treats as benchmark identity.
+# Each record therefore mints a unique unresolvable benchmark, and the
+# frontend fans one benchmark out into N single-model "benchmarks".
+# A registry alias can't repair this: aliases are literal strings and the
+# set is open (every new model/run mints a new one). When the upstream
+# submissions carry the real benchmark name in evaluation_name, delete
+# this function, its map, and the `l2-bench.mean` placeholder canonical
+# in the registry's metrics.yaml (seeded for the same reason).
+#
+# Scope is deliberately enumerated: only these source_configs, only rows
+# whose benchmark_raw matches the wrapper shape. The task-variant suffixes
+# (S-adaptive/+Nep/<hash>) collapse into the config's single benchmark;
+# they resurface as variant submissions of the same (model, benchmark,
+# metric) triple, which is the intended modelling for setup variants.
+
+# source_config → canonical benchmark id.
+_SCORER_WRAPPER_MAP = {
+    "l2-bench": "l2-bench",
+    "terminalbench": "terminal-bench",
+    "swebenchpro": "swe-bench-pro",
+}
+
+# "<word> on <anything> for scorer <word>" — the converter's label shape.
+_SCORER_WRAPPER_REGEX = r"^\S+ on .+ for scorer \S+$"
+
+
+def fix_scorer_wrapper_benchmarks(con) -> None:
+    """Reassign benchmark for scorer-wrapper labelled rows.
+
+    Fires only on rows in the enumerated source_configs whose
+    `benchmark_raw` matches the wrapper shape. Runs before
+    `fix_vague_metric_labels` so l2-bench's bare "mean" metric gets
+    namespaced to `l2-bench.mean` once the benchmark is assigned.
+    """
+    mapping_values = ", ".join(
+        f"('{sc}', '{bid}')" for sc, bid in _SCORER_WRAPPER_MAP.items()
+    )
+    con.execute(
+        f"""
+        UPDATE results_resolved AS r
+        SET benchmark_id = m.bid,
+            benchmark_resolution_strategy = 'hotfix_scorer_wrapper'
+        FROM (VALUES {mapping_values}) AS m(sc, bid)
+        WHERE r.source_config = m.sc
+          AND regexp_matches(r.benchmark_raw, '{_SCORER_WRAPPER_REGEX}')
+        """
+    )
+    n = con.execute(
+        "SELECT COUNT(*) FROM results_resolved "
+        "WHERE benchmark_resolution_strategy = 'hotfix_scorer_wrapper'"
+    ).fetchone()[0]
+    log.info(
+        "resolution_hotfixes: reassigned %d scorer-wrapper benchmark row(s)", n
+    )

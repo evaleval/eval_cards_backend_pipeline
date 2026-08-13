@@ -984,6 +984,9 @@ def stage_c_resolve_identities(con) -> None:
     # the helm_mmlu → `mmlu` mis-resolution never forms a bogus slice.
     from eval_card_backend.canonicalise import resolution_hotfixes
     resolution_hotfixes.fix_helm_composite_aggregates(con)
+    # Scorer-wrapper fix must precede the vague-metric fix: it assigns the
+    # benchmark_id that "mean" namespacing keys on (l2-bench.mean).
+    resolution_hotfixes.fix_scorer_wrapper_benchmarks(con)
     resolution_hotfixes.fix_vague_metric_labels(con)
 
     _apply_slice_key(con)
