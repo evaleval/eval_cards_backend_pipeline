@@ -141,8 +141,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Output warehouse root directory.",
     )
     canon.add_argument(
-        "--registry-local-dir", default=".cache/entity_registry",
-        help="Local cache dir for the evaleval/entity-registry-data dataset.",
+        "--registry-local-dir", default=None,
+        help="Local cache dir for the evaleval/entity-registry-data dataset "
+        "(default: $ENTITY_REGISTRY_LOCAL_DIR, else .cache/entity_registry). "
+        "A non-None argparse default here would silently override the env "
+        "var — the pipeline only falls back to Settings when this is None.",
     )
     canon.add_argument(
         "--skip-preflight", action="store_true",

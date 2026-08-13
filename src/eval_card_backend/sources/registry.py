@@ -78,7 +78,16 @@ ALL_TABLES: tuple[str, ...] = DIM_TABLES + (ALIASES_TABLE,)
 
 
 def _has_registry_data(target: Path) -> bool:
-    return any((target / table).exists() for table in ALL_TABLES)
+    # Two layouts count as data: the published HF layout (`<table>/` part
+    # dirs) and the registry's `seed --local` fixtures layout (flat
+    # `<table>.parquet`). Recognizing only the former made ensure_snapshot
+    # treat freshly seeded fixtures as an empty cache and clobber them with
+    # the published snapshot — breaking the documented local validation loop
+    # (ENTITY_REGISTRY_LOCAL_DIR=../eval-card-registry/fixtures).
+    return any(
+        (target / table).exists() or (target / f"{table}.parquet").exists()
+        for table in ALL_TABLES
+    )
 
 
 def ensure_snapshot(
