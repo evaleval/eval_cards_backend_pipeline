@@ -1561,8 +1561,9 @@ def _hierarchy_composite_benchmark(
     metrics_rows = con.execute(
         """
         SELECT metric_id,
-               ANY_VALUE(metric_display_name)              AS display_name,
-               ARRAY_AGG(DISTINCT source_metadata.source_organization_name)
+               MAX(metric_display_name)                    AS display_name,
+               ARRAY_AGG(DISTINCT source_metadata.source_organization_name
+                         ORDER BY source_metadata.source_organization_name)
                    FILTER (WHERE source_metadata.source_organization_name IS NOT NULL)
                    AS sources,
                COUNT(DISTINCT model_key)                   AS models_count
@@ -1693,8 +1694,9 @@ def _hierarchy_composite_slices(
             """
             SELECT
                 erv.metric_id,
-                ANY_VALUE(erv.metric_display_name) AS metric_display,
-                ARRAY_AGG(DISTINCT erv.source_metadata.source_organization_name)
+                MAX(erv.metric_display_name) AS metric_display,
+                ARRAY_AGG(DISTINCT erv.source_metadata.source_organization_name
+                          ORDER BY erv.source_metadata.source_organization_name)
                     FILTER (WHERE erv.source_metadata.source_organization_name IS NOT NULL)
                     AS sources
             FROM eval_results_view erv
@@ -1733,8 +1735,8 @@ def _hierarchy_composite_slices(
                 fr.slice_key,
                 fr.metric_key                            AS metric_id,
                 MIN(fr.slice_name)                       AS slice_name_rep,
-                ANY_VALUE(cmet.display_name)             AS metric_display,
-                ARRAY_AGG(DISTINCT fr.org_raw)
+                MAX(cmet.display_name)                   AS metric_display,
+                ARRAY_AGG(DISTINCT fr.org_raw ORDER BY fr.org_raw)
                     FILTER (WHERE fr.org_raw IS NOT NULL) AS sources
             FROM fact_results fr
             LEFT JOIN canonical_metrics cmet ON cmet.id = fr.metric_key
@@ -2434,7 +2436,10 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
         },
     }
     path = out_dir / "comparison-index.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    # sort_keys: evals/by_model insertion order follows DuckDB scan order,
+    # which is run-to-run unstable — key order is meaningless to JSON
+    # consumers, so sort for byte-deterministic builds.
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default))
     return path
 
 
@@ -2621,7 +2626,8 @@ def write_peer_ranks(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "ranks":          by_eval,
     }
     path = out_dir / "peer-ranks.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    # sort_keys: by-eval dict order follows scan order (run-unstable).
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default))
     return path
 
 

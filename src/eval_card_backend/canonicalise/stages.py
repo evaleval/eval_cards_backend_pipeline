@@ -2226,16 +2226,35 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
     con.execute(
         f"""
         CREATE TABLE composites AS
-        WITH composite_configs AS (
+        WITH display_pick AS (
+            -- Most-frequent display name per composite (lexicographic
+            -- tie-break) — multi-record composites carry several names
+            -- and ANY_VALUE flipped between runs.
+            SELECT composite_slug, composite_display_name
+            FROM (
+                SELECT composite_slug, composite_display_name,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY composite_slug
+                           ORDER BY COUNT(*) DESC, composite_display_name ASC
+                       ) AS _rk
+                FROM fact_results
+                WHERE composite_slug IS NOT NULL
+                  AND composite_display_name IS NOT NULL
+                GROUP BY composite_slug, composite_display_name
+            )
+            WHERE _rk = 1
+        ),
+        composite_configs AS (
             SELECT
                 fr.composite_slug,
-                ANY_VALUE(fr.composite_display_name) AS composite_display_name,
+                MAX(dp.composite_display_name)       AS composite_display_name,
                 ARRAY_AGG(DISTINCT fr.source_config ORDER BY fr.source_config)
                     FILTER (WHERE fr.source_config IS NOT NULL) AS source_configs,
                 COUNT(DISTINCT (fr.benchmark_key, fr.metric_key))
                     FILTER (WHERE fr.benchmark_key IS NOT NULL
                             AND fr.metric_key      IS NOT NULL) AS evals_count
             FROM fact_results fr
+            LEFT JOIN display_pick dp USING (composite_slug)
             WHERE fr.composite_slug IS NOT NULL
             GROUP BY fr.composite_slug
         ),
@@ -2555,7 +2574,10 @@ def stage_i_emit_warehouse_parquets(con, out_dir: Path, snapshot_id: str) -> Non
     out_dir.mkdir(parents=True, exist_ok=True)
     sid = snapshot_id_to_sql(snapshot_id)
     for table, sort_key in [
-        ("fact_results", "(composite_slug, model_key, benchmark_id, metric_id)"),
+        # fact_id makes the sort total — the four-column prefix ties for
+        # multi-slice/multi-record triples and left row order (and thus
+        # the emitted bytes) run-to-run unstable.
+        ("fact_results", "(composite_slug, model_key, benchmark_id, metric_id, slice_key, fact_id)"),
         ("benchmarks", "(composite_slug, benchmark_id)"),
         ("composites", "(composite_slug)"),
         ("families", "(family_id)"),
@@ -4077,12 +4099,15 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 fr.slice_key,
                 fr.metric_key                      AS metric_id,
                 MIN(fr.slice_name)                 AS slice_name_rep,
-                ANY_VALUE(cmet.display_name)       AS metric_display_name,
-                ANY_VALUE(fr.metric_unit)          AS metric_unit,
-                ANY_VALUE(fr.lower_is_better)      AS lower_is_better,
+                -- MAX not ANY_VALUE: rows within a slice-metric group can
+                -- disagree on these (mixed source metadata) and ANY_VALUE
+                -- made the emitted structs run-to-run unstable.
+                MAX(cmet.display_name)             AS metric_display_name,
+                MAX(fr.metric_unit)                AS metric_unit,
+                MAX(fr.lower_is_better)            AS lower_is_better,
                 CAST(COUNT(DISTINCT fr.model_aggregation_key) AS INTEGER)
                                                    AS metric_models_count,
-                CASE WHEN COALESCE(ANY_VALUE(fr.lower_is_better), FALSE)
+                CASE WHEN COALESCE(MAX(fr.lower_is_better), FALSE)
                      THEN MIN(fr.score) ELSE MAX(fr.score) END AS top_score
             FROM fact_results fr
             LEFT JOIN canonical_metrics cmet ON cmet.id = fr.metric_key
