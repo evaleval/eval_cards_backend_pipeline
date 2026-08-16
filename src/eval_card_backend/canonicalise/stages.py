@@ -496,9 +496,22 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("description", "VARCHAR"),
         ("dataset_repo", "VARCHAR"),
         ("parent_benchmark_id", "VARCHAR"),
+        # Registry-declared merged-view default metric (registry.3.2+);
+        # NULL-padded on older snapshots.
+        ("preferred_metric_id", "VARCHAR"),
         ("tags", "VARCHAR"),
         ("metadata", "VARCHAR"),
         ("review_status", "VARCHAR"),
+    ],
+    # benchmark_metric_folds — curated per-benchmark metric naming folds
+    # (registry.3.2+): `from_metric_id` on `benchmark_id` is the same
+    # measurement as `to_metric_id` under a generic name. Drives
+    # `metric_id_effective`; empty table on older registry snapshots.
+    "benchmark_metric_folds": [
+        ("benchmark_id", "VARCHAR"),
+        ("from_metric_id", "VARCHAR"),
+        ("to_metric_id", "VARCHAR"),
+        ("note", "VARCHAR"),
     ],
     # canonical_metrics — registry has score_type/lower_is_better/min/max
     # today; metric_kind / metric_unit are forward-looking. score_type stays
@@ -756,6 +769,22 @@ def stage_a_load_registry(
     for name in _DIM_SCHEMAS:
         _load_dim(con, name, dim_paths)
 
+    # Loud presence check: `_load_dim` degrades a missing table/column to an
+    # empty table / NULL column, which is correct for pre-registry.3.2
+    # snapshots but silently disables the merged-view defaults on a
+    # name/pin mismatch. Warn so a bad wiring change can't ship quietly.
+    _folds = con.execute("SELECT count(*) FROM benchmark_metric_folds").fetchone()[0]
+    _preferred = con.execute(
+        "SELECT count(*) FROM canonical_benchmarks WHERE preferred_metric_id IS NOT NULL"
+    ).fetchone()[0]
+    if _folds == 0 or _preferred == 0:
+        log.warning(
+            "registry merged-view curation missing: benchmark_metric_folds=%d rows, "
+            "preferred_metric_id set on %d benchmarks — expected non-zero on "
+            "registry.3.2+; check ENTITY_REGISTRY_REVISION / published table names",
+            _folds, _preferred,
+        )
+
     # The benchmark-resolution alias table is registered as a DuckDB-side
     # source so slice_promotion (Stage C) can run its resolver replay
     # in Python without re-reading the parquet. Small table, cheap to materialise.
@@ -988,8 +1017,41 @@ def stage_c_resolve_identities(con) -> None:
     # benchmark_id that "mean" namespacing keys on (l2-bench.mean).
     resolution_hotfixes.fix_scorer_wrapper_benchmarks(con)
     resolution_hotfixes.fix_vague_metric_labels(con)
+    # Must precede apply_metric_folds: the (hle, score → accuracy) fold is
+    # only safe once hle's mislabelled calibration rows are off `score`.
+    resolution_hotfixes.fix_hle_calibration_error(con)
+
+    _apply_metric_folds(con)
 
     _apply_slice_key(con)
+
+
+def _apply_metric_folds(con) -> None:
+    """Apply the registry's curated per-benchmark metric naming folds.
+
+    `metric_id_effective` = fold target when (benchmark_id, metric_id)
+    matches a `benchmark_metric_folds` row, else `metric_id` unchanged.
+    Raw `metric_id` is never overwritten — the merged view groups on the
+    effective id; per-source views keep reporting the source's own label.
+    """
+    con.execute(
+        "ALTER TABLE results_resolved ADD COLUMN metric_id_effective VARCHAR"
+    )
+    con.execute("UPDATE results_resolved SET metric_id_effective = metric_id")
+    con.execute(
+        """
+        UPDATE results_resolved AS r
+        SET metric_id_effective = f.to_metric_id
+        FROM benchmark_metric_folds f
+        WHERE r.benchmark_id = f.benchmark_id
+          AND r.metric_id = f.from_metric_id
+        """
+    )
+    n = con.execute(
+        "SELECT COUNT(*) FROM results_resolved "
+        "WHERE metric_id_effective IS DISTINCT FROM metric_id"
+    ).fetchone()[0]
+    log.info("stage C: metric folds re-keyed %d row(s)", n)
 
 
 def _apply_slice_key(con) -> None:
@@ -1212,6 +1274,9 @@ def stage_d_join_dims_and_flatten(con) -> None:
             COALESCE(j._cm_model_group_id, j.model_id, j.model_raw)                      AS model_aggregation_key,
             COALESCE(j.benchmark_id, j.benchmark_raw)                                    AS benchmark_key,
             COALESCE(j.metric_id, j.metric_raw)                                          AS metric_key,
+            -- Fold-aware twin of metric_key: registry naming folds applied
+            -- (Stage C metric_id_effective); the merged view groups on this.
+            COALESCE(j.metric_id_effective, j.metric_raw)                                AS metric_key_effective,
 
             j._cb_parent_benchmark_id                                                   AS parent_benchmark_id,
             j._cm_parent_model_id                                                       AS parent_model_id,
@@ -2511,6 +2576,18 @@ def stage_i_emit_warehouse_parquets(con, out_dir: Path, snapshot_id: str) -> Non
 # ---------------------------------------------------------------------------
 
 
+def _ensure_merged_view_inputs(con) -> None:
+    """Stage J can run on a connection rebuilt from emitted parquets
+    (tests' view-materialise helpers, `--from-stage J` over a pre-fold
+    cache) that lacks the Stage A registry tables the fold/merged logic
+    reads. Create empty stand-ins: folds simply don't apply and the
+    merged view degrades to empty rather than raising CatalogException.
+    """
+    for table in ("benchmark_metric_folds", "canonical_benchmarks"):
+        ddl = ", ".join(f"{c} {t}" for c, t in _DIM_SCHEMAS[table])
+        con.execute(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
+
+
 def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = None) -> None:
     """Materialise `eval_results_view` — one row per (benchmark, metric, model)
     triple. Foundation view: models_view + evals_view fan out from this.
@@ -2534,6 +2611,7 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
     from `position` / `total`. `percentile` = `1 - (position-1) / (total-1)`.
     """
     sid = snapshot_id_to_sql(snapshot_id)
+    _ensure_merged_view_inputs(con)
 
     # Repo + revision for building eee_record_url deep-links back to the
     # raw EEE source records. `main` is a safe default — records are
@@ -2758,6 +2836,15 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 cmet.display_name             AS metric_display_name,
                 cmet.min_score                AS cmet_min_score,
                 cmet.max_score                AS cmet_max_score,
+                -- Fold-aware effective metric (same derivation as Stage C's
+                -- metric_id_effective — the fold map is deterministic on
+                -- (benchmark_key, metric_key)) + its registry bounds for
+                -- canonical-scale conversion. Unmasked on purpose: NULL
+                -- bounds must stay NULL ('no_bounds'), not become [0,1].
+                COALESCE(bmf.to_metric_id, ta.metric_key) AS metric_key_effective,
+                cmet_eff.lower_is_better      AS eff_lower_is_better,
+                cmet_eff.min_score            AS eff_min_score,
+                cmet_eff.max_score            AS eff_max_score,
                 b.parent_benchmark_id         AS b_parent_benchmark_id,
                 b.composite_display_name      AS b_composite_display_name,
                 b.family_id                   AS b_family_id,
@@ -2793,6 +2880,11 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             LEFT JOIN benchmarks pb         ON pb.composite_slug = ta.composite_slug
                                             AND pb.benchmark_id  = b.parent_benchmark_id
             LEFT JOIN canonical_metrics cmet ON cmet.id       = ta.metric_key
+            LEFT JOIN benchmark_metric_folds bmf
+                   ON bmf.benchmark_id   = ta.benchmark_key
+                  AND bmf.from_metric_id = ta.metric_key
+            LEFT JOIN canonical_metrics cmet_eff
+                   ON cmet_eff.id = COALESCE(bmf.to_metric_id, ta.metric_key)
         ),
         ranked AS (
             -- Rank by score within (composite_slug, benchmark_key, metric_key),
@@ -2815,8 +2907,50 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 END AS position,
                 CAST(COUNT(rep_score) OVER (
                     PARTITION BY composite_slug, benchmark_key, metric_key
-                ) AS INTEGER) AS total
+                ) AS INTEGER) AS total,
+                -- Scale-suspect detection is per (source, benchmark,
+                -- effective-metric) GROUP; the group max is what tells a
+                -- percent-scaled publication apart from genuine fractions.
+                MAX(rep_score) OVER (
+                    PARTITION BY composite_slug, benchmark_key, metric_key_effective
+                ) AS eff_grp_max
             FROM joined
+        ),
+        conv AS (
+            -- Canonical-scale conversion (merged-view spec P3, design pt 5).
+            -- Group-suspect, then per-row-only-where-unambiguous: mixed
+            -- groups (Vals.ai AIME: 99.583 percents next to genuine 0.833
+            -- fractions) convert row-by-row; the 1–1.5 band under [0,1]
+            -- bounds is ambiguous and flagged, never guessed.
+            SELECT *,
+                CASE
+                    WHEN rep_score IS NULL THEN NULL
+                    WHEN eff_min_score IS NULL OR eff_max_score IS NULL
+                        THEN 'no_bounds'
+                    -- fraction-bounded metric, percent-looking group
+                    WHEN eff_max_score <= 1.5 AND eff_grp_max > 1.5 THEN
+                        CASE
+                            WHEN rep_score > 1.5
+                             AND rep_score / 100.0
+                                 BETWEEN eff_min_score AND eff_max_score
+                                THEN 'div100'
+                            WHEN rep_score
+                                 BETWEEN eff_min_score AND eff_max_score
+                                THEN 'none'
+                            ELSE 'flagged'
+                        END
+                    -- percent-bounded metric, whole group reported as fractions
+                    WHEN eff_min_score = 0 AND eff_max_score = 100
+                     AND eff_grp_max <= 1.0 THEN
+                        CASE
+                            WHEN rep_score BETWEEN 0 AND 1.0 THEN 'mul100'
+                            ELSE 'flagged'
+                        END
+                    WHEN rep_score BETWEEN eff_min_score AND eff_max_score
+                        THEN 'none'
+                    ELSE 'flagged'
+                END AS scale_conversion
+            FROM ranked
         )
         SELECT
             TIMESTAMP '{sid}' AS snapshot_id,
@@ -3148,8 +3282,22 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
 
             rep_instance_file_path   AS instance_file_path,
             rep_instance_file_format AS instance_file_format,
-            rep_instance_rows        AS instance_rows
-        FROM ranked
+            rep_instance_rows        AS instance_rows,
+
+            -- Merged-view columns (spec P2/P3). `score_canonical` is on the
+            -- effective metric's registry scale; raw `score` is never
+            -- overwritten. Flagged rows get NULL (never guessed);
+            -- no_bounds rows pass through unconverted.
+            metric_key_effective     AS metric_id_effective,
+            scale_conversion,
+            CASE scale_conversion
+                WHEN 'div100'    THEN rep_score / 100.0
+                WHEN 'mul100'    THEN rep_score * 100.0
+                WHEN 'none'      THEN rep_score
+                WHEN 'no_bounds' THEN rep_score
+                ELSE NULL
+            END                      AS score_canonical
+        FROM conv
         ORDER BY metric_summary_id, model_key
         """
     )
@@ -4233,8 +4381,275 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
     )
 
 
+def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
+    """One summary row per resolved canonical benchmark for the merged
+    all-sources detail page (merged-benchmark-view spec P5).
+
+    Separate artifact by design — NOT rows in `evals_view` (the frontend
+    eval list, evaluator grouping, and `benchmark_index` writer have no
+    `is_aggregated` filters, and a dormant legacy branch would route
+    aggregated rows to the composite-card page). The reserved
+    `is_aggregated`/`aggregate_sources` columns in `evals_view` stay
+    untouched.
+
+    Grain rules (spec design pt 7): a benchmark with >=1 top-level
+    observation gets a benchmark-grain row; a canonical benchmark whose
+    only observations are slice-level gets a slice-grain row (slice
+    selector; same query at slice grain). Sources reporting only
+    slice-level data for a benchmark-grain page are disclosed in
+    `aggregate_sources` with `slice_only = TRUE`, never silently omitted.
+
+    `evaluation_id = url_encode(benchmark_id)` is single-segment and
+    cannot collide with per-source ids (those all contain %2F; the
+    registry seed guard keeps '/' out of benchmark ids).
+
+    The default metric is the registry `preferred_metric_id` when at
+    least one source reports it (post-fold), else the Q1 fallback:
+    most observations, ties by distinct models then lexicographic.
+    `best_result` follows Q10: directional on the effective metric,
+    flagged rows excluded; when the default metric has no registry
+    bounds (generic `score` pages) the unconverted pool is used as a
+    fallback rather than surfacing no best result at all.
+
+    No result rows are duplicated — the merged leaderboard remains a
+    query over `eval_results_view` by `benchmark_id` + `metric_id_effective`.
+    """
+    sid = snapshot_id_to_sql(snapshot_id)
+    _ensure_merged_view_inputs(con)
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE merged_evals_view AS
+        WITH tl AS (
+            SELECT r.benchmark_id, r.evaluation_id, r.composite_slug,
+                   r.composite_display_name, r.family_id, r.family_display_name,
+                   r.metric_id_effective, r.model_key, r.model_info,
+                   r.score, r.score_canonical, r.scale_conversion,
+                   CAST(NULL AS VARCHAR) AS slice_id,
+                   CAST(NULL AS VARCHAR) AS slice_display_name
+            FROM eval_results_view r
+            JOIN canonical_benchmarks cb ON cb.id = r.benchmark_id
+            WHERE NOT r.is_slice AND r.score IS NOT NULL
+        ),
+        sl AS (
+            SELECT r.parent_benchmark_id AS benchmark_id,
+                   CAST(NULL AS VARCHAR) AS evaluation_id,
+                   r.composite_slug, r.composite_display_name,
+                   r.family_id, r.family_display_name,
+                   r.metric_id_effective, r.model_key, r.model_info,
+                   r.score, r.score_canonical, r.scale_conversion,
+                   r.benchmark_id AS slice_id,
+                   COALESCE(cbs.display_name, r.benchmark_id)
+                       AS slice_display_name
+            FROM eval_results_view r
+            JOIN canonical_benchmarks cb ON cb.id = r.parent_benchmark_id
+            LEFT JOIN canonical_benchmarks cbs ON cbs.id = r.benchmark_id
+            WHERE r.is_slice AND r.score IS NOT NULL
+        ),
+        universe AS (
+            SELECT benchmark_id, 'benchmark' AS grain
+            FROM tl GROUP BY benchmark_id
+            UNION ALL
+            SELECT benchmark_id, 'slice' AS grain
+            FROM sl
+            WHERE benchmark_id NOT IN (SELECT DISTINCT benchmark_id FROM tl)
+            GROUP BY benchmark_id
+        ),
+        page_rows AS (
+            SELECT u.grain, t.* FROM universe u JOIN tl t USING (benchmark_id)
+            WHERE u.grain = 'benchmark'
+            UNION ALL
+            SELECT u.grain, s.* FROM universe u JOIN sl s USING (benchmark_id)
+            WHERE u.grain = 'slice'
+        ),
+        metric_stats AS (
+            SELECT benchmark_id, metric_id_effective,
+                   COUNT(*)                        AS results_count,
+                   COUNT(DISTINCT model_key)       AS models_count,
+                   COUNT(DISTINCT composite_slug)  AS sources_count
+            FROM page_rows
+            GROUP BY 1, 2
+        ),
+        chosen AS (
+            SELECT ms.*,
+                   (ms.metric_id_effective = cb.preferred_metric_id) AS is_registry_preferred,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY ms.benchmark_id
+                       ORDER BY
+                           COALESCE(ms.metric_id_effective = cb.preferred_metric_id, FALSE) DESC,
+                           ms.results_count DESC,
+                           ms.models_count DESC,
+                           ms.metric_id_effective ASC
+                   ) AS rk
+            FROM metric_stats ms
+            LEFT JOIN canonical_benchmarks cb ON cb.id = ms.benchmark_id
+        ),
+        default_metric AS (
+            SELECT benchmark_id,
+                   metric_id_effective AS default_metric_id,
+                   COALESCE(is_registry_preferred, FALSE) AS preferred_from_registry,
+                   results_count, models_count, sources_count
+            FROM chosen WHERE rk = 1
+        ),
+        best AS (
+            SELECT p.benchmark_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY p.benchmark_id
+                       ORDER BY
+                           -- converted pool first; unconverted no_bounds
+                           -- pool as fallback; flagged rows are excluded
+                           CASE WHEN p.scale_conversion = 'no_bounds' THEN 1 ELSE 0 END ASC,
+                           CASE WHEN COALESCE(cm.lower_is_better, FALSE)
+                                THEN p.score_canonical
+                                ELSE -p.score_canonical
+                           END ASC,
+                           p.model_key ASC
+                   ) AS rk,
+                   p.model_info."name" AS model_name,
+                   p.model_key, p.score, p.score_canonical,
+                   p.composite_slug, p.evaluation_id
+            FROM page_rows p
+            JOIN default_metric dm
+              ON dm.benchmark_id = p.benchmark_id
+             AND p.metric_id_effective = dm.default_metric_id
+            LEFT JOIN canonical_metrics cm ON cm.id = dm.default_metric_id
+            WHERE p.scale_conversion != 'flagged'
+        ),
+        src_page AS (
+            SELECT p.benchmark_id, p.composite_slug,
+                   ANY_VALUE(p.composite_display_name) AS composite_display_name,
+                   ANY_VALUE(p.evaluation_id)          AS evaluation_id,
+                   COUNT(*)                            AS results_count,
+                   COUNT(DISTINCT p.model_key)         AS models_count,
+                   BOOL_OR(p.metric_id_effective = dm.default_metric_id)
+                                                       AS reports_preferred,
+                   FALSE                               AS slice_only
+            FROM page_rows p
+            JOIN default_metric dm ON dm.benchmark_id = p.benchmark_id
+            GROUP BY 1, 2
+        ),
+        src_slice_only AS (
+            -- 7(a) disclosure: sources with ONLY slice-level data for a
+            -- benchmark-grain page.
+            SELECT s.benchmark_id, s.composite_slug,
+                   ANY_VALUE(s.composite_display_name) AS composite_display_name,
+                   CAST(NULL AS VARCHAR)               AS evaluation_id,
+                   COUNT(*)                            AS results_count,
+                   COUNT(DISTINCT s.model_key)         AS models_count,
+                   FALSE                               AS reports_preferred,
+                   TRUE                                AS slice_only
+            FROM sl s
+            JOIN universe u ON u.benchmark_id = s.benchmark_id AND u.grain = 'benchmark'
+            WHERE (s.benchmark_id, s.composite_slug) NOT IN (
+                SELECT benchmark_id, composite_slug FROM tl
+            )
+            GROUP BY 1, 2
+        ),
+        sources AS (
+            SELECT benchmark_id,
+                   LIST({{
+                       'evaluation_id': evaluation_id,
+                       'composite_slug': composite_slug,
+                       'composite_display_name': composite_display_name,
+                       'models_count': CAST(models_count AS INTEGER),
+                       'results_count': CAST(results_count AS INTEGER),
+                       'reports_preferred': reports_preferred,
+                       'slice_only': slice_only
+                   }} ORDER BY slice_only ASC, results_count DESC, composite_slug ASC)
+                       AS aggregate_sources,
+                   COUNT(*) AS all_sources_count
+            FROM (SELECT * FROM src_page UNION ALL SELECT * FROM src_slice_only)
+            GROUP BY benchmark_id
+        ),
+        metrics_list AS (
+            SELECT ms.benchmark_id,
+                   LIST({{
+                       'metric_id': ms.metric_id_effective,
+                       'display_name': COALESCE(cm.display_name, ms.metric_id_effective),
+                       'results_count': CAST(ms.results_count AS INTEGER),
+                       'models_count': CAST(ms.models_count AS INTEGER),
+                       'sources_count': CAST(ms.sources_count AS INTEGER),
+                       'lower_is_better': cm.lower_is_better
+                   }} ORDER BY ms.results_count DESC, ms.metric_id_effective ASC)
+                       AS metrics
+            FROM metric_stats ms
+            LEFT JOIN canonical_metrics cm ON cm.id = ms.metric_id_effective
+            GROUP BY ms.benchmark_id
+        ),
+        slices_list AS (
+            SELECT benchmark_id,
+                   LIST({{
+                       'slice_id': slice_id,
+                       'display_name': slice_display_name
+                   }} ORDER BY slice_id) AS slices
+            FROM (
+                SELECT DISTINCT s.benchmark_id, s.slice_id, s.slice_display_name
+                FROM sl s
+                JOIN universe u ON u.benchmark_id = s.benchmark_id
+                              AND u.grain = 'slice'
+            )
+            GROUP BY benchmark_id
+        )
+        SELECT
+            TIMESTAMP '{sid}'                       AS snapshot_id,
+            url_encode_udf(u.benchmark_id)          AS evaluation_id,
+            u.benchmark_id,
+            COALESCE(cb.display_name, u.benchmark_id) AS display_name,
+            fam.family_id,
+            fam.family_display_name,
+            u.grain,
+            dm.default_metric_id                    AS preferred_metric_id,
+            COALESCE(cm.display_name, dm.default_metric_id)
+                                                    AS preferred_metric_display_name,
+            dm.preferred_from_registry,
+            COALESCE(cm.lower_is_better, FALSE)     AS lower_is_better,
+            CAST(dm.sources_count  AS INTEGER)      AS sources_count,
+            CAST(so.all_sources_count AS INTEGER)   AS all_sources_count,
+            CAST(dm.results_count  AS INTEGER)      AS results_count,
+            CAST(dm.models_count   AS INTEGER)      AS models_count,
+            CAST({{
+                'model_name':     b.model_name,
+                'model_key':      b.model_key,
+                'score':          b.score,
+                'score_canonical': b.score_canonical,
+                'composite_slug': b.composite_slug,
+                'evaluation_id':  b.evaluation_id
+            }} AS STRUCT(
+                model_name VARCHAR, model_key VARCHAR, score DOUBLE,
+                score_canonical DOUBLE, composite_slug VARCHAR,
+                evaluation_id VARCHAR
+            ))                                      AS best_result,
+            so.aggregate_sources,
+            ml.metrics,
+            sll.slices
+        FROM universe u
+        LEFT JOIN canonical_benchmarks cb ON cb.id = u.benchmark_id
+        LEFT JOIN default_metric dm       ON dm.benchmark_id = u.benchmark_id
+        LEFT JOIN canonical_metrics cm    ON cm.id = dm.default_metric_id
+        LEFT JOIN best b                  ON b.benchmark_id = u.benchmark_id AND b.rk = 1
+        LEFT JOIN sources so              ON so.benchmark_id = u.benchmark_id
+        LEFT JOIN metrics_list ml         ON ml.benchmark_id = u.benchmark_id
+        LEFT JOIN slices_list sll         ON sll.benchmark_id = u.benchmark_id
+        LEFT JOIN (
+            SELECT benchmark_id,
+                   ANY_VALUE(family_id) AS family_id,
+                   ANY_VALUE(family_display_name) AS family_display_name
+            FROM page_rows GROUP BY benchmark_id
+        ) fam ON fam.benchmark_id = u.benchmark_id
+        ORDER BY u.benchmark_id
+        """
+    )
+    n = con.execute("SELECT count(*) FROM merged_evals_view").fetchone()[0]
+    n_slice = con.execute(
+        "SELECT count(*) FROM merged_evals_view WHERE grain = 'slice'"
+    ).fetchone()[0]
+    log.info(
+        "stage J: merged_evals_view — %d merged benchmark row(s), %d slice-grain",
+        n, n_slice,
+    )
+
+
 def stage_j_emit_view_parquets(con, out_dir: Path, snapshot_id: str) -> None:
-    """Emit the three view-layer parquets to the warehouse snapshot dir.
+    """Emit the view-layer parquets to the warehouse snapshot dir.
 
     Companion to `stage_i_emit_warehouse_parquets`. Stage J creates the
     view tables on the connection (via the per-view materialiser
@@ -4245,6 +4660,7 @@ def stage_j_emit_view_parquets(con, out_dir: Path, snapshot_id: str) -> None:
         ("eval_results_view", "(composite_slug, metric_summary_id, model_key)"),
         ("models_view",       "(model_key)"),
         ("evals_view",        "(evaluation_id)"),
+        ("merged_evals_view", "(evaluation_id)"),
     ]:
         path = out_dir / f"{table}.parquet"
         con.execute(

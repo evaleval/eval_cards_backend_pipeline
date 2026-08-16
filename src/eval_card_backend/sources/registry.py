@@ -71,6 +71,10 @@ DIM_TABLES: tuple[str, ...] = (
     # (consistent with the other canonical_* dims) — the name must match the
     # published parquet or the dim silently loads empty in production.
     "canonical_inference_platforms",
+    # Metric naming folds for the merged benchmark view (registry.3.2+).
+    # Stage A warns loudly when this loads empty on a registry snapshot
+    # that should carry it — see stage_a_load_registry.
+    "benchmark_metric_folds",
 )
 
 ALIASES_TABLE = "aliases"

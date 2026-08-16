@@ -30,6 +30,8 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+import duckdb
+
 from eval_card_backend.canonicalise import evalcard_tags, hierarchy_dedup, hierarchy_hotfixes
 from eval_card_backend.config import IGNORED_CONFIGS
 from eval_card_backend.signals.reproducibility import (
@@ -1621,8 +1623,22 @@ def _hierarchy_composite_benchmark(
     else:
         bench_display = prettify_display(benchmark_id)
 
+    # Additive merged-view link (spec P6): the canonical benchmark id when a
+    # merged page exists for it, else None. Set at construction — the
+    # hotfix/dedup passes may re-key `key` afterwards, and leaf routing
+    # (frontend F2) falls back to the per-source link when this is None.
+    # Tolerates a connection without merged_evals_view (older cached runs).
+    try:
+        merged_row = con.execute(
+            "SELECT 1 FROM merged_evals_view WHERE benchmark_id = ? LIMIT 1",
+            [benchmark_id],
+        ).fetchone()
+    except duckdb.CatalogException:
+        merged_row = None
+
     return {
         "key":          benchmark_id,
+        "benchmark_id": benchmark_id if merged_row else None,
         "display_name": bench_display,
         "family_id":    family_id,
         "is_slice":     False,
@@ -2243,6 +2259,146 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             "metrics":                 metrics,
         }
 
+    # Merged benchmark entries (spec P6/Q9): one entry per benchmark-grain
+    # merged page, keyed by the single-segment merged evaluation_id, with a
+    # single metric (the merged default) whose scores are each model's BEST
+    # canonical score across sources (Q10: directional, flagged rows
+    # excluded, converted pool preferred over unconverted no_bounds rows;
+    # the winning source is carried on the cell as `source_composite_slug`).
+    # Slice-grain merged pages get no comparison entry in v1 — a best
+    # across different slices would compare incomparables. Every merged
+    # entry carries the `family_id` KEY (null ok) — an old-frontend shape
+    # assertion throws on absent keys.
+    try:
+        merged_cand = con.execute(
+            """
+            SELECT
+                m.evaluation_id                      AS merged_eval_id,
+                m.benchmark_id,
+                m.display_name,
+                m.family_id,
+                m.family_display_name,
+                m.preferred_metric_id,
+                m.preferred_metric_display_name,
+                m.lower_is_better,
+                metric_summary_id_udf(m.benchmark_id, m.preferred_metric_id)
+                                                     AS metric_summary_id,
+                r.model_key,
+                r.model_id,
+                r.model_route_id,
+                r.score,
+                r.score_canonical,
+                r.scale_conversion,
+                r.composite_slug,
+                r.generation_config.generation_args.temperature AS temperature,
+                r.generation_config.generation_args.max_tokens  AS max_tokens,
+                mv.model_group_id                    AS model_family_id,
+                mv.model_family_name,
+                mv.developer
+            FROM merged_evals_view m
+            JOIN eval_results_view r
+              ON r.benchmark_id = m.benchmark_id
+             AND NOT r.is_slice
+             AND r.metric_id_effective = m.preferred_metric_id
+            LEFT JOIN models_view mv ON mv.model_key = r.model_key
+            WHERE m.grain = 'benchmark'
+              AND r.score_canonical IS NOT NULL
+              AND r.model_route_id IS NOT NULL
+              AND r.scale_conversion != 'flagged'
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY m.evaluation_id, r.model_route_id
+                ORDER BY
+                    CASE WHEN r.scale_conversion = 'no_bounds' THEN 1 ELSE 0 END ASC,
+                    CASE WHEN m.lower_is_better
+                         THEN r.score_canonical ELSE -r.score_canonical END ASC,
+                    r.composite_slug ASC
+            ) = 1
+            """
+        ).fetchall()
+        merged_cand_cols = [d[0] for d in con.description]
+    except duckdb.CatalogException:
+        merged_cand, merged_cand_cols = [], []
+
+    merged_grouped: dict[str, list[dict]] = defaultdict(list)
+    for r in merged_cand:
+        rec = dict(zip(merged_cand_cols, r))
+        merged_grouped[rec["merged_eval_id"]].append(rec)
+
+    for merged_eval_id, peer_rows in merged_grouped.items():
+        first = peer_rows[0]
+        lower_is_better = bool(first["lower_is_better"])
+        peer_rows.sort(key=lambda r: r["model_route_id"])
+        peer_rows.sort(
+            key=lambda r: r["score_canonical"], reverse=not lower_is_better
+        )
+        total = len(peer_rows)
+        scores_out = []
+        position = 0
+        previous_score = None
+        for idx, rec in enumerate(peer_rows, start=1):
+            sc = rec["score_canonical"]
+            if previous_score is None or sc != previous_score:
+                position = idx
+                previous_score = sc
+            cell = {
+                "model_route_id":    rec["model_route_id"],
+                "model_family_id":   rec["model_family_id"]
+                                       or rec["model_id"]
+                                       or rec["model_key"],
+                "model_family_name": rec["model_family_name"] or "",
+                "developer":         rec["developer"] or "",
+                "variant_key":       "default",
+                "score":             sc,
+                "rank":              position,
+                "total":             total,
+                "submission_count":  1,
+                "submission_axis":   "default",
+                "temperature":       rec["temperature"],
+                "max_tokens":        rec["max_tokens"],
+                "source_composite_slug": rec["composite_slug"],
+            }
+            scores_out.append(cell)
+            by_model[rec["model_route_id"]][merged_eval_id][
+                first["metric_summary_id"]
+            ] = {
+                "score":            sc,
+                "rank":             position,
+                "total":            total,
+                "submission_count": 1,
+                "submission_axis":  "default",
+                "temperature":      rec["temperature"],
+                "max_tokens":       rec["max_tokens"],
+            }
+        group = _classify_metric_group(
+            None, first["preferred_metric_display_name"]
+        )
+        evals_out[merged_eval_id] = {
+            "evaluation_id":          merged_eval_id,
+            "composite_slug":         None,
+            "composite_display_name": None,
+            "benchmark_id":           first["benchmark_id"],
+            "family_id":              first["family_id"],
+            "family_display_name":    first["family_display_name"],
+            "parent_benchmark_id":    None,
+            "is_slice":               False,
+            "is_merged":              True,
+            "display_name":           first["display_name"],
+            "derived_tags":           [],
+            "is_summary_score":       False,
+            "summary_score_for":      None,
+            "metrics": [{
+                "metric_summary_id": first["metric_summary_id"],
+                "metric_name":       first["preferred_metric_display_name"] or "",
+                "metric_id":         first["preferred_metric_id"],
+                "metric_key":        first["preferred_metric_id"],
+                "group":             group,
+                "group_order":       _METRIC_GROUP_INDEX[group],
+                "lower_is_better":   lower_is_better,
+                "unit":              None,
+                "scores":            scores_out,
+            }],
+        }
+
     payload = {
         "generated_at":       snapshot_meta["snapshot_id"],
         "config_version":     CONFIG_VERSION,
@@ -2309,6 +2465,33 @@ def write_benchmark_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
     ).fetchall()
     cols = [d[0] for d in con.description]
 
+    # Merged-view context (spec P6, additive): the benchmark's merged-page
+    # default metric, and the modal scale_conversion of each source's rows
+    # on that metric — the consumer's signal for "this appearance was
+    # rescaled / is unconvertible" on the merged page.
+    try:
+        preferred = dict(con.execute(
+            "SELECT benchmark_id, preferred_metric_id FROM merged_evals_view"
+        ).fetchall())
+        conv_rows = con.execute(
+            """
+            SELECT r.benchmark_id, r.composite_slug, r.scale_conversion,
+                   COUNT(*) AS n
+            FROM eval_results_view r
+            JOIN merged_evals_view m
+              ON m.benchmark_id = r.benchmark_id
+             AND r.metric_id_effective = m.preferred_metric_id
+            WHERE NOT r.is_slice AND r.scale_conversion IS NOT NULL
+            GROUP BY 1, 2, 3
+            ORDER BY 1, 2, n DESC, 3
+            """
+        ).fetchall()
+    except duckdb.CatalogException:
+        preferred, conv_rows = {}, []
+    dominant_conversion: dict[tuple[str, str], str] = {}
+    for bid_c, slug_c, conversion, _n in conv_rows:
+        dominant_conversion.setdefault((bid_c, slug_c), conversion)
+
     benchmarks: dict[str, dict] = {}
     for r in rows:
         rec = dict(zip(cols, r))
@@ -2322,6 +2505,7 @@ def write_benchmark_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                                           or bid,
                 "is_slice":            bool(rec["is_slice"]),
                 "parent_benchmark_id": rec["parent_benchmark_id"],
+                "preferred_metric_id": preferred.get(bid),
                 "appearances":         [],
             }
             benchmarks[bid] = entry
@@ -2339,6 +2523,10 @@ def write_benchmark_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             "avg_score":                   rec["avg_score"],
             "top_score":                   rec["top_score"],
             "models_count":                int(rec["models_count"] or 0),
+            # Modal scale_conversion of this source's rows on the merged
+            # default metric; None when the source doesn't report it.
+            "preferred_metric_conversion": dominant_conversion.get(
+                (bid, rec["composite_slug"])),
         })
 
     payload = {

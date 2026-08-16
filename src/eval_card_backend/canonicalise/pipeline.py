@@ -365,6 +365,7 @@ def run(
             )
             stages.stage_j_models_view(con, snapshot_id)
             stages.stage_j_evals_view(con, snapshot_id)
+            stages.stage_j_merged_evals_view(con, snapshot_id)
             # Re-anchor out_dir when --from-stage J skips Stage I; the
             # warehouse path is deterministic from snapshot_id so we can
             # always recompute it.
@@ -565,6 +566,7 @@ def _build_snapshot_meta(
             "eval_results_view.parquet",
             "models_view.parquet",
             "evals_view.parquet",
+            "merged_evals_view.parquet",
         ]
         sidecars = [
             "manifest.json", "headline.json", "hierarchy.json",

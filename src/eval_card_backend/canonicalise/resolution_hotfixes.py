@@ -196,3 +196,34 @@ def fix_scorer_wrapper_benchmarks(con) -> None:
     log.info(
         "resolution_hotfixes: reassigned %d scorer-wrapper benchmark row(s)", n
     )
+
+
+# ── 4. HLE leaderboard calibration column mislabelled "score" ────────
+# TODO(upstream): the HLE leaderboard feed labels its calibration-error
+# column literally "score" (values 34–89, anti-correlated with accuracy),
+# so the resolver lands it on the generic `score` canonical. A registry
+# alias can't fix a raw called "score" without breaking `score` everywhere
+# else. Delete this when the EEE hle ingestion relabels the column; the
+# (hle, score → accuracy) registry fold stays valid on its own then.
+# Until then this MUST run before apply_metric_folds — the fold would
+# otherwise sweep these calibration rows into the accuracy view.
+
+
+def fix_hle_calibration_error(con) -> None:
+    """Re-key hle-source rows whose raw metric is 'score' to the
+    calibration-error canonical (lower is better)."""
+    con.execute(
+        """
+        UPDATE results_resolved
+        SET metric_id = 'calibration-error',
+            metric_resolution_strategy = 'hotfix_hle_calibration'
+        WHERE source_config = 'hle'
+          AND benchmark_id = 'hle'
+          AND LOWER(TRIM(metric_raw)) = 'score'
+        """
+    )
+    n = con.execute(
+        "SELECT COUNT(*) FROM results_resolved "
+        "WHERE metric_resolution_strategy = 'hotfix_hle_calibration'"
+    ).fetchone()[0]
+    log.info("resolution_hotfixes: re-keyed %d hle calibration row(s)", n)
