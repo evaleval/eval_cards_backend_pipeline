@@ -2063,12 +2063,22 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
               AND benchmark_key  IS NOT NULL
         ),
         composite_displays AS (
-            SELECT
-                composite_slug,
-                ANY_VALUE(composite_display_name) AS composite_display_name
-            FROM fact_results
-            WHERE composite_slug IS NOT NULL
-            GROUP BY composite_slug
+            -- Most-frequent display name per composite, tie-broken
+            -- lexicographically. Multi-record composites (hle) carry
+            -- several names; ANY_VALUE flipped between them run-to-run.
+            SELECT composite_slug, composite_display_name
+            FROM (
+                SELECT composite_slug, composite_display_name,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY composite_slug
+                           ORDER BY COUNT(*) DESC, composite_display_name ASC
+                       ) AS _rk
+                FROM fact_results
+                WHERE composite_slug IS NOT NULL
+                  AND composite_display_name IS NOT NULL
+                GROUP BY composite_slug, composite_display_name
+            )
+            WHERE _rk = 1
         ),
         phantom_root_pairs AS (
             -- Phantom stems (e.g. arc-agi, caparena) referenced as
@@ -2729,24 +2739,33 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 -- magnitudes / org counts ("worst slice"). Threshold + basis
                 -- are derived from per-metric metric_config and stay
                 -- constant; differing_fields and scores_by_organization
-                -- vary per-slice and we surface an arbitrary representative
-                -- via ANY_VALUE.
-                ANY_VALUE(scores_by_organization)        AS scores_by_organization,
-                ANY_VALUE(is_multi_source)               AS is_multi_source,
-                ANY_VALUE(first_party_only)              AS first_party_only,
+                -- vary per-slice, so the representative is pinned to the
+                -- lowest fact_id (arg_min) — ANY_VALUE made the pick
+                -- run-to-run unstable and the emitted parquet
+                -- byte-nondeterministic. AVG is rounded to 12 decimals to
+                -- squash float summation-order noise (~1e-16 flips).
+                arg_min(scores_by_organization, fact_id)
+                    FILTER (WHERE scores_by_organization IS NOT NULL)
+                                                         AS scores_by_organization,
+                MAX(is_multi_source)                     AS is_multi_source,
+                MAX(first_party_only)                    AS first_party_only,
                 BOOL_OR(has_variant_divergence)          AS has_variant_divergence,
                 BOOL_OR(has_cross_party_divergence)      AS has_cross_party_divergence,
                 MAX(variant_divergence_magnitude)        AS variant_divergence_magnitude,
-                ANY_VALUE(variant_divergence_threshold)  AS variant_divergence_threshold,
-                ANY_VALUE(variant_threshold_basis)       AS variant_threshold_basis,
-                ANY_VALUE(variant_differing_fields)      AS variant_differing_fields,
+                MAX(variant_divergence_threshold)        AS variant_divergence_threshold,
+                MAX(variant_threshold_basis)             AS variant_threshold_basis,
+                arg_min(variant_differing_fields, fact_id)
+                    FILTER (WHERE variant_differing_fields IS NOT NULL)
+                                                         AS variant_differing_fields,
                 MAX(cross_party_divergence_magnitude)    AS cross_party_divergence_magnitude,
-                ANY_VALUE(cross_party_divergence_threshold) AS cross_party_divergence_threshold,
-                ANY_VALUE(cross_party_threshold_basis)      AS cross_party_threshold_basis,
-                ANY_VALUE(cross_party_differing_fields)     AS cross_party_differing_fields,
+                MAX(cross_party_divergence_threshold)    AS cross_party_divergence_threshold,
+                MAX(cross_party_threshold_basis)         AS cross_party_threshold_basis,
+                arg_min(cross_party_differing_fields, fact_id)
+                    FILTER (WHERE cross_party_differing_fields IS NOT NULL)
+                                                         AS cross_party_differing_fields,
                 MAX(cross_party_org_count)                  AS cross_party_org_count,
                 BOOL_OR(has_reproducibility_gap)         AS triple_has_repro_gap,
-                AVG(completeness_score)                  AS triple_avg_completeness
+                ROUND(AVG(completeness_score), 12)       AS triple_avg_completeness
             FROM tris
             GROUP BY composite_slug, model_aggregation_key, benchmark_key, metric_key
         ),
@@ -3415,11 +3434,11 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                                                                           AS benchmarks_count,
                 CAST(COUNT(*) FILTER (WHERE coverage_cell IN ('third', 'both')) AS BIGINT)
                                                                           AS third_party_eval_count,
-                AVG(CASE WHEN has_reproducibility_gap THEN 1.0 ELSE 0.0 END)
+                ROUND(AVG(CASE WHEN has_reproducibility_gap THEN 1.0 ELSE 0.0 END), 12)
                                                                           AS gap_rate,
                 CAST(SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS gap_count,
-                AVG(completeness_score)                                   AS completeness_avg,
+                ROUND(AVG(completeness_score), 12)                        AS completeness_avg,
                 list_sort(list_distinct(flatten(
                     list(from_json(derived_tags, '["VARCHAR"]'))
                     FILTER (WHERE derived_tags IS NOT NULL)
@@ -3427,7 +3446,7 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 CAST(COUNT(score) AS INTEGER)                             AS score_count,
                 MIN(score)                                                AS score_min,
                 MAX(score)                                                AS score_max,
-                AVG(score)                                                AS score_avg,
+                ROUND(AVG(score), 12)                                     AS score_avg,
                 CAST(SUM(CASE WHEN is_multi_source THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS multi_source_groups,
                 CAST(SUM(CASE WHEN first_party_only THEN 1 ELSE 0 END) AS INTEGER)
@@ -3886,13 +3905,13 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                         struct_pack(t := pt.evaluation_timestamp,
                                     n := pt.source_metadata.source_organization_name))
                                                                        AS latest_source_name,
-                AVG(CASE WHEN pt.coverage_cell IN ('third', 'both')
-                         THEN 1.0 ELSE 0.0 END)                        AS third_party_ratio,
+                ROUND(AVG(CASE WHEN pt.coverage_cell IN ('third', 'both')
+                         THEN 1.0 ELSE 0.0 END), 12)                   AS third_party_ratio,
                 CAST(SUM(CASE
                     WHEN pt.evalcards_annotations.reproducibility_gap.populated_count
                        < pt.evalcards_annotations.reproducibility_gap.required_count
                     THEN 1 ELSE 0 END) AS INTEGER)                     AS missing_generation_config_count,
-                AVG(pt.score)                                          AS avg_score,
+                ROUND(AVG(pt.score), 12)                               AS avg_score,
                 MIN(pt.score)                                          AS min_score_seen,
                 MAX(pt.score)                                          AS max_score_seen,
                 -- top/bottom are addressable identifiers — use model_key so
@@ -3906,11 +3925,11 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                         struct_pack(s := pt.scoring_score, k := pt.model_key)) AS top_model_id,
                 arg_min(pt.model_key,
                         struct_pack(s := pt.scoring_score, k := pt.model_key)) AS bottom_model_id,
-                AVG(CASE WHEN pt.has_reproducibility_gap THEN 1.0 ELSE 0.0 END)
+                ROUND(AVG(CASE WHEN pt.has_reproducibility_gap THEN 1.0 ELSE 0.0 END), 12)
                                                                        AS gap_rate,
                 CAST(SUM(CASE WHEN pt.has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
                                                                        AS gap_count,
-                AVG(pt.completeness_score)                             AS completeness_avg,
+                ROUND(AVG(pt.completeness_score), 12)                  AS completeness_avg,
                 CAST(COUNT(*) AS INTEGER)                              AS gprov_total_groups,
                 CAST(SUM(CASE WHEN pt.is_multi_source THEN 1 ELSE 0 END) AS INTEGER)
                                                                        AS multi_source_groups,
