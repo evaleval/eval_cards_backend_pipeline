@@ -26,8 +26,8 @@ env:
   # the var to track latest HEAD).
   # Prev pin: 7f8a40b0aa6b3d49f041a06bd25ef139948a160e
   EEE_REVISION: 4fca25c96a4c1015ae662fcd343fefad9951ea06
-  # Prev pin: cbff6fcef940377daed091fb35970d012a067026
-  ENTITY_REGISTRY_REVISION: 8a2a48f6d0bd805e8ca9e107f9c6b2edccb2510a
+  # Prev pin: 8a2a48f6d0bd805e8ca9e107f9c6b2edccb2510a
+  ENTITY_REGISTRY_REVISION: 81693bd28e5eaedc815e0cd9e8afd2a10764267d
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
 
 jobs:
