@@ -2087,6 +2087,12 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             erv.score,
             erv.score_canonical,
             erv.scale_conversion,
+            -- Registry bounds of the EFFECTIVE metric — the scale
+            -- score_canonical sits on. Stamped at the metric-entry level
+            -- so consumers resolve fraction-vs-percent from registry
+            -- truth, never from source-reported units.
+            cme.min_score AS canonical_min_score,
+            cme.max_score AS canonical_max_score,
             erv.model_key,
             erv.model_id,
             erv.model_route_id,
@@ -2111,6 +2117,8 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
         LEFT JOIN metric_kinds mk
           ON mk.benchmark_key = erv.benchmark_id
          AND mk.metric_key    = erv.metric_id
+        LEFT JOIN canonical_metrics cme
+          ON cme.id = erv.metric_id_effective
         WHERE erv.score             IS NOT NULL
           AND erv.evaluation_id     IS NOT NULL
           AND erv.metric_summary_id IS NOT NULL
@@ -2237,6 +2245,8 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             "group_order":       _METRIC_GROUP_INDEX[group],
             "lower_is_better":   lower_is_better,
             "unit":              first["metric_unit"],
+            "canonical_min_score": first["canonical_min_score"],
+            "canonical_max_score": first["canonical_max_score"],
             "scores":            scores_out,
         })
 
@@ -2290,6 +2300,8 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                 m.preferred_metric_id,
                 m.preferred_metric_display_name,
                 m.lower_is_better,
+                cmm.min_score                        AS canonical_min_score,
+                cmm.max_score                        AS canonical_max_score,
                 metric_summary_id_udf(m.benchmark_id, m.preferred_metric_id)
                                                      AS metric_summary_id,
                 r.model_key,
@@ -2310,6 +2322,7 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
              AND NOT r.is_slice
              AND r.metric_id_effective = m.preferred_metric_id
             LEFT JOIN models_view mv ON mv.model_key = r.model_key
+            LEFT JOIN canonical_metrics cmm ON cmm.id = m.preferred_metric_id
             WHERE m.grain = 'benchmark'
               AND r.score_canonical IS NOT NULL
               AND r.model_route_id IS NOT NULL
@@ -2404,6 +2417,8 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                 "group_order":       _METRIC_GROUP_INDEX[group],
                 "lower_is_better":   lower_is_better,
                 "unit":              None,
+                "canonical_min_score": first["canonical_min_score"],
+                "canonical_max_score": first["canonical_max_score"],
                 "scores":            scores_out,
             }],
         }
