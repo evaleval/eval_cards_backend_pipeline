@@ -511,6 +511,9 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("benchmark_id", "VARCHAR"),
         ("from_metric_id", "VARCHAR"),
         ("to_metric_id", "VARCHAR"),
+        # Curated published-scale -> registry-scale multiplier (0.1 =
+        # raw 1-10 onto a [0,1] metric). NULL = detection-based only.
+        ("scale_factor", "DOUBLE"),
         ("note", "VARCHAR"),
     ],
     # canonical_metrics — registry has score_type/lower_is_better/min/max
@@ -1020,6 +1023,7 @@ def stage_c_resolve_identities(con) -> None:
     # Must precede apply_metric_folds: the (hle, score → accuracy) fold is
     # only safe once hle's mislabelled calibration rows are off `score`.
     resolution_hotfixes.fix_hle_calibration_error(con)
+    resolution_hotfixes.fix_scicode_hal_main_rate(con)
 
     _apply_metric_folds(con)
 
@@ -2842,6 +2846,7 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 -- canonical-scale conversion. Unmasked on purpose: NULL
                 -- bounds must stay NULL ('no_bounds'), not become [0,1].
                 COALESCE(bmf.to_metric_id, ta.metric_key) AS metric_key_effective,
+                bmf.scale_factor              AS eff_scale_factor,
                 cmet_eff.lower_is_better      AS eff_lower_is_better,
                 cmet_eff.min_score            AS eff_min_score,
                 cmet_eff.max_score            AS eff_max_score,
@@ -2925,6 +2930,17 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             SELECT *,
                 CASE
                     WHEN rep_score IS NULL THEN NULL
+                    -- curated published-scale factor on the fold: a known
+                    -- fact, never detected — overrides detection entirely
+                    WHEN eff_scale_factor IS NOT NULL THEN
+                        CASE
+                            WHEN eff_min_score IS NULL OR eff_max_score IS NULL
+                                THEN 'curated'
+                            WHEN rep_score * eff_scale_factor
+                                 BETWEEN eff_min_score AND eff_max_score
+                                THEN 'curated'
+                            ELSE 'flagged'
+                        END
                     WHEN eff_min_score IS NULL OR eff_max_score IS NULL
                         THEN 'no_bounds'
                     -- fraction-bounded metric, percent-looking group
@@ -3297,6 +3313,7 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             CASE scale_conversion
                 WHEN 'div100'    THEN rep_score / 100.0
                 WHEN 'mul100'    THEN rep_score * 100.0
+                WHEN 'curated'   THEN rep_score * eff_scale_factor
                 WHEN 'none'      THEN rep_score
                 WHEN 'no_bounds' THEN rep_score
                 ELSE NULL

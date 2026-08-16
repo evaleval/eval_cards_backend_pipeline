@@ -154,11 +154,12 @@ def test_unresolved_benchmarks_get_no_merged_row(clean_out_dir):
 # ---------------------------------------------------------------------------
 
 
-def _inject_fold(con):
+def _inject_fold(con, scale_factor="CAST(NULL AS DOUBLE)"):
     con.execute(
         "CREATE TABLE benchmark_metric_folds AS "
         "SELECT 'mmlu' AS benchmark_id, 'accuracy' AS from_metric_id, "
-        "       'score' AS to_metric_id, CAST(NULL AS VARCHAR) AS note"
+        f"       'score' AS to_metric_id, {scale_factor} AS scale_factor, "
+        "       CAST(NULL AS VARCHAR) AS note"
     )
 
 
@@ -234,6 +235,30 @@ def test_scale_conversion_per_row_unambiguous(clean_out_dir):
     # the genuine in-bounds row is untouched even inside the suspect group
     genuine = [v for k, v in rows.items() if not k.startswith("synthetic")]
     assert all(c == "none" and s is not None for c, s in genuine)
+
+
+def test_curated_scale_factor(clean_out_dir):
+    """A fold with a scale_factor converts every matched row by that
+    factor as curated fact — no detection involved (wildbench 1-10 case).
+    The fixture's mmlu accuracy rows (0.85, 0.4) fold onto `score` here;
+    give `score` [0,1] bounds and a x0.1 factor: 0.85 -> 0.085 'curated'."""
+    def mutate(con):
+        _inject_fold(con, scale_factor="0.1")
+        con.execute(
+            "UPDATE canonical_metrics SET min_score = 0, max_score = 1 "
+            "WHERE id = 'score'"
+        )
+    con = _materialise_views(clean_out_dir, mutate=mutate)
+    rows = con.execute(
+        "SELECT score, score_canonical, scale_conversion "
+        "FROM eval_results_view "
+        "WHERE benchmark_id = 'mmlu' AND metric_id = 'accuracy' "
+        "AND score IS NOT NULL"
+    ).fetchall()
+    assert rows
+    assert all(
+        c == "curated" and canon == pytest.approx(s * 0.1) for s, canon, c in rows
+    )
 
 
 def test_no_bounds_metric_passes_through(clean_out_dir):

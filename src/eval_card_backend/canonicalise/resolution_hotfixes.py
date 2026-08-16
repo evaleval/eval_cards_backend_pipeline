@@ -227,3 +227,31 @@ def fix_hle_calibration_error(con) -> None:
         "WHERE metric_resolution_strategy = 'hotfix_hle_calibration'"
     ).fetchone()[0]
     log.info("resolution_hotfixes: re-keyed %d hle calibration row(s)", n)
+
+
+# ── 5. HAL SciCode main-problem rate labelled generic "score" ────────
+# TODO(upstream): HAL's SciCode leaderboard reports the MAIN-problem
+# solve rate while every other scicode source reports the sub-problem
+# rate; both arrive as raw "score". Different counting style = different
+# metric (maintainer ruling 2026-08-16) — re-key HAL's rows to the
+# scicode.main canonical so the merged default table never mixes the
+# two. Delete when the EEE hal-scicode ingestion labels the metric.
+
+
+def fix_scicode_hal_main_rate(con) -> None:
+    """Re-key hal-scicode rows from generic `score` to `scicode.main`."""
+    con.execute(
+        """
+        UPDATE results_resolved
+        SET metric_id = 'scicode.main',
+            metric_resolution_strategy = 'hotfix_scicode_main'
+        WHERE source_config = 'hal-scicode'
+          AND benchmark_id = 'scicode'
+          AND LOWER(TRIM(metric_raw)) = 'score'
+        """
+    )
+    n = con.execute(
+        "SELECT COUNT(*) FROM results_resolved "
+        "WHERE metric_resolution_strategy = 'hotfix_scicode_main'"
+    ).fetchone()[0]
+    log.info("resolution_hotfixes: re-keyed %d hal scicode main-rate row(s)", n)
