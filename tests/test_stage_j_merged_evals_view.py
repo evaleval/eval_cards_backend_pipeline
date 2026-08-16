@@ -84,14 +84,15 @@ def _materialise_views(out_dir: Path, mutate=None):
     return con
 
 
-@pytest.fixture(scope="module")
-def clean_out_dir(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("merged_clean")
-    mp = pytest.MonkeyPatch()
-    try:
-        yield _run_through_stage_i(tmp, mp, "fixtures_clean")
-    finally:
-        mp.undo()
+# Function-scoped ON PURPOSE, matching every other stage_j test file: a
+# module-scoped fixture with its own MonkeyPatch runs BEFORE conftest's
+# per-test autouse env stripping, so in CI the ambient *_REVISION pins
+# leak into pipeline.run — which wipes the shared fixture dirs and
+# downloads the real datasets (hangs this module, empties every module
+# after it). Per-test setup keeps the conftest ordering guarantees.
+@pytest.fixture
+def clean_out_dir(tmp_path, monkeypatch):
+    return _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
 
 
 # ---------------------------------------------------------------------------
