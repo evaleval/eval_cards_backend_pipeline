@@ -4545,9 +4545,12 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
               AND p.grain = 'benchmark'
         ),
         src_page AS (
+            -- MAX not ANY_VALUE: upstream carries per-row variance in
+            -- display names (multi-record composites), and ANY_VALUE
+            -- would make this view build-nondeterministic on top of it.
             SELECT p.benchmark_id, p.composite_slug,
-                   ANY_VALUE(p.composite_display_name) AS composite_display_name,
-                   ANY_VALUE(p.evaluation_id)          AS evaluation_id,
+                   MAX(p.composite_display_name)       AS composite_display_name,
+                   MAX(p.evaluation_id)                AS evaluation_id,
                    COUNT(*)                            AS results_count,
                    COUNT(DISTINCT p.model_key)         AS models_count,
                    BOOL_OR(p.metric_id_effective = dm.default_metric_id)
@@ -4561,7 +4564,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
             -- 7(a) disclosure: sources with ONLY slice-level data for a
             -- benchmark-grain page.
             SELECT s.benchmark_id, s.composite_slug,
-                   ANY_VALUE(s.composite_display_name) AS composite_display_name,
+                   MAX(s.composite_display_name)       AS composite_display_name,
                    CAST(NULL AS VARCHAR)               AS evaluation_id,
                    COUNT(*)                            AS results_count,
                    COUNT(DISTINCT s.model_key)         AS models_count,
@@ -4661,8 +4664,8 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
         LEFT JOIN slices_list sll         ON sll.benchmark_id = u.benchmark_id
         LEFT JOIN (
             SELECT benchmark_id,
-                   ANY_VALUE(family_id) AS family_id,
-                   ANY_VALUE(family_display_name) AS family_display_name
+                   MAX(family_id) AS family_id,
+                   MAX(family_display_name) AS family_display_name
             FROM page_rows GROUP BY benchmark_id
         ) fam ON fam.benchmark_id = u.benchmark_id
         ORDER BY u.benchmark_id
