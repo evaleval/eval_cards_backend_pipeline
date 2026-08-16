@@ -2085,6 +2085,8 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             erv.metric_unit,
             erv.lower_is_better,
             erv.score,
+            erv.score_canonical,
+            erv.scale_conversion,
             erv.model_key,
             erv.model_id,
             erv.model_route_id,
@@ -2199,6 +2201,11 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                 "developer":         rec["developer"] or "",
                 "variant_key":       "default",
                 "score":             sc,
+                # Registry-scale twin of `score` + how it was derived —
+                # lets consumers stop scale-guessing (frontend F5). NULL
+                # canonical = flagged/unconvertible row.
+                "score_canonical":   rec["score_canonical"],
+                "scale_conversion":  rec["scale_conversion"],
                 "rank":              position,
                 "total":             total,
                 "submission_count":  1,
@@ -2208,6 +2215,8 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             })
             by_model[rec["model_route_id"]][eval_id][metric_summary_id] = {
                 "score":            sc,
+                "score_canonical":  rec["score_canonical"],
+                "scale_conversion": rec["scale_conversion"],
                 "rank":             position,
                 "total":            total,
                 "submission_count": 1,
