@@ -2946,6 +2946,10 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                             WHEN rep_score BETWEEN 0 AND 1.0 THEN 'mul100'
                             ELSE 'flagged'
                         END
+                    -- percent-bounded group topping out in (1, 1.5]:
+                    -- ambiguous fractions-vs-tiny-percents — never guess
+                    WHEN eff_min_score = 0 AND eff_max_score = 100
+                     AND eff_grp_max <= 1.5 THEN 'flagged'
                     WHEN rep_score BETWEEN eff_min_score AND eff_max_score
                         THEN 'none'
                     ELSE 'flagged'
@@ -4502,7 +4506,12 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
                                 THEN p.score_canonical
                                 ELSE -p.score_canonical
                            END ASC,
-                           p.model_key ASC
+                           -- full tiebreak: same (score, model) can appear
+                           -- under two composites (exgentic pairs) — without
+                           -- the composite term the winning source flips
+                           -- with input order between builds
+                           p.model_key ASC,
+                           p.composite_slug ASC
                    ) AS rk,
                    p.model_info."name" AS model_name,
                    p.model_key, p.score, p.score_canonical,
@@ -4513,6 +4522,10 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
              AND p.metric_id_effective = dm.default_metric_id
             LEFT JOIN canonical_metrics cm ON cm.id = dm.default_metric_id
             WHERE p.scale_conversion != 'flagged'
+              -- slice-grain pages get NO best_result: a best across
+              -- different slices compares incomparables (same rule as the
+              -- comparison-index merged entries)
+              AND p.grain = 'benchmark'
         ),
         src_page AS (
             SELECT p.benchmark_id, p.composite_slug,

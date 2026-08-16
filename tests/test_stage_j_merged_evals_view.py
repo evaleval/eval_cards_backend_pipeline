@@ -94,16 +94,6 @@ def clean_out_dir(tmp_path_factory):
         mp.undo()
 
 
-@pytest.fixture(scope="module")
-def slices_out_dir(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("merged_slices")
-    mp = pytest.MonkeyPatch()
-    try:
-        yield _run_through_stage_i(tmp, mp, "fixtures_slices")
-    finally:
-        mp.undo()
-
-
 # ---------------------------------------------------------------------------
 # P5 — merged row basics
 # ---------------------------------------------------------------------------
@@ -283,21 +273,76 @@ def test_flagged_rows_excluded_from_best(clean_out_dir):
 # ---------------------------------------------------------------------------
 
 
-def test_slice_only_benchmark_gets_slice_grain_row(slices_out_dir):
-    con = _materialise_views(slices_out_dir)
+def _reparent_mmlu_under_shell(con):
+    """Turn mmlu into a slice of a new fact-less shell parent, so the
+    shell qualifies as a slice-grain merged page (no top-level data)."""
+    con.execute(
+        "INSERT INTO canonical_benchmarks VALUES ('mmlu-suite', 'MMLU Suite', NULL)"
+    )
+    con.execute(
+        "INSERT INTO benchmarks SELECT * REPLACE ("
+        "  'mmlu-suite' AS benchmark_id,"
+        "  'MMLU Suite' AS display_name,"
+        "  'MMLU Suite' AS benchmark_display_name,"
+        "  FALSE AS is_slice,"
+        "  CAST(NULL AS VARCHAR) AS parent_benchmark_id"
+        ") FROM benchmarks WHERE benchmark_id = 'mmlu'"
+    )
+    con.execute(
+        "UPDATE benchmarks SET parent_benchmark_id = 'mmlu-suite', "
+        "is_slice = TRUE WHERE benchmark_id = 'mmlu'"
+    )
+
+
+def test_slice_only_benchmark_gets_slice_grain_row(clean_out_dir):
+    con = _materialise_views(clean_out_dir, mutate=_reparent_mmlu_under_shell)
+    row = con.execute(
+        "SELECT grain, slices, best_result, aggregate_sources "
+        "FROM merged_evals_view WHERE benchmark_id = 'mmlu-suite'"
+    ).fetchone()
+    assert row is not None, "shell parent got no slice-grain merged row"
+    grain, slices, best, agg_sources = row
+    assert grain == "slice"
+    assert [s["slice_id"] for s in slices] == ["mmlu"]
+    # no best_result at slice grain: a best across slices compares
+    # incomparables (mirrors the comparison-index exclusion)
+    assert best["model_name"] is None
+    # slice-grain sources have no top-level per-source page to link
+    assert agg_sources and all(s["evaluation_id"] is None for s in agg_sources)
+    # mmlu itself no longer gets a benchmark-grain row (it is a slice now)
+    assert con.execute(
+        "SELECT count(*) FROM merged_evals_view WHERE benchmark_id = 'mmlu'"
+    ).fetchone()[0] == 0
+
+
+def test_mul100_and_percent_ambiguity_band(clean_out_dir):
+    # under [0,100] bounds, an all-fraction group converts whole; a group
+    # topping out in (1, 1.5] is ambiguous and flagged whole
+    def mutate(con):
+        con.execute(
+            "UPDATE canonical_metrics SET min_score = 0, max_score = 100 "
+            "WHERE id = 'accuracy'"
+        )
+    con = _materialise_views(clean_out_dir, mutate=mutate)
     rows = con.execute(
-        "SELECT benchmark_id, grain, slices FROM merged_evals_view "
-        "WHERE grain = 'slice'"
+        "SELECT score, score_canonical, scale_conversion "
+        "FROM eval_results_view "
+        "WHERE benchmark_id = 'mmlu' AND metric_id = 'accuracy' "
+        "AND score IS NOT NULL"
     ).fetchall()
-    top_level = {
-        r[0] for r in con.execute(
-            "SELECT DISTINCT benchmark_id FROM eval_results_view "
-            "WHERE NOT is_slice AND score IS NOT NULL"
-        ).fetchall()
-    }
-    for bid, grain, slices in rows:
-        assert bid not in top_level
-        assert slices and all(s["slice_id"] for s in slices)
+    assert rows
+    assert all(c == "mul100" and canon == pytest.approx(s * 100) for s, canon, c in rows)
+
+    def mutate_ambiguous(con):
+        mutate(con)
+        _clone_mmlu_row(con, "synthetic-onepointtwo", 1.2)
+    con2 = _materialise_views(clean_out_dir, mutate=mutate_ambiguous)
+    rows2 = con2.execute(
+        "SELECT scale_conversion FROM eval_results_view "
+        "WHERE benchmark_id = 'mmlu' AND metric_id = 'accuracy' "
+        "AND score IS NOT NULL"
+    ).fetchall()
+    assert rows2 and all(c == ("flagged",) for c in map(tuple, rows2))
 
 
 # ---------------------------------------------------------------------------
