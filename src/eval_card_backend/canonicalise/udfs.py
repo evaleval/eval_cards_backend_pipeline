@@ -89,7 +89,7 @@ def reset_resolver_counters() -> None:
 _resolve_cache_info: Any = None
 
 
-def make_resolver_udfs(resolver):
+def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
     """Bind `resolver` into UDF closures. Resolver is a `eval_entity_resolver.Resolver`
     instance, but typed as object so this module imports nothing at import time.
 
@@ -183,6 +183,33 @@ def make_resolver_udfs(resolver):
     resolve_resolution_source_py = _resolve_field("resolution_source")
     resolve_resolution_granularity_py = _resolve_field("resolution_granularity")
 
+    @functools.lru_cache(maxsize=4096)
+    def _structured_metric_cached(raw_id: str, source_config: str | None):
+        return resolver.resolve_structured_metric_id(
+            raw_id, source_config, catch_all_ids=metric_catch_all_ids
+        )
+
+    def resolve_structured_metric_id_py(
+        raw_id: str | None, source_config: str | None
+    ) -> str | None:
+        """Positionless registry-membership resolution over the namespaced
+        `metric_config.metric_id` segments (see
+        Resolver.resolve_structured_metric_id). NULL on any miss/deferral
+        so Stage C falls through to the extract_metric path.
+
+        Fail-safe: with no catch-all flags in the registry data (a
+        pre-catch-all revision), raw field names like `.score` and
+        aggregate labels like `.overall` would outrank prose — so the
+        pre-step disables itself outright rather than regress."""
+        if not metric_catch_all_ids:
+            return None
+        if not raw_id or not isinstance(raw_id, str) or not raw_id.strip():
+            return None
+        try:
+            return _structured_metric_cached(raw_id, source_config)
+        except Exception:
+            return None
+
     return (
         resolve_canonical_id_py,
         resolve_strategy_py,
@@ -190,6 +217,7 @@ def make_resolver_udfs(resolver):
         resolve_inference_platform_py,
         resolve_resolution_source_py,
         resolve_resolution_granularity_py,
+        resolve_structured_metric_id_py,
     )
 
 

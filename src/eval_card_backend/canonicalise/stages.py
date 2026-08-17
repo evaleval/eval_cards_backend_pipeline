@@ -945,10 +945,24 @@ def stage_c_resolve_identities(con) -> None:
                 *,
                 model_info.id                                                     AS _model_raw,
                 clean_eval_name_udf(evaluation_name)                              AS _benchmark_raw,
+                -- Structured-id pre-step: positionless registry-membership
+                -- resolution over the namespaced metric_config.metric_id
+                -- segments (lmarena.elo.overall → elo). A registry-flagged
+                -- catch-all hit (raw field names like `.score`) and any
+                -- ambiguity return NULL, so those rows fall through to the
+                -- extract_metric path unchanged.
+                resolve_structured_metric_id(metric_config.metric_id, source_config) AS _metric_id_structured,
                 extract_metric_udf(
                     COALESCE(metric_config.evaluation_description,
                              metric_config.metric_name,
-                             evaluation_name))                                    AS _metric_raw,
+                             evaluation_name))                                    AS _metric_extracted,
+                -- When the alias fires, metric_raw records the structured id
+                -- (the value that actually resolved); otherwise the
+                -- extraction result, exactly as before.
+                CASE WHEN _metric_id_structured IS NOT NULL
+                     THEN trim(metric_config.metric_id)
+                     ELSE _metric_extracted
+                END                                                               AS _metric_raw,
                 {org_raw_clean}                                                   AS _org_raw,
                 -- Concatenate name + version for resolver lookup, but treat
                 -- 'unknown'/empty version as no version at all. Upstream EEE
@@ -990,13 +1004,16 @@ def stage_c_resolve_identities(con) -> None:
             resolve_resolution_source(_model_raw,      'model', source_config) AS resolution_source,
             resolve_resolution_granularity(_model_raw, 'model', source_config) AS resolution_granularity,
             resolve_canonical_id(_benchmark_raw, 'benchmark', source_config) AS benchmark_id,
-            resolve_canonical_id(_metric_raw,    'metric',    source_config) AS metric_id,
+            COALESCE(_metric_id_structured,
+                     resolve_canonical_id(_metric_raw, 'metric', source_config)) AS metric_id,
             resolve_canonical_id(_org_raw,       'org',       source_config) AS org_id,
             resolve_canonical_id(NULLIF(_harness_raw, ''), 'harness', source_config) AS harness_id,
 
             resolve_strategy(_model_raw,     'model',     source_config) AS model_resolution_strategy,
             resolve_strategy(_benchmark_raw, 'benchmark', source_config) AS benchmark_resolution_strategy,
-            resolve_strategy(_metric_raw,    'metric',    source_config) AS metric_resolution_strategy,
+            CASE WHEN _metric_id_structured IS NOT NULL THEN 'metric_id_structured'
+                 ELSE resolve_strategy(_metric_raw, 'metric', source_config)
+            END                                                          AS metric_resolution_strategy,
             resolve_strategy(_org_raw,       'org',       source_config) AS org_resolution_strategy,
             resolve_strategy(NULLIF(_harness_raw, ''), 'harness', source_config) AS harness_resolution_strategy
         FROM raw

@@ -440,3 +440,78 @@ def test_derive_metric_meta_udf_synonym_normalisation(con):
         "  NULL, NULL)"
     ).fetchone()[0]
     assert sql["metric_unit"] == "percent"
+
+
+# ---------------------------------------------------------------------------
+# Structured metric-id UDF (catch-all-gated pre-step)
+# ---------------------------------------------------------------------------
+
+
+class _StructuredStubResolver(_StubResolver):
+    """Stub with the structured metric-id method the pre-step binds to."""
+
+    def __init__(self, structured=None, catch_all_seen=None):
+        super().__init__()
+        self.structured = structured or {}
+        self.catch_all_seen = catch_all_seen
+
+    def resolve_structured_metric_id(self, raw_id, source_config=None, catch_all_ids=frozenset()):
+        if self.catch_all_seen is not None:
+            self.catch_all_seen.append(catch_all_ids)
+        return self.structured.get(raw_id)
+
+
+def test_resolve_structured_metric_id_round_trip():
+    udfs.reset_resolver_counters()
+    c = duckdb.connect()
+    register_udfs(
+        c,
+        _StructuredStubResolver({"lmarena.elo.overall": "elo"}),
+        frozenset({"score", "overall"}),
+    )
+    rows = c.execute(
+        "SELECT resolve_structured_metric_id('lmarena.elo.overall', NULL),"
+        "       resolve_structured_metric_id('llm_stats.gdpval-aa.score', NULL),"
+        "       resolve_structured_metric_id(NULL, NULL)"
+    ).fetchone()
+    assert rows == ("elo", None, None)
+    c.close()
+
+
+def test_structured_pre_step_disabled_without_catch_all_flags():
+    """Fail-safe: registry data with no catch_all flags (pre-catch-all
+    revision) must disable the pre-step outright — a raw `.score` field
+    name or `.overall` aggregate label would otherwise outrank prose."""
+    udfs.reset_resolver_counters()
+    c = duckdb.connect()
+    register_udfs(
+        c,
+        _StructuredStubResolver({"lmarena.elo.overall": "elo"}),
+        frozenset(),
+    )
+    row = c.execute(
+        "SELECT resolve_structured_metric_id('lmarena.elo.overall', NULL)"
+    ).fetchone()
+    assert row == (None,)
+    c.close()
+
+
+def test_metric_catch_all_ids_reads_metadata_flags(tmp_path):
+    import pandas as pd
+
+    from eval_card_backend.canonicalise.pipeline import _metric_catch_all_ids
+
+    pd.DataFrame(
+        {
+            "id": ["score", "overall", "accuracy", "elo"],
+            "metadata": [
+                '{"catch_all": true}',
+                '{"kind": "dataset_specific", "catch_all": true}',
+                "{}",
+                None,
+            ],
+        }
+    ).to_parquet(tmp_path / "canonical_metrics.parquet")
+    assert _metric_catch_all_ids(tmp_path) == frozenset({"score", "overall"})
+    # Missing file → empty set (which disables the pre-step).
+    assert _metric_catch_all_ids(tmp_path / "nope") == frozenset()

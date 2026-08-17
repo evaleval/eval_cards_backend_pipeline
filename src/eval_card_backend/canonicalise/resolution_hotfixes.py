@@ -207,6 +207,11 @@ def fix_scorer_wrapper_benchmarks(con) -> None:
 # (hle, score → accuracy) registry fold stays valid on its own then.
 # Until then this MUST run before apply_metric_folds — the fold would
 # otherwise sweep these calibration rows into the accuracy view.
+# NOTE: with catch-all-aware registry data, the structured metric-id
+# pre-step already resolves hle's `hle.calibration_error` ids to
+# calibration-error and this UPDATE matches 0 rows. It stays as the
+# fallback for the pre-step's disabled mode (registry data without
+# catch_all flags).
 
 
 def fix_hle_calibration_error(con) -> None:

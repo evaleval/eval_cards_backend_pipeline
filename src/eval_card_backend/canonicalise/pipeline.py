@@ -98,6 +98,29 @@ def _hf_revision(repo_id: str, hf_token: str | None) -> str | None:
     return info["sha"] if info else None
 
 
+def _metric_catch_all_ids(registry_root: Path) -> frozenset:
+    """Metric ids the registry flags as no-information buckets
+    (`metadata: {"catch_all": true}` in canonical_metrics). Consumed by the
+    structured metric-id resolution UDF: a catch-all segment hit defers to
+    the description path instead of winning."""
+    import json
+
+    import pandas as pd
+
+    path = Path(registry_root) / "canonical_metrics.parquet"
+    if not path.exists():
+        return frozenset()
+    df = pd.read_parquet(path, columns=["id", "metadata"])
+    ids = set()
+    for mid, meta in zip(df["id"], df["metadata"]):
+        try:
+            if isinstance(meta, str) and meta and json.loads(meta).get("catch_all"):
+                ids.add(mid)
+        except (ValueError, AttributeError):
+            continue
+    return frozenset(ids)
+
+
 def preflight(
     eee_root: Path | None, registry_root: Path | None, cards_root: Path | None
 ) -> None:
@@ -252,7 +275,15 @@ def run(
     from eval_entity_resolver import Resolver
 
     resolver = Resolver(alias_store)
-    register_udfs(con, resolver)
+    metric_catch_all_ids = _metric_catch_all_ids(registry_root)
+    if not metric_catch_all_ids:
+        log.warning(
+            "structured metric-id resolution DISABLED: registry data at %s "
+            "carries no catch_all metric flags (pre-catch-all revision?). "
+            "Metric resolution falls back to description extraction only.",
+            registry_root,
+        )
+    register_udfs(con, resolver, metric_catch_all_ids)
 
     # Restore cached prior outputs when starting mid-pipeline. Each table
     # gets DROP-CREATE'd from its parquet so the connection has the same

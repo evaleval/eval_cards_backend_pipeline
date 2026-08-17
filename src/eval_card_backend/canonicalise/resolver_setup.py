@@ -12,7 +12,7 @@ from eval_card_backend import slugs
 from eval_card_backend.canonicalise import evalcard_tags, udfs
 
 
-def register_udfs(con, resolver) -> None:
+def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) -> None:
     (
         resolve_canonical_id_py,
         resolve_strategy_py,
@@ -20,7 +20,8 @@ def register_udfs(con, resolver) -> None:
         resolve_inference_platform_py,
         resolve_resolution_source_py,
         resolve_resolution_granularity_py,
-    ) = udfs.make_resolver_udfs(resolver)
+        resolve_structured_metric_id_py,
+    ) = udfs.make_resolver_udfs(resolver, metric_catch_all_ids)
 
     con.create_function(
         "resolve_canonical_id", resolve_canonical_id_py,
@@ -53,6 +54,14 @@ def register_udfs(con, resolver) -> None:
     con.create_function(
         "resolve_resolution_granularity", resolve_resolution_granularity_py,
         ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    # Structured metric-id pre-step: positionless registry-membership
+    # resolution over the namespaced metric_config.metric_id segments,
+    # consulted before the extract_metric flatten.
+    con.create_function(
+        "resolve_structured_metric_id", resolve_structured_metric_id_py,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
         null_handling="special",
     )
     con.create_function(
