@@ -24,8 +24,8 @@ env:
   # these SHAs are bumped deliberately. Pinned to snapshot last validated
   # on: 2026-08-13. To accept new upstream data, bump the SHA (or remove
   # the var to track latest HEAD).
-  # Prev pin: 7f8a40b0aa6b3d49f041a06bd25ef139948a160e
-  EEE_REVISION: 4fca25c96a4c1015ae662fcd343fefad9951ea06
+  # Prev pin: 4fca25c96a4c1015ae662fcd343fefad9951ea06
+  EEE_REVISION: 7e54eea02b85eb116c132b3efc444f9e0ed14ff6
   # Prev pin: f156c76979ad4ba12f2e8ac4c2f0e03302ec01bf
   ENTITY_REGISTRY_REVISION: 0588632449039a9f61f7983d7f2065b918a9e584
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
