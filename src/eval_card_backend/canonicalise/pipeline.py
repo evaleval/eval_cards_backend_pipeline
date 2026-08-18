@@ -61,11 +61,17 @@ from eval_card_backend.sources import benchmark_cards, eee, registry as registry
 log = logging.getLogger(__name__)
 
 
-def _hf_dataset_snapshot(repo_id: str, hf_token: str | None) -> dict | None:
+def _hf_dataset_snapshot(
+    repo_id: str, hf_token: str | None, revision: str | None = None
+) -> dict | None:
     """Return ``{sha, last_modified}`` for an HF dataset repo, or None on
     failure. Used to stamp every snapshot with the upstream revision pins
     so consumers can answer "is this run consuming stale registry data?"
     without re-querying HF after the fact.
+
+    ``revision`` must be the same pin the source was downloaded at: querying
+    HEAD here while the download honoured an older pin stamps a revision the
+    run never consumed. None = HEAD (unpinned sources).
 
     `last_modified` is ISO-8601 (HF's API serialises ``datetime`` → str
     when it goes through the JSON path; we canonicalise here).
@@ -74,7 +80,7 @@ def _hf_dataset_snapshot(repo_id: str, hf_token: str | None) -> dict | None:
         from huggingface_hub import HfApi
 
         api = HfApi(token=hf_token)
-        info = api.dataset_info(repo_id, token=hf_token)
+        info = api.dataset_info(repo_id, revision=revision, token=hf_token)
         last_modified = getattr(info, "last_modified", None)
         if last_modified is not None and not isinstance(last_modified, str):
             # `huggingface_hub` returns a tz-aware datetime; ISO-8601 it
@@ -607,12 +613,16 @@ def _build_snapshot_meta(
     # Single HTTP call per upstream — captures both sha and last_modified
     # so manifest.json can surface "registry parquet was last refreshed
     # at <ts>; this snapshot's run consumed it" without a follow-up query.
-    eee_info = _hf_dataset_snapshot(EEE_DATASET_REPO, settings.hf_token)
+    eee_info = _hf_dataset_snapshot(
+        EEE_DATASET_REPO, settings.hf_token, revision=settings.eee_revision
+    )
     registry_info = _hf_dataset_snapshot(
-        ENTITY_REGISTRY_DATASET_REPO, settings.hf_token
+        ENTITY_REGISTRY_DATASET_REPO, settings.hf_token,
+        revision=settings.registry_revision,
     )
     cards_info = _hf_dataset_snapshot(
-        BENCHMARK_METADATA_DATASET_REPO, settings.hf_token
+        BENCHMARK_METADATA_DATASET_REPO, settings.hf_token,
+        revision=settings.benchmark_metadata_revision,
     )
 
     return {
