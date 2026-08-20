@@ -107,6 +107,7 @@ def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
             "comparison_index":  "comparison-index.json",
             "benchmark_index":   "benchmark_index.json",
             "organizations":     "organizations.json",
+            "collections":       "collections.json",
         },
     }
     path = out_dir / "manifest.json"
@@ -646,6 +647,56 @@ def write_organizations(con, out_dir: Path, snapshot_meta: dict) -> Path:
     }
     path = out_dir / "organizations.json"
     path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# collections.json
+# ---------------------------------------------------------------------------
+
+
+def write_collections(con, out_dir: Path, snapshot_meta: dict) -> Path:
+    """collections.json — the collection registry sidecar (collections-spec
+    curated entries from `collections_curated.yaml` plus one
+    auto-generated stub per observed raw key that no curated entry absorbs.
+    Stubs keep the raw `source_name` as display name (a standing decision — internal-
+    only in v1; curation is incremental) and carry `kind: "unknown"` (no
+    kind-inference heuristics).
+
+    The payload is the bare id→entry mapping the spec fixes — consumers key
+    into it directly with a row's `collection_id`.
+    """
+    from eval_card_backend.sources import collections as collections_src
+
+    curated = collections_src.load_curated()
+    payload: dict[str, dict] = {}
+    for cid, entry in curated.items():
+        clean = {k: v for k, v in entry.items() if not k.startswith("_")}
+        clean["curated"] = True
+        payload[cid] = clean
+
+    if _table_exists(con, "collection_keys"):
+        rows = con.execute(
+            """
+            SELECT collection_id, MAX(display_source_name), SUM(n_rows)
+            FROM collection_keys
+            GROUP BY collection_id
+            ORDER BY collection_id
+            """
+        ).fetchall()
+        for cid, display_source_name, _n in rows:
+            if cid in payload:
+                continue
+            payload[cid] = {
+                "display_name": display_source_name or cid,
+                "kind": "unknown",
+                "curated": False,
+            }
+
+    path = out_dir / "collections.json"
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=_json_default)
+    )
     return path
 
 
@@ -2058,12 +2109,15 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
     ?? continue`), so this artifact's keyset must cover every evaluation_id
     in `eval_results_view`.
 
-    `eval_results_view` already collapses fact rows to one row per
-    `(model_key, benchmark_id, metric_id)` triple — the legacy producer's
-    submission-tail logic doesn't apply, so every leaderboard row carries
-    `submission_count=1, submission_axis="default"`. If/when the view layer
-    starts preserving multiple submissions per triple, this is the single
-    place that needs to learn about it.
+    `eval_results_view` carries one row per `(model_key, benchmark_id,
+    metric_id, protocol_condition)` — protocol-varied collections
+    (collections spec) surface several rows per triple. This builder is
+    the designated submission-axis hook: it applies the answer-feedback
+    exclusion predicate, then collapses the remaining protocol points to one
+    representative per (model, benchmark, metric) — best score in the
+    metric's direction — carrying the collapsed count as
+    `submission_count` with `submission_axis="protocol"`. Ordinary rows
+    keep `submission_count=1, submission_axis="default"`.
     """
     # `metric_kind` is per-metric within a benchmark; pre-aggregate from
     # fact_results once rather than carry it on every cell row. Mirrors the
@@ -2110,7 +2164,14 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             mv.model_group_id AS model_family_id,
             mv.model_family_name,
             mv.developer,
-            mk.metric_kind
+            mk.metric_kind,
+            -- Protocol collapse bookkeeping (submission-axis hook): how
+            -- many non-excluded protocol points this representative row
+            -- stands for.
+            CAST(COUNT(*) OVER (
+                PARTITION BY erv.evaluation_id, erv.metric_summary_id,
+                             erv.model_route_id
+            ) AS INTEGER) AS n_protocol_points
         FROM eval_results_view erv
         -- Join on model_key (root-grain identity) so unresolved models
         -- still pick up models_view entries via the raw fallback.
@@ -2125,6 +2186,21 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
           AND erv.evaluation_id     IS NOT NULL
           AND erv.metric_summary_id IS NOT NULL
           AND erv.model_route_id    IS NOT NULL
+          -- collections-spec answer-feedback rows are excluded from
+          -- this precomputed cross-benchmark artifact outright.
+          AND COALESCE(json_extract_string(erv.protocol_condition, '$.feedback'),
+                       'none') <> 'answer_feedback'
+        -- Collapse remaining protocol points to one representative per
+        -- (eval, metric, model): best score in the metric's direction,
+        -- protocol JSON as the deterministic tiebreak.
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY erv.evaluation_id, erv.metric_summary_id,
+                         erv.model_route_id
+            ORDER BY
+                CASE WHEN COALESCE(erv.lower_is_better, FALSE)
+                     THEN erv.score ELSE -erv.score END ASC,
+                COALESCE(erv.protocol_condition, '') ASC
+        ) = 1
         """
     ).fetchall()
     cols = [d[0] for d in con.description]
@@ -2218,8 +2294,12 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                 "scale_conversion":  rec["scale_conversion"],
                 "rank":              position,
                 "total":             total,
-                "submission_count":  1,
-                "submission_axis":   "default",
+                # Protocol-varied cells (collections spec): this cell
+                # is the best of `submission_count` protocol points.
+                "submission_count":  int(rec["n_protocol_points"] or 1),
+                "submission_axis":   "protocol"
+                                     if (rec["n_protocol_points"] or 1) > 1
+                                     else "default",
                 "temperature":       rec["temperature"],
                 "max_tokens":        rec["max_tokens"],
             })
@@ -2229,8 +2309,10 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                 "scale_conversion": rec["scale_conversion"],
                 "rank":             position,
                 "total":            total,
-                "submission_count": 1,
-                "submission_axis":  "default",
+                "submission_count": int(rec["n_protocol_points"] or 1),
+                "submission_axis":  "protocol"
+                                    if (rec["n_protocol_points"] or 1) > 1
+                                    else "default",
                 "temperature":      rec["temperature"],
                 "max_tokens":       rec["max_tokens"],
             }
@@ -2329,13 +2411,18 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
               AND r.score_canonical IS NOT NULL
               AND r.model_route_id IS NOT NULL
               AND r.scale_conversion != 'flagged'
+              -- collections-spec answer-feedback rows never seed a
+              -- merged best-score cell.
+              AND COALESCE(json_extract_string(r.protocol_condition, '$.feedback'),
+                           'none') <> 'answer_feedback'
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY m.evaluation_id, r.model_route_id
                 ORDER BY
                     CASE WHEN r.scale_conversion = 'no_bounds' THEN 1 ELSE 0 END ASC,
                     CASE WHEN m.lower_is_better
                          THEN r.score_canonical ELSE -r.score_canonical END ASC,
-                    r.composite_slug ASC
+                    r.composite_slug ASC,
+                    COALESCE(r.protocol_condition, '') ASC
             ) = 1
             """
         ).fetchall()

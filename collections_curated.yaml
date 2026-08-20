@@ -1,0 +1,57 @@
+# Curated collection entries (see notes/collections-spec.md).
+#
+# A collection is the set of records submitted under one
+# (source_organization_name, source_name) pair; auto-generated stubs cover
+# the long tail, and this file holds the curated overrides. Each entry's
+# key is the curated collection_id; `merge_raw_keys` lists the raw-derived
+# ids (slug(org)/slug(source_name)) that fold into it. Every entry and
+# every merge_raw_keys member must match ≥1 observed raw key on a full
+# canonicalise run, or the build fails (curated-entry detach guard).
+#
+# `protocol_condition` keys are free per-collection, typed by
+# `protocol_axes` — EXCEPT the reserved `feedback` key
+# (none | answer_feedback | unknown), REQUIRED for any collection whose
+# runs receive correctness signals: the view layer's rollup exclusions
+# filter on it by name.
+
+uk-aisi-inference-scaling:
+  display_name: AISI inference-scaling study
+  kind: paper_study
+  url: https://arxiv.org/abs/2606.17930
+  curated: true
+  merge_raw_keys:
+    # Which spelling is observed depends on the EEE revision: at the
+    # current pin ALL 733 records say "Initiative" (the Institute rename
+    # sweep landed after it); post-rename revisions flip to Institute
+    # (+1 straggler Initiative record the sweep missed, PR #205/#206).
+    # Keep both until a pin lands where one side has fully disappeared,
+    # then drop the dead key (unobserved keys are warned per-run).
+    - uk-ai-security-institute/how-inference-compute-shapes-frontier-llm-evaluation
+    - uk-ai-security-initiative/how-inference-compute-shapes-frontier-llm-evaluation
+  protocol_axes:
+    - {key: scaffold, type: categorical, values: [S-adaptive]}
+    - {key: compaction, type: boolean}
+    - {key: feedback, type: categorical, values: [none, answer_feedback, unknown]}
+    - {key: token_limit, type: int, unit: tokens}
+    - {key: reasoning_tokens, type: int, unit: tokens}
+    - {key: reasoning_effort, type: categorical, values: [high, xhigh]}
+  outcome_type:
+    hle: binary
+    terminalbench: binary
+    swebenchpro: binary
+    frontiermath: binary
+    healthbench: graded
+  # Per-benchmark score semantics (v4 — measured against the upload's own
+  # summaries; the extractor proves each reading per run by recomputing
+  # them). `trajectory_outcome`: which per-attempt field is the outcome
+  # (null = none exists upstream). `aggregate`: how the headline result is
+  # computed. `metric`: what it is reported AS — healthbench is a
+  # different measurement (rubric score) and stays its own metric, never
+  # blended with accuracy.
+  score_semantics:
+    hle:          {metric: accuracy, trajectory_outcome: score, aggregate: task_mean_score}
+    terminalbench: {metric: accuracy, trajectory_outcome: score, aggregate: task_mean_score}
+    swebenchpro:  {metric: accuracy, trajectory_outcome: score, aggregate: task_mean_score}
+    frontiermath: {metric: accuracy, trajectory_outcome: is_correct, aggregate: task_mean_score}
+    healthbench:  {metric: healthbench_score, trajectory_outcome: last_submission_score, aggregate: record_summary_mean}
+  has_trajectories: true

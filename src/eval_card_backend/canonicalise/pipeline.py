@@ -56,7 +56,12 @@ from eval_card_backend.signals.setup import (
     log_json_coerce_summary,
     reset_json_coerce_counter,
 )
-from eval_card_backend.sources import benchmark_cards, eee, registry as registry_src
+from eval_card_backend.sources import (
+    benchmark_cards,
+    collections as collections_src,
+    eee,
+    registry as registry_src,
+)
 
 log = logging.getLogger(__name__)
 
@@ -302,6 +307,14 @@ def run(
             from_stage, len(restored), cache.dir, restored,
         )
 
+        # Guard: a cache written before the collection adapter existed
+        # restores fragment-laden exploded tables with the collection
+        # tables silently missing — fail loudly rather than republish the
+        # fragments. Only applies when the restored slice includes the
+        # adapter's stage (B); a from-stage B run re-runs the adapter.
+        if STAGE_ORDER.index(from_stage) > STAGE_ORDER.index("B"):
+            collections_src.assert_cache_has_collections(con)
+
         # The composite_config_map cache is one of stage A's outputs. A 0-row
         # restoration means a prior run wrote an empty map (e.g. taxonomy
         # seed dir was missing) — and silently restoring it now would
@@ -366,12 +379,29 @@ def run(
                     "real EEE-supplied ids; downstream fact_id is no longer 1:1.",
                     n_synth_collisions,
                 )
+            # Collection adapters (collections spec): drop member
+            # fragment rows and inject the vendored synthetic results
+            # before Stage C so they flow through resolution, folds, and
+            # hotfixes like any upstream row. Part of Stage B so the
+            # cached `results_exploded` is post-adapter.
+            collections_src.apply_vendor_collections(
+                con, eee_root=eee_root, eee_revision=settings.eee_revision,
+            )
         elif letter == "C":
             log.info("Stage C: resolving identities …")
             stages.stage_c_resolve_identities(con)
+            # Leak + new-record guard: zero surviving non-synthetic
+            # rows may match a registered collection's study source_name.
+            collections_src.assert_no_member_leak(con)
         elif letter == "D":
             log.info("Stage D: flattening + joining dims …")
-            stages.stage_d_join_dims_and_flatten(con)
+            # Curated-collection detach assertion is strict only on full
+            # runs; a --configs/--config-limit subset legitimately omits a
+            # collection's configs.
+            stages.stage_d_join_dims_and_flatten(
+                con,
+                strict_collections=(configs is None and config_limit is None),
+            )
         elif letter == "E":
             stage_e_stats = stages.stage_e_per_row_signals(con)
             log.info(
@@ -522,9 +552,11 @@ def run(
         sidecars.write_benchmark_index(con, out_dir, meta)
         sidecars.write_peer_ranks(con, out_dir, meta)
         sidecars.write_organizations(con, out_dir, meta)
+        sidecars.write_collections(con, out_dir, meta)
         log.info(
             "Stage J: wrote sidecars (manifest, headline, hierarchy, "
-            "comparison-index, benchmark_index, peer-ranks, organizations) to %s",
+            "comparison-index, benchmark_index, peer-ranks, organizations, "
+            "collections) to %s",
             out_dir,
         )
 
@@ -607,7 +639,7 @@ def _build_snapshot_meta(
         ]
         sidecars = [
             "manifest.json", "headline.json", "hierarchy.json",
-            "benchmark_index.json", "peer-ranks.json",
+            "benchmark_index.json", "peer-ranks.json", "collections.json",
         ]
 
     # Single HTTP call per upstream — captures both sha and last_modified

@@ -40,9 +40,18 @@ STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
         "family_membership",
         "slice_promotions",
     ),
-    "B": ("results_exploded",),
+    "B": (
+        "results_exploded",
+        # Collection-adapter outputs (collections spec): created empty
+        # when no vendored collection applies, so the cache shape is stable.
+        "collection_member_ids",
+        "collection_protocol_map",
+        "collection_merge_map",
+        "collection_study_slugs",
+        "collection_trajectories_raw",
+    ),
     "C": ("results_resolved",),
-    "D": ("fact_results_staging",),
+    "D": ("fact_results_staging", "collection_keys"),
     "E": ("fact_results_signaled",),
     "F": ("fact_results",),
     "G": ("benchmarks", "composites", "families", "models"),

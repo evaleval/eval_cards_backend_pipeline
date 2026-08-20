@@ -28,9 +28,29 @@ def _taxonomy_seed_stub(tmp_path_factory) -> Path:
     return seed_dir
 
 
+@pytest.fixture(scope="session")
+def _collections_stub(tmp_path_factory) -> Path:
+    """Empty curated-collections file + empty vendor dir so tests stay
+    hermetic: without these, pipeline runs would load the repo's real
+    `collections_curated.yaml` (whose curated-match assertion expects the
+    production corpus) and the real `vendor/collections/` extracts."""
+    root = tmp_path_factory.mktemp("collections_stub")
+    (root / "collections_curated.yaml").write_text("")
+    (root / "vendor_collections").mkdir()
+    return root
+
+
 @pytest.fixture(autouse=True)
-def _set_taxonomy_seed_env(monkeypatch, _taxonomy_seed_stub) -> None:
+def _set_taxonomy_seed_env(monkeypatch, _taxonomy_seed_stub, _collections_stub) -> None:
     monkeypatch.setenv("EVALCARD_REGISTRY_SEED_DIR", str(_taxonomy_seed_stub))
+    monkeypatch.setenv(
+        "COLLECTIONS_CURATED_PATH",
+        str(_collections_stub / "collections_curated.yaml"),
+    )
+    monkeypatch.setenv(
+        "COLLECTIONS_VENDOR_DIR",
+        str(_collections_stub / "vendor_collections"),
+    )
     # Tests run against local fixtures and must stay hermetic. CI pins the upstream
     # HF dataset revisions via env vars; if those leak into Settings.from_env(),
     # ensure_snapshot treats a fixture dir (which has no `.pinned_revision` marker)

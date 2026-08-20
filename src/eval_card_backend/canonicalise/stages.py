@@ -30,7 +30,22 @@ from eval_card_backend.signals.reproducibility import (
     BASE_REPRODUCIBILITY_FIELDS,
 )
 from eval_card_backend.config import EEE_DATASET_REPO
+from eval_card_backend.sources import collections as collections_src
 from eval_card_backend.sources.registry import read_parquet_arg
+
+
+def protocol_exclusion_sql(col: str = "protocol_condition") -> str:
+    """Answer-feedback exclusion predicate, NULL-safe canonical form.
+
+    Used verbatim at every scalar-rollup site. A bare
+    `feedback != 'answer_feedback'` would be WRONG: the extraction is NULL
+    for every ordinary row and `NULL != x` is NULL, which would drop ALL
+    ordinary rows from every pool.
+    """
+    return (
+        f"COALESCE(json_extract_string({col}, '$.feedback'), 'none') "
+        f"<> 'answer_feedback'"
+    )
 
 
 def _build_repro_missing_fields_sql() -> str:
@@ -835,8 +850,42 @@ def stage_b_explode_evaluation_results(con) -> int:
         return 0
 
     con.execute(
+        f"CREATE TABLE results_exploded AS {explode_select_sql('eee_raw')}"
+    )
+
+    con.execute(
         """
-        CREATE TABLE results_exploded AS
+        ALTER TABLE results_exploded
+        ADD COLUMN evaluation_result_id VARCHAR
+        """
+    )
+    con.execute(
+        """
+        UPDATE results_exploded
+        SET evaluation_result_id = COALESCE(
+            evaluation_result_id_raw,
+            evaluation_id || '#' || result_idx::VARCHAR
+        )
+        """
+    )
+    con.execute("ALTER TABLE results_exploded ADD COLUMN fact_id VARCHAR")
+    con.execute(
+        "UPDATE results_exploded "
+        "SET fact_id = fact_id_udf(evaluation_id, CAST(result_idx AS INTEGER))"
+    )
+
+    return con.execute("SELECT count(*) FROM results_exploded").fetchone()[0]
+
+
+def explode_select_sql(src: str) -> str:
+    """The Stage B explode SELECT, parameterised on the source table.
+
+    Shared with the collection extractors
+    (`scripts/collections/*.py`), which run the same explode over their
+    synthetic EEE-shaped records so the vendored `results.parquet` matches
+    `results_exploded` column-for-column (collections spec).
+    """
+    return f"""
         SELECT
             e.evaluation_id,
             e.retrieved_timestamp,
@@ -869,35 +918,11 @@ def stage_b_explode_evaluation_results(con) -> int:
             -- record-level field when the source disagrees across
             -- evaluation_results[] entries.
             e.evaluation_results[idx_1based].evaluation_timestamp AS result_evaluation_timestamp
-        FROM eee_raw e,
+        FROM {src} e,
              range(1, len(e.evaluation_results) + 1) AS t(idx_1based)
         WHERE e.evaluation_results IS NOT NULL
           AND len(e.evaluation_results) > 0
-        """
-    )
-
-    con.execute(
-        """
-        ALTER TABLE results_exploded
-        ADD COLUMN evaluation_result_id VARCHAR
-        """
-    )
-    con.execute(
-        """
-        UPDATE results_exploded
-        SET evaluation_result_id = COALESCE(
-            evaluation_result_id_raw,
-            evaluation_id || '#' || result_idx::VARCHAR
-        )
-        """
-    )
-    con.execute("ALTER TABLE results_exploded ADD COLUMN fact_id VARCHAR")
-    con.execute(
-        "UPDATE results_exploded "
-        "SET fact_id = fact_id_udf(evaluation_id, CAST(result_idx AS INTEGER))"
-    )
-
-    return con.execute("SELECT count(*) FROM results_exploded").fetchone()[0]
+    """
 
 
 def stage_b_count_synth_id_collisions(con) -> int:
@@ -1046,6 +1071,22 @@ def stage_c_resolve_identities(con) -> None:
 
     _apply_slice_key(con)
 
+    # Collection-synthetic rows are exempt from slice-key minting:
+    # they carry the clean benchmark name as evaluation_name, but other
+    # sources' raw strings under the same benchmark would otherwise turn
+    # them into pseudo-slices. Discriminator: manifest membership — after
+    # the Stage B drop, every surviving row with a member evaluation_id is
+    # synthetic.
+    collections_src.create_collection_tables(con)
+    con.execute(
+        """
+        UPDATE results_resolved
+        SET slice_key = NULL, slice_name = NULL
+        WHERE evaluation_id IN
+              (SELECT evaluation_id FROM collection_member_ids)
+        """
+    )
+
 
 def _apply_metric_folds(con) -> None:
     """Apply the registry's curated per-benchmark metric naming folds.
@@ -1122,7 +1163,7 @@ def _apply_slice_key(con) -> None:
 # ---------------------------------------------------------------------------
 
 
-def stage_d_join_dims_and_flatten(con) -> None:
+def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> None:
     """Flatten + JOIN.
 
     Reads typed STRUCT fields directly via dot notation. The metric-meta
@@ -1141,6 +1182,10 @@ def stage_d_join_dims_and_flatten(con) -> None:
     # recur with a consistent value across records; bool_or collapses it to one
     # row so the LEFT JOIN below can't fan out facts). Missing file -> empty view
     # -> every row defaults to false, so the pipeline still runs without it.
+    # Collection tables are Stage B outputs; create empty stand-ins when a
+    # pre-collections cache (or a test harness) skipped that step.
+    collections_src.create_collection_tables(con)
+
     validated_path = Path(__file__).resolve().parents[3] / "vendor" / "is_verified_evaluator.parquet"
     if validated_path.exists():
         con.execute(
@@ -1158,8 +1203,14 @@ def stage_d_join_dims_and_flatten(con) -> None:
             "SELECT NULL::VARCHAR AS evaluation_id, FALSE AS is_verified_evaluator WHERE FALSE"
         )
 
+    collection_raw_key = collections_src.collection_raw_key_sql(
+        "rr.source_metadata.source_organization_name",
+        "rr.source_metadata.source_name",
+        "rr.eval_library.name",
+        "rr.source_config",
+    )
     con.execute(
-        """
+        f"""
         CREATE TABLE fact_results_staging AS
         WITH joined AS (
             -- LEFT JOIN dims, then call the metric-meta hotfix UDF once per row
@@ -1218,7 +1269,13 @@ def stage_d_join_dims_and_flatten(con) -> None:
                     rr.metric_config.metric_name,
                     cmet.score_type
                 )                                                      AS _meta,
-                co_org.display_name                                    AS org_display_canonical
+                co_org.display_name                                    AS org_display_canonical,
+                -- Raw collection key: slug(org)/slug(source_name)
+                -- from the raw upstream fields — registry-free so the id
+                -- can't drift across registry pins. Guards: harness bleed
+                -- keys on source_config; missing parts fall back to
+                -- unknown/unlabeled.
+                {collection_raw_key} AS _collection_raw_key
             FROM results_resolved rr
             LEFT JOIN canonical_benchmarks cb       ON cb.id = rr.benchmark_id
             LEFT JOIN canonical_models     cm_model ON cm_model.id = rr.model_id
@@ -1397,10 +1454,79 @@ def stage_d_join_dims_and_flatten(con) -> None:
             j.detailed_evaluation_results.hash_algorithm                                 AS instance_hash_algorithm,
             CAST(j.detailed_evaluation_results.total_rows AS INTEGER)                    AS instance_rows,
 
+            -- Collection tagging: curated merge folds the raw key
+            -- when declared; every row carries a non-NULL collection_id.
+            COALESCE(cmm.collection_id, j._collection_raw_key)                           AS collection_id,
+            -- Protocol point: canonical sorted-key JSON for
+            -- collection-adapter synthetic rows, NULL for ordinary rows.
+            cpm.protocol_condition                                                       AS protocol_condition,
+
             j._card_payload AS card_payload
         FROM joined j
         LEFT JOIN is_verified_evaluator ev ON ev.evaluation_id = j.evaluation_id
+        LEFT JOIN collection_merge_map cmm ON cmm.raw_key = j._collection_raw_key
+        LEFT JOIN collection_protocol_map cpm
+               ON cpm.evaluation_id = j.evaluation_id
+              AND cpm.result_idx    = j.result_idx
         """
+    )
+
+    _build_collection_keys(con, collection_raw_key, strict_collections)
+
+
+def _build_collection_keys(
+    con, collection_raw_key: str, strict_collections: bool
+) -> None:
+    """Materialise `collection_keys` — one row per observed raw collection
+    key with its post-merge collection_id, a representative source_name
+    (stub display names, a standing decision), and a record count. Feeds the
+    collections.json sidecar and the curated-match assertion.
+
+    Observation universe is RECORD grain (`eee_raw`), not the exploded
+    grain: collection membership is a record-level property, and
+    sample-carrier records (no evaluation_results — e.g. the one
+    Initiative-spelled AISI record) never produce exploded rows but must
+    still count as observing their raw key.
+    """
+    con.execute(
+        f"""
+        CREATE TABLE collection_keys AS
+        WITH keyed AS (
+            SELECT
+                {collection_raw_key}                     AS raw_key,
+                COALESCE(rr.source_metadata.source_name,
+                         rr.source_config)               AS src_name
+            FROM eee_raw rr
+        ),
+        name_pick AS (
+            -- Most-frequent source_name per raw key, tie-broken
+            -- lexicographically, so stub display names are byte-stable.
+            SELECT raw_key, src_name
+            FROM (
+                SELECT raw_key, src_name,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY raw_key
+                           ORDER BY COUNT(*) DESC, src_name ASC
+                       ) AS _rk
+                FROM keyed
+                WHERE src_name IS NOT NULL
+                GROUP BY raw_key, src_name
+            )
+            WHERE _rk = 1
+        )
+        SELECT
+            k.raw_key,
+            COALESCE(m.collection_id, k.raw_key) AS collection_id,
+            np.src_name                          AS display_source_name,
+            COUNT(*)                             AS n_rows
+        FROM keyed k
+        LEFT JOIN collection_merge_map m ON m.raw_key = k.raw_key
+        LEFT JOIN name_pick np           ON np.raw_key = k.raw_key
+        GROUP BY 1, 2, 3
+        """
+    )
+    collections_src.assert_curated_keys_observed(
+        con, collections_src.load_curated(), strict=strict_collections
     )
 
 
@@ -1709,8 +1835,13 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
         """
         CREATE TABLE fact_results_grouped_annotated AS
         WITH group_payloads AS (
+            -- protocol_condition joins the comparability key:
+            -- differing protocol points are distinct variants, displayed
+            -- unfolded, never averaged into one divergence pool. NULL
+            -- (ordinary rows) groups as one, exactly as slice_key does.
             SELECT
                 model_aggregation_key, benchmark_key, slice_key, metric_key,
+                protocol_condition,
                 -- ORDER BY fact_id is load-bearing for determinism: the
                 -- comparability UDFs that consume group_rows record
                 -- `differing_setup_fields` in first-seen order and build
@@ -1734,11 +1865,12 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
                     max_score   := MAX(max_score)   FILTER (WHERE max_score   IS NOT NULL)
                 ) AS metric_config
             FROM fact_results_grouped
-            GROUP BY 1, 2, 3, 4
+            GROUP BY 1, 2, 3, 4, 5
         ),
         group_annotations AS (
             SELECT
                 model_aggregation_key, benchmark_key, slice_key, metric_key,
+                protocol_condition,
                 compute_variant_divergence_udf(group_rows, metric_config)      AS variant,
                 compute_cross_party_divergence_udf(group_rows, metric_config)  AS cross_party
             FROM group_payloads
@@ -1752,7 +1884,8 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
             md5(md5(fr.model_aggregation_key)
                 || md5(fr.benchmark_key)
                 || md5(COALESCE(fr.slice_key, ''))
-                || md5(fr.metric_key))
+                || md5(fr.metric_key)
+                || md5(COALESCE(fr.protocol_condition, '')))
               AS comparability_group_id,
             ga.variant.has_variant_divergence       AS has_variant_divergence,
             ga.variant.divergence_magnitude         AS variant_divergence_magnitude,
@@ -1773,6 +1906,7 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
          AND ga.benchmark_key         = fr.benchmark_key
          AND ga.slice_key             IS NOT DISTINCT FROM fr.slice_key
          AND ga.metric_key            = fr.metric_key
+         AND ga.protocol_condition    IS NOT DISTINCT FROM fr.protocol_condition
         """
     )
 
@@ -2623,6 +2757,57 @@ def stage_i_emit_warehouse_parquets(con, out_dir: Path, snapshot_id: str) -> Non
         """
     )
 
+    # collection_trajectories.parquet: vendored trajectories joined
+    # to resolved ids — the collection dashboard's data source. Only emitted
+    # when a collection adapter actually loaded trajectories this run.
+    collections_src.create_collection_tables(con)
+    n_traj = con.execute(
+        "SELECT count(*) FROM collection_trajectories_raw"
+    ).fetchone()[0]
+    if n_traj:
+        path = out_dir / "collection_trajectories.parquet"
+        con.execute(
+            f"""
+            COPY (
+                SELECT
+                    TIMESTAMP '{sid}' AS snapshot_id,
+                    t.*,
+                    ids.model_id,
+                    ids.benchmark_id,
+                    -- canonical-or-raw keys, same convention as the rest
+                    -- of the warehouse: never NULL, fall back to the raw
+                    -- string when the registry has no canonical entry.
+                    COALESCE(ids.model_key, t.model_raw)         AS model_key,
+                    COALESCE(ids.benchmark_key, t.benchmark_raw) AS benchmark_key
+                FROM collection_trajectories_raw t
+                LEFT JOIN (
+                    -- (collection, model_raw, config) → resolved ids, read
+                    -- off the collection's synthetic fact rows so the
+                    -- trajectories inherit exactly the resolution the
+                    -- warehouse shipped. benchmark_raw on trajectories is
+                    -- the benchmark config name by extractor contract.
+                    SELECT collection_id, model_raw, source_config,
+                           MAX(model_id)      AS model_id,
+                           MAX(benchmark_id)  AS benchmark_id,
+                           MAX(model_key)     AS model_key,
+                           MAX(benchmark_key) AS benchmark_key
+                    FROM fact_results
+                    WHERE evaluation_id IN
+                          (SELECT evaluation_id FROM collection_member_ids)
+                    GROUP BY 1, 2, 3
+                ) ids
+                  ON ids.collection_id = t.collection_id
+                 AND ids.model_raw     = t.model_raw
+                 AND ids.source_config = t.benchmark_raw
+                ORDER BY t.collection_id, t.benchmark_raw, t.model_raw,
+                         t.protocol_condition, t.task_id, t.trajectory_idx
+                         NULLS LAST
+            )
+            TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+            """
+        )
+        log.info("Stage I: emitted collection_trajectories.parquet (%d rows)", n_traj)
+
 
 # ---------------------------------------------------------------------------
 # Stage J — view-layer materialisation
@@ -2743,8 +2928,13 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
               AND composite_slug        IS NOT NULL
         ),
         tri_agg AS (
+            -- protocol_condition joins the grouping key: one view
+            -- row per protocol point. NULL-condition rows (all ordinary
+            -- sources) group exactly as before — DuckDB GROUP BY treats
+            -- NULLs as one group.
             SELECT
                 composite_slug, model_aggregation_key, benchmark_key, metric_key,
+                protocol_condition,
                 CAST(COUNT(*) AS INTEGER) AS fact_row_count,
                 -- Median rule: prefer first-party scores; fall back to all rows.
                 COALESCE(
@@ -2806,7 +2996,8 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 BOOL_OR(has_reproducibility_gap)         AS triple_has_repro_gap,
                 ROUND(AVG(completeness_score), 12)       AS triple_avg_completeness
             FROM tris
-            GROUP BY composite_slug, model_aggregation_key, benchmark_key, metric_key
+            GROUP BY composite_slug, model_aggregation_key, benchmark_key,
+                     metric_key, protocol_condition
         ),
         tri_rep_ranked AS (
             -- Pick one representative fact row per triple.
@@ -2820,7 +3011,8 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             -- run-to-run unstable. fact_id is unique per fact row.
             SELECT *,
                 ROW_NUMBER() OVER (
-                    PARTITION BY composite_slug, model_aggregation_key, benchmark_key, metric_key
+                    PARTITION BY composite_slug, model_aggregation_key,
+                                 benchmark_key, metric_key, protocol_condition
                     ORDER BY
                         CASE WHEN score IS NULL THEN 1 ELSE 0 END ASC,
                         CASE WHEN evaluator_relationship = 'first_party' THEN 0 ELSE 1 END ASC,
@@ -2835,6 +3027,7 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
         joined AS (
             SELECT
                 ta.*,
+                tr.collection_id              AS rep_collection_id,
                 tr.evaluation_id              AS rep_evaluation_id,
                 tr.fact_id                    AS rep_fact_id,
                 tr.retrieved_timestamp        AS rep_retrieved_timestamp,
@@ -2924,7 +3117,15 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 -- Parent benchmark's display name (dim self-join below).
                 pb.display_name               AS pb_display_name
             FROM tri_agg ta
-            JOIN tri_rep tr USING (composite_slug, model_aggregation_key, benchmark_key, metric_key)
+            -- Explicit ON (not USING): protocol_condition is NULL for all
+            -- ordinary rows and USING-equality would drop them; IS NOT
+            -- DISTINCT FROM matches NULLs.
+            JOIN tri_rep tr
+              ON tr.composite_slug        = ta.composite_slug
+             AND tr.model_aggregation_key = ta.model_aggregation_key
+             AND tr.benchmark_key         = ta.benchmark_key
+             AND tr.metric_key            = ta.metric_key
+             AND tr.protocol_condition    IS NOT DISTINCT FROM ta.protocol_condition
             -- Join keys are root-grain. `models.model_key` is the
             -- transitive root id; `benchmarks.benchmark_id` and
             -- `canonical_metrics.id` are canonical ids — the LEFT JOIN
@@ -2949,32 +3150,46 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             LEFT JOIN canonical_metrics cmet_eff
                    ON cmet_eff.id = COALESCE(bmf.to_metric_id, ta.metric_key)
         ),
-        ranked AS (
-            -- Rank by score within (composite_slug, benchmark_key, metric_key),
-            -- honouring lower_is_better. NULL scores sort last and get
-            -- position=NULL. COUNT(rep_score) over the partition counts
-            -- non-NULL scores.
+        rank_classed AS (
+            -- Protocol-aware ranking policy. The ranking partition stays
+            -- (composite, benchmark_key, metric_key), but the ranked pool
+            -- (a) applies the answer-feedback exclusion predicate and
+            -- (b) keeps at most one row per (model, protocol-NULL-vs-not)
+            -- class — the best-scoring protocol point represents the
+            -- model; the other protocol rows (and every answer-feedback
+            -- row) get NULL position/percentile and are never "rank 1".
+            -- Within a class, rows with an UNKNOWN feedback arm sort after
+            -- known-clean rows: an arm we couldn't determine must not
+            -- displace a known no-feedback run as the model's ranked row.
             SELECT *,
-                CASE
-                    WHEN rep_score IS NULL THEN NULL
-                    ELSE CAST(ROW_NUMBER() OVER (
-                        PARTITION BY composite_slug, benchmark_key, metric_key
-                        ORDER BY
-                            CASE WHEN rep_score IS NULL THEN 1 ELSE 0 END ASC,
-                            CASE WHEN COALESCE(rep_lower_is_better, FALSE)
-                                 THEN rep_score
-                                 ELSE -rep_score
-                            END ASC,
-                            model_aggregation_key ASC
-                    ) AS INTEGER)
-                END AS position,
-                CAST(COUNT(rep_score) OVER (
-                    PARTITION BY composite_slug, benchmark_key, metric_key
-                ) AS INTEGER) AS total,
+                (rep_score IS NOT NULL
+                 AND {protocol_exclusion_sql("protocol_condition")})
+                    AS _excl_pass,
+                ROW_NUMBER() OVER (
+                    PARTITION BY composite_slug, benchmark_key, metric_key,
+                                 model_aggregation_key,
+                                 (protocol_condition IS NULL),
+                                 (rep_score IS NOT NULL
+                                  AND {protocol_exclusion_sql("protocol_condition")})
+                    ORDER BY
+                        CASE WHEN rep_score IS NULL THEN 1 ELSE 0 END ASC,
+                        CASE WHEN COALESCE(json_extract_string(
+                                 protocol_condition, '$.feedback'), 'none')
+                             = 'unknown' THEN 1 ELSE 0 END ASC,
+                        CASE WHEN COALESCE(rep_lower_is_better, FALSE)
+                             THEN rep_score
+                             ELSE -rep_score
+                        END ASC,
+                        COALESCE(protocol_condition, '') ASC
+                ) AS _class_rk,
                 -- Scale-suspect detection is per (source, benchmark,
                 -- effective-metric) GROUP; the group max is what tells a
                 -- percent-scaled publication apart from genuine fractions.
-                MAX(rep_score) OVER (
+                -- Answer-feedback rows are excluded from the group max so
+                -- an assisted run can't flip scale detection for the pool.
+                MAX(rep_score) FILTER (
+                    WHERE {protocol_exclusion_sql("protocol_condition")}
+                ) OVER (
                     PARTITION BY composite_slug, benchmark_key, metric_key_effective
                 ) AS eff_grp_max
             FROM joined
@@ -3028,7 +3243,56 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                         THEN 'none'
                     ELSE 'flagged'
                 END AS scale_conversion
-            FROM ranked
+            FROM rank_classed
+        ),
+        conv2 AS (
+            SELECT *,
+                CASE scale_conversion
+                    WHEN 'div100'    THEN rep_score / 100.0
+                    WHEN 'mul100'    THEN rep_score * 100.0
+                    WHEN 'curated'   THEN rep_score * eff_scale_factor
+                    WHEN 'none'      THEN rep_score
+                    WHEN 'no_bounds' THEN rep_score
+                    ELSE NULL
+                END AS _score_canonical
+            FROM conv
+        ),
+        ranked AS (
+            -- Rank the pool within (composite_slug, benchmark_key,
+            -- metric_key), honouring lower_is_better, ON THE CANONICAL
+            -- SCALE: sources within one partition can publish mixed units
+            -- (Scale SEAL hle percents next to AISI fractions) and a
+            -- raw-score rank would order a 0.625 below a 2.72(%). Rows
+            -- whose scale is 'flagged' (unplaceable on the canonical
+            -- scale) leave the pool with the other exclusions. Rows
+            -- outside the pool get position=NULL; `total` counts pool
+            -- rows only.
+            SELECT *,
+                CASE
+                    WHEN NOT (_excl_pass AND _class_rk = 1
+                              AND scale_conversion IS DISTINCT FROM 'flagged')
+                        THEN NULL
+                    ELSE CAST(ROW_NUMBER() OVER (
+                        PARTITION BY composite_slug, benchmark_key, metric_key,
+                                     (_excl_pass AND _class_rk = 1
+                                      AND scale_conversion IS DISTINCT FROM 'flagged')
+                        ORDER BY
+                            CASE WHEN _score_canonical IS NULL THEN 1 ELSE 0 END ASC,
+                            CASE WHEN COALESCE(rep_lower_is_better, FALSE)
+                                 THEN _score_canonical
+                                 ELSE -_score_canonical
+                            END ASC,
+                            model_aggregation_key ASC,
+                            COALESCE(protocol_condition, '') ASC
+                    ) AS INTEGER)
+                END AS position,
+                CAST(SUM(CASE WHEN _excl_pass AND _class_rk = 1
+                              AND scale_conversion IS DISTINCT FROM 'flagged'
+                         THEN 1 ELSE 0 END)
+                     OVER (
+                    PARTITION BY composite_slug, benchmark_key, metric_key
+                ) AS INTEGER) AS total
+            FROM conv2
         )
         SELECT
             TIMESTAMP '{sid}' AS snapshot_id,
@@ -3368,16 +3632,17 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             -- no_bounds rows pass through unconverted.
             metric_key_effective     AS metric_id_effective,
             scale_conversion,
-            CASE scale_conversion
-                WHEN 'div100'    THEN rep_score / 100.0
-                WHEN 'mul100'    THEN rep_score * 100.0
-                WHEN 'curated'   THEN rep_score * eff_scale_factor
-                WHEN 'none'      THEN rep_score
-                WHEN 'no_bounds' THEN rep_score
-                ELSE NULL
-            END                      AS score_canonical
-        FROM conv
-        ORDER BY metric_summary_id, model_key
+            _score_canonical         AS score_canonical,
+
+            -- Collections (collections spec): submission-channel tag
+            -- (representative fact row's; never NULL on fact rows) and this
+            -- row's protocol point — NULL for ordinary rows, canonical
+            -- sorted-key JSON for collection-adapter rows. One view row per
+            -- protocol point.
+            rep_collection_id        AS collection_id,
+            protocol_condition
+        FROM ranked
+        ORDER BY metric_summary_id, model_key, protocol_condition
         """
     )
 
@@ -3482,10 +3747,21 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                     list(from_json(derived_tags, '["VARCHAR"]'))
                     FILTER (WHERE derived_tags IS NOT NULL)
                 )))                                                       AS derived_tags_union,
-                CAST(COUNT(score) AS INTEGER)                             AS score_count,
-                MIN(score)                                                AS score_min,
-                MAX(score)                                                AS score_max,
-                ROUND(AVG(score), 12)                                     AS score_avg,
+                -- answer-feedback rows are excluded from the score
+                -- aggregates only (FILTER, not a pool-level WHERE — counts
+                -- and signal rates still see every row).
+                CAST(COUNT(score) FILTER (
+                    WHERE {protocol_exclusion_sql("erv.protocol_condition")}
+                ) AS INTEGER)                                             AS score_count,
+                MIN(score) FILTER (
+                    WHERE {protocol_exclusion_sql("erv.protocol_condition")}
+                )                                                         AS score_min,
+                MAX(score) FILTER (
+                    WHERE {protocol_exclusion_sql("erv.protocol_condition")}
+                )                                                         AS score_max,
+                ROUND(AVG(score) FILTER (
+                    WHERE {protocol_exclusion_sql("erv.protocol_condition")}
+                ), 12)                                                    AS score_avg,
                 CAST(SUM(CASE WHEN is_multi_source THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS multi_source_groups,
                 CAST(SUM(CASE WHEN first_party_only THEN 1 ELSE 0 END) AS INTEGER)
@@ -3554,6 +3830,8 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
              AND b.benchmark_id   = erv.benchmark_id
             WHERE erv.score IS NOT NULL
               AND erv.derived_tags IS NOT NULL
+              -- best-style rollup: answer-feedback rows never win
+              AND {protocol_exclusion_sql("erv.protocol_condition")}
         ),
         ranked_for_top AS (
             SELECT
@@ -3872,8 +4150,14 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 ANY_VALUE(erv.metric_unit)         AS metric_unit,
                 ANY_VALUE(erv.lower_is_better)     AS lower_is_better,
                 COUNT(DISTINCT erv.model_key)      AS metric_models_count,
+                -- top_score is a best-style rollup: answer-feedback rows
+                -- are excluded from the score aggregate only.
                 CASE WHEN COALESCE(ANY_VALUE(erv.lower_is_better), FALSE)
-                     THEN MIN(erv.score) ELSE MAX(erv.score) END AS top_score
+                     THEN MIN(erv.score) FILTER (
+                         WHERE {protocol_exclusion_sql("erv.protocol_condition")})
+                     ELSE MAX(erv.score) FILTER (
+                         WHERE {protocol_exclusion_sql("erv.protocol_condition")})
+                END AS top_score
             FROM eval_results_view erv
             GROUP BY 1, 2, 3
         ),
@@ -3950,9 +4234,18 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                     WHEN pt.evalcards_annotations.reproducibility_gap.populated_count
                        < pt.evalcards_annotations.reproducibility_gap.required_count
                     THEN 1 ELSE 0 END) AS INTEGER)                     AS missing_generation_config_count,
-                ROUND(AVG(pt.score), 12)                               AS avg_score,
-                MIN(pt.score)                                          AS min_score_seen,
-                MAX(pt.score)                                          AS max_score_seen,
+                -- exclusion predicate as FILTER on the score
+                -- aggregates only — NOT a pool-level WHERE, which would
+                -- also change models_count / evaluator_names / gap rates.
+                ROUND(AVG(pt.score) FILTER (
+                    WHERE {protocol_exclusion_sql("pt.protocol_condition")}
+                ), 12)                                                 AS avg_score,
+                MIN(pt.score) FILTER (
+                    WHERE {protocol_exclusion_sql("pt.protocol_condition")}
+                )                                                      AS min_score_seen,
+                MAX(pt.score) FILTER (
+                    WHERE {protocol_exclusion_sql("pt.protocol_condition")}
+                )                                                      AS max_score_seen,
                 -- top/bottom are addressable identifiers — use model_key so
                 -- unresolved models can also occupy these slots and the
                 -- downstream JOIN to `models` resolves their display name.
@@ -3961,9 +4254,13 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 -- arg_max/arg_min picking an arbitrary tied row, which
                 -- varied run-to-run); the primary key stays scoring_score.
                 arg_max(pt.model_key,
-                        struct_pack(s := pt.scoring_score, k := pt.model_key)) AS top_model_id,
+                        struct_pack(s := pt.scoring_score, k := pt.model_key))
+                    FILTER (WHERE {protocol_exclusion_sql("pt.protocol_condition")})
+                                                                       AS top_model_id,
                 arg_min(pt.model_key,
-                        struct_pack(s := pt.scoring_score, k := pt.model_key)) AS bottom_model_id,
+                        struct_pack(s := pt.scoring_score, k := pt.model_key))
+                    FILTER (WHERE {protocol_exclusion_sql("pt.protocol_condition")})
+                                                                       AS bottom_model_id,
                 ROUND(AVG(CASE WHEN pt.has_reproducibility_gap THEN 1.0 ELSE 0.0 END), 12)
                                                                        AS gap_rate,
                 CAST(SUM(CASE WHEN pt.has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
@@ -4045,6 +4342,30 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             FROM per_metric pm
             GROUP BY pm.composite_slug, pm.benchmark_id
         ),
+        leaderboard_one_per_metric AS (
+            -- Collapse protocol points to one row per (composite,
+            -- benchmark, model, metric) for the pre-pivoted leaderboard:
+            -- the values MAP is keyed by metric_id and would raise on
+            -- duplicate keys. Representative = the row the ranking policy
+            -- would rank (non-feedback first, then best score); a
+            -- feedback-only cell falls back to its best feedback row.
+            SELECT * FROM (
+                SELECT erv.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY erv.composite_slug, erv.benchmark_id,
+                                     erv.model_key, erv.metric_id
+                        ORDER BY
+                            CASE WHEN {protocol_exclusion_sql("erv.protocol_condition")}
+                                 THEN 0 ELSE 1 END ASC,
+                            CASE WHEN erv.score IS NULL THEN 1 ELSE 0 END ASC,
+                            CASE WHEN COALESCE(erv.lower_is_better, FALSE)
+                                 THEN erv.score ELSE -erv.score END ASC,
+                            COALESCE(erv.protocol_condition, '') ASC
+                    ) AS _pp_rk
+                FROM eval_results_view erv
+            )
+            WHERE _pp_rk = 1
+        ),
         leaderboard_per_model AS (
             -- One row per (composite_slug, benchmark_id, model_key)
             -- carrying its values map across all metrics on that
@@ -4063,7 +4384,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                     ARRAY_AGG(erv.score     ORDER BY erv.metric_id)
                 )                                              AS values_map,
                 CAST(COUNT(erv.score) AS INTEGER)              AS metrics_present
-            FROM eval_results_view erv
+            FROM leaderboard_one_per_metric erv
             GROUP BY 1, 2, 3
         ),
         leaderboard_rows_agg AS (
@@ -4502,10 +4823,14 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
         f"""
         CREATE OR REPLACE TABLE merged_evals_view AS
         WITH tl AS (
+            -- Each protocol point is its own observation row: rows
+            -- arrive pre-split from eval_results_view's protocol grain and
+            -- carry protocol_condition through for the best_result pool.
             SELECT r.benchmark_id, r.evaluation_id, r.composite_slug,
                    r.composite_display_name, r.family_id, r.family_display_name,
                    r.metric_id_effective, r.model_key, r.model_info,
                    r.score, r.score_canonical, r.scale_conversion,
+                   r.protocol_condition,
                    CAST(NULL AS VARCHAR) AS slice_id,
                    CAST(NULL AS VARCHAR) AS slice_display_name
             FROM eval_results_view r
@@ -4519,6 +4844,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
                    r.family_id, r.family_display_name,
                    r.metric_id_effective, r.model_key, r.model_info,
                    r.score, r.score_canonical, r.scale_conversion,
+                   r.protocol_condition,
                    r.benchmark_id AS slice_id,
                    COALESCE(cbs.display_name, r.benchmark_id)
                        AS slice_display_name
@@ -4589,7 +4915,8 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
                            -- the composite term the winning source flips
                            -- with input order between builds
                            p.model_key ASC,
-                           p.composite_slug ASC
+                           p.composite_slug ASC,
+                           COALESCE(p.protocol_condition, '') ASC
                    ) AS rk,
                    p.model_info."name" AS model_name,
                    p.model_key, p.score, p.score_canonical,
@@ -4604,6 +4931,8 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
               -- different slices compares incomparables (same rule as the
               -- comparison-index merged entries)
               AND p.grain = 'benchmark'
+              -- answer-feedback rows never win best_result
+              AND {protocol_exclusion_sql("p.protocol_condition")}
         ),
         src_page AS (
             -- MAX not ANY_VALUE: upstream carries per-row variance in
@@ -4751,7 +5080,9 @@ def stage_j_emit_view_parquets(con, out_dir: Path, snapshot_id: str) -> None:
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     for table, sort_key in [
-        ("eval_results_view", "(composite_slug, metric_summary_id, model_key)"),
+        # protocol_condition completes the sort: one view row per protocol
+        # point means (composite, metric, model) alone is no longer total.
+        ("eval_results_view", "(composite_slug, metric_summary_id, model_key, protocol_condition)"),
         ("models_view",       "(model_key)"),
         ("evals_view",        "(evaluation_id)"),
         ("merged_evals_view", "(evaluation_id)"),

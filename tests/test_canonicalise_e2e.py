@@ -280,7 +280,7 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     assert "evals_view.parquet" in snap["tables"]
     assert set(snap["sidecars"]) == {
         "manifest.json", "headline.json", "hierarchy.json",
-        "benchmark_index.json", "peer-ranks.json",
+        "benchmark_index.json", "peer-ranks.json", "collections.json",
     }
 
     # comparability_group_id is the full md5 (32 hex chars), not truncated.
