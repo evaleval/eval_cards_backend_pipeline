@@ -752,7 +752,7 @@ def write_hierarchy(con, out_dir: Path, snapshot_meta: dict) -> Path:
     hierarchy_hotfixes.group_same_bench_across_sources(family_records, curated_ids)
 
     # Systematic dedup (permanent pipeline logic). Both passes are
-    # score-gated per data-model-invariants §4 — only true echoes
+    # score-gated (notes/data-model-invariants.md) — only true echoes
     # (matching scores) are collapsed; independent cross-source
     # evaluations of the same benchmark are preserved.
     hierarchy_dedup.consolidate_dedicated_home_benchmarks(family_records, con)
@@ -903,12 +903,25 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
         if fid:
             composite_to_family[cid] = fid
 
-    # When `canonical_families.folder_aliases` is populated, map each
-    # folder alias to a composite-slug equivalent (`cyse2_interpreter_abuse`
-    # → `cyse2-interpreter-abuse`) and treat that composite as belonging
-    # to the curated family. Lets families that only specify
-    # `folder_aliases` (no `composite_keys` or `benchmark_ids`) still
-    # bucket their composites correctly.
+    # When `canonical_families.folder_aliases` is populated, treat every
+    # composite that carries rows from that folder (source_config) as
+    # belonging to the curated family. Keyed on source_config rather than
+    # a reconstructed slug because a multi-org config fans out into
+    # several partition-suffixed composites which no string transform
+    # of the folder name can reach.
+    config_to_slugs: dict[str, set[str]] = defaultdict(set)
+    fact_cols = {
+        r[1] for r in con.execute("PRAGMA table_info('fact_results')").fetchall()
+    }
+    if {"source_config", "composite_slug"} <= fact_cols:
+        for cfg, comp_slug in con.execute(
+            "SELECT DISTINCT source_config, composite_slug FROM fact_results "
+            "WHERE source_config IS NOT NULL AND composite_slug IS NOT NULL"
+        ).fetchall():
+            config_to_slugs[cfg].add(comp_slug)
+
+    # Fallback slug reconstruction for folder aliases naming a config
+    # absent from this snapshot (historical aliases stay inert but cheap).
     import re as _re
     def _folder_to_composite_slug(folder: str) -> str:
         s = folder.lower()
@@ -918,8 +931,12 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
         return s
     for fid, curated in families_curated.items():
         for folder in curated.get("folder_aliases") or []:
-            comp_slug = _folder_to_composite_slug(folder)
-            composite_to_family.setdefault(comp_slug, fid)
+            slugs = config_to_slugs.get(folder)
+            if slugs:
+                for comp_slug in sorted(slugs):
+                    composite_to_family.setdefault(comp_slug, fid)
+            else:
+                composite_to_family.setdefault(_folder_to_composite_slug(folder), fid)
 
     # --- Bucket composites by family ---
     # Family-slug aliases map a composite's own slug (what we'd emit when no

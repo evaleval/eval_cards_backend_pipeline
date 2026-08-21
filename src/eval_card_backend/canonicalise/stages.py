@@ -29,6 +29,7 @@ from eval_card_backend.signals.reproducibility import (
     AGENTIC_REPRODUCIBILITY_FIELDS,
     BASE_REPRODUCIBILITY_FIELDS,
 )
+from eval_card_backend.canonicalise import taxonomy
 from eval_card_backend.config import EEE_DATASET_REPO
 from eval_card_backend.sources import collections as collections_src
 from eval_card_backend.sources.registry import read_parquet_arg
@@ -1209,20 +1210,42 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
         "rr.eval_library.name",
         "rr.source_config",
     )
+    org_token = taxonomy.org_token_sql("rr0.org_id", "rr0.org_raw")
+    source_label_slug = collections_src.source_label_slug_sql(
+        "rr0.source_metadata.source_name",
+        "rr0.eval_library.name",
+        "rr0.source_config",
+    )
+    config_slug = taxonomy.config_slug_sql("rr.source_config")
     con.execute(
         f"""
         CREATE TABLE fact_results_staging AS
-        WITH joined AS (
+        WITH rr_tok AS (
+            -- Composite-partition inputs: org_token is the
+            -- partition key; _curated_source_slug is what a curated
+            -- `source:` member matches (the source-name half of the raw
+            -- collection key). Computed once here so the three
+            -- precedence joins below share one definition.
+            SELECT
+                rr0.*,
+                {org_token}          AS org_token,
+                {source_label_slug}  AS _curated_source_slug
+            FROM results_resolved rr0
+        ),
+        joined AS (
             -- LEFT JOIN dims, then call the metric-meta hotfix UDF once per row
             -- so its STRUCT result can be destructured cleanly in the outer SELECT
             -- (single UDF invocation per row, not five).
             --
-            -- composite_slug joins on the source_config curated map (per
-            -- evalcard-registry/seed/composites.yaml). Default fallback for
-            -- non-curated configs is kebab-case(source_config); display
+            -- composite_slug joins on the curated map (registry
+            -- seed/composites.yaml → canonical_composites), precedence-
+            -- resolved over (config, org, source) scopes. Default fallback
+            -- for non-curated rows is kebab-case(source_config); display
             -- name falls back to the leaderboard's source_name on EEE
             -- source_metadata (the human-facing label upstream actually
             -- emits) so a brand-new uncurated config still renders.
+            -- Multi-org configs are re-keyed per org partition in Stage E,
+            -- over the post-supersession population.
             SELECT
                 rr.*,
                 cb.parent_benchmark_id                                 AS _cb_parent_benchmark_id,
@@ -1238,14 +1261,22 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
                 cm_model.lineage_origin_model_id                       AS _cm_lineage_origin_model_id,
                 c.card                                                 AS _card_payload,
                 CASE WHEN c.card IS NOT NULL THEN rr.benchmark_id ELSE NULL END AS _benchmark_card_id,
+                -- Curated composite claims resolve finest-first:
+                -- (config, org, source) > (config, org) > (config). Each
+                -- join level matches at most one map row (same-specificity
+                -- overlap is a build error in taxonomy validation), so the
+                -- fact grain can't fan out. Uncurated rows fall back to
+                -- kebab(source_config); Stage E re-keys them when the
+                -- config is multi-org over the surviving-row population.
                 COALESCE(
+                    ccm3.composite_slug,
+                    ccm2.composite_slug,
                     ccm.composite_slug,
-                    trim(both '-' from regexp_replace(
-                        regexp_replace(lower(rr.source_config), '_', '-', 'g'),
-                        '[^a-z0-9-]+', '-', 'g'
-                    ))
+                    {config_slug}
                 )                                                      AS _composite_slug,
                 COALESCE(
+                    ccm3.composite_display_name,
+                    ccm2.composite_display_name,
                     ccm.composite_display_name,
                     -- Skip source_metadata.source_name when it equals
                     -- eval_library.name — that's the upstream harness
@@ -1262,6 +1293,9 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
                     END,
                     rr.source_config
                 )                                                      AS _composite_display_name,
+                (ccm3.composite_slug IS NOT NULL
+                 OR ccm2.composite_slug IS NOT NULL
+                 OR ccm.composite_slug IS NOT NULL)                    AS _composite_curated,
                 derive_metric_meta_udf(
                     to_json(rr.metric_config),
                     cmet.metric_kind, cmet.metric_unit,
@@ -1276,13 +1310,24 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
                 -- keys on source_config; missing parts fall back to
                 -- unknown/unlabeled.
                 {collection_raw_key} AS _collection_raw_key
-            FROM results_resolved rr
+            FROM rr_tok rr
             LEFT JOIN canonical_benchmarks cb       ON cb.id = rr.benchmark_id
             LEFT JOIN canonical_models     cm_model ON cm_model.id = rr.model_id
             LEFT JOIN canonical_metrics    cmet     ON cmet.id = rr.metric_id
             LEFT JOIN canonical_orgs       co_org   ON co_org.id = rr.org_id
             LEFT JOIN cards_raw            c        ON c.benchmark_id = rr.benchmark_id
-            LEFT JOIN composite_config_map ccm      ON ccm.source_config = rr.source_config
+            LEFT JOIN composite_config_map ccm
+                   ON ccm.source_config = rr.source_config
+                  AND ccm.specificity = 1
+            LEFT JOIN composite_config_map ccm2
+                   ON ccm2.source_config = rr.source_config
+                  AND ccm2.specificity = 2
+                  AND ccm2.org_token = rr.org_token
+            LEFT JOIN composite_config_map ccm3
+                   ON ccm3.source_config = rr.source_config
+                  AND ccm3.specificity = 3
+                  AND ccm3.org_token = rr.org_token
+                  AND ccm3.source_slug = rr._curated_source_slug
         )
         SELECT
             j.fact_id,
@@ -1370,6 +1415,11 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             j._composite_slug                                                           AS composite_slug,
             j._composite_display_name                                                   AS composite_display_name,
             j.source_config                                                             AS source_config,
+            -- Composite-partition helpers, consumed (and dropped) by
+            -- Stage E's org-partition pass.
+            j.org_token,
+            j._curated_source_slug,
+            j._composite_curated,
 
             j._benchmark_card_id                                                        AS benchmark_card_id,
 
@@ -1566,7 +1616,7 @@ _SENTINEL_DROP_PREDICATE = """
 """
 
 
-def stage_e_per_row_signals(con) -> StageEStats:
+def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageEStats:
     """Compute per-row signals + apply two drop policies, in this order:
 
     1. **No-score drop** — `score IS NULL`. The row carries no measurement.
@@ -1586,7 +1636,24 @@ def stage_e_per_row_signals(con) -> StageEStats:
     Completeness is per-row (3 of the 28 fields are EEE source_metadata
     that vary across reports); the UDF is invoked once per row in the
     `scored` CTE and destructured in the outer SELECT.
+
+    After the drops, the composite org-partition pass re-keys multi-org
+    configs over the surviving-row population (see
+    `_apply_composite_partitions`); `strict_composites` mirrors Stage D's
+    collections strictness (hard curated-member guards only on full runs).
     """
+    staging_cols = {
+        r[1] for r in con.execute(
+            "PRAGMA table_info('fact_results_staging')"
+        ).fetchall()
+    }
+    if "org_token" not in staging_cols:
+        raise RuntimeError(
+            "fact_results_staging lacks the composite-partition columns "
+            "(org_token / _curated_source_slug / _composite_curated) — it was "
+            "restored from a cache written before the composite-partition "
+            "schema. Re-run with --from-stage D (or A) to rebuild it."
+        )
     pre = con.execute("SELECT count(*) FROM fact_results_staging").fetchone()[0]
     n_dropped_no_score = con.execute(
         "SELECT count(*) FROM fact_results_staging WHERE score IS NULL"
@@ -1719,6 +1786,7 @@ def stage_e_per_row_signals(con) -> StageEStats:
         SELECT * EXCLUDE (_dedup_rank) FROM ranked WHERE _dedup_rank = 1
         """
     )
+    _apply_composite_partitions(con, strict=strict_composites)
     post = con.execute("SELECT count(*) FROM fact_results_signaled").fetchone()[0]
     pre_dedup = pre - n_dropped_no_score - n_dropped_sentinel
     n_dropped_dedup = pre_dedup - post
@@ -1741,6 +1809,196 @@ def stage_e_per_row_signals(con) -> StageEStats:
         n_dropped_dedup=n_dropped_dedup,
         post=post,
     )
+
+
+def _apply_composite_partitions(con, *, strict: bool) -> None:
+    """Composite org-partition pass (notes/composite-partition-spec.md),
+    applied to `fact_results_signaled` — the post-supersession
+    population, so a superseded row can never split a page whose
+    surviving rows are single-org.
+
+    1. **Scoped-member guard**: a curated (config, org[, source]) member
+       matching zero surviving rows is a hard error while its config
+       still exists in the corpus — a drifted org/source key must not
+       silently dump the study's rows back onto the automatic rule. It
+       degrades to a warning when the config itself has left the corpus;
+       a composite whose scoped members ALL match nothing always fails.
+       `strict=False` (a --configs/--config-limit subset run) downgrades
+       everything to warnings — a subset legitimately omits configs.
+    2. **Multi-org predicate**: a config is multi-org iff its surviving
+       rows carry >1 distinct org_token, excluding 'unknown-org' (a junk
+       NULL-org row must not re-key an established page).
+    3. **Re-key**: every uncurated row of a multi-org config gets
+       `<config-slug>--<org_token>` — no partition keeps the bare slug —
+       and a partition-scoped display name: the partition's single
+       distinct source label when there is exactly one, else
+       `<org display> — <source_config>`.
+
+    The Stage D helper columns (org_token, _curated_source_slug,
+    _composite_curated) are dropped here, so `fact_results` keeps its
+    pre-existing shape.
+    """
+    # 1. Scoped-member guard.
+    member_rows = con.execute(
+        """
+        SELECT m.composite_slug, m.source_config, m.org_token, m.source_slug,
+               m.specificity, count(f.source_config) AS n_matches
+        FROM composite_config_map m
+        LEFT JOIN fact_results_signaled f
+          ON f.source_config = m.source_config
+         AND (m.specificity < 2 OR f.org_token = m.org_token)
+         AND (m.specificity < 3 OR f._curated_source_slug = m.source_slug)
+        GROUP BY 1, 2, 3, 4, 5
+        """
+    ).fetchall()
+    live_configs = {
+        r[0] for r in con.execute(
+            "SELECT DISTINCT source_config FROM fact_results_signaled"
+        ).fetchall()
+    }
+    problems: list[str] = []
+    warnings: list[str] = []
+    scoped_by_composite: dict[str, list] = {}
+    for slug, cfg, org, source, specificity, n_matches in member_rows:
+        if specificity < 2:
+            continue
+        scoped_by_composite.setdefault(slug, []).append(n_matches)
+        if n_matches == 0:
+            member = f"(config={cfg!r}, org={org!r}" + (
+                f", source={source!r})" if source is not None else ")"
+            )
+            if cfg in live_configs:
+                problems.append(
+                    f"composite {slug!r}: scoped member {member} matches zero "
+                    f"surviving rows while config {cfg!r} is in the corpus — "
+                    f"drifted org/source key?"
+                )
+            else:
+                warnings.append(
+                    f"composite {slug!r}: scoped member {member} matches "
+                    f"nothing and config {cfg!r} has left the corpus."
+                )
+    for slug, counts in scoped_by_composite.items():
+        if counts and all(n == 0 for n in counts):
+            problems.append(
+                f"composite {slug!r}: no scoped member matches any surviving "
+                f"row — the curated entry is fully detached."
+            )
+    for msg in warnings:
+        log.warning("Stage E composite partitions: %s", msg)
+    if problems:
+        if strict:
+            raise RuntimeError(
+                "Stage E composite partitions: curated scoped members failed "
+                "the match guard:\n  " + "\n  ".join(problems)
+            )
+        for msg in problems:
+            log.warning(
+                "Stage E composite partitions (non-strict subset run): %s", msg
+            )
+
+    # 2. Multi-org predicate over the surviving-row population.
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE _multi_org_configs AS
+        SELECT source_config
+        FROM fact_results_signaled
+        GROUP BY source_config
+        HAVING COUNT(DISTINCT org_token)
+                   FILTER (WHERE org_token <> 'unknown-org') > 1
+        """
+    )
+
+    # 3. Partition display names, computed over the automatic (uncurated)
+    # rows of each multi-org partition. For uncurated rows
+    # composite_display_name IS the guard-adjusted source label
+    # (Stage D's COALESCE), so the label census reads it directly.
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE _partition_names AS
+        WITH auto_rows AS (
+            SELECT f.source_config, f.org_token,
+                   f.composite_display_name, f.org_display
+            FROM fact_results_signaled f
+            JOIN _multi_org_configs mo USING (source_config)
+            WHERE NOT f._composite_curated
+        ),
+        label_census AS (
+            SELECT source_config, org_token,
+                   COUNT(DISTINCT composite_display_name) AS n_labels,
+                   MAX(composite_display_name)            AS only_label
+            FROM auto_rows
+            GROUP BY 1, 2
+        ),
+        org_display_pick AS (
+            -- Most-frequent org display per partition, tie-broken
+            -- lexicographically so the fallback name is byte-stable.
+            SELECT source_config, org_token, org_display
+            FROM (
+                SELECT source_config, org_token, org_display,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY source_config, org_token
+                           ORDER BY COUNT(*) DESC, org_display ASC
+                       ) AS _rk
+                FROM auto_rows
+                WHERE org_display IS NOT NULL AND org_display <> ''
+                GROUP BY source_config, org_token, org_display
+            )
+            WHERE _rk = 1
+        )
+        SELECT
+            lc.source_config,
+            lc.org_token,
+            -- Post-split partitions are label-homogeneous in the normal
+            -- case and the label IS the source's recognizable name; a
+            -- label-heterogeneous partition (one org, several
+            -- publications) has no true name in the data, so the
+            -- org-prefixed fallback is always correct.
+            CASE WHEN lc.n_labels = 1 THEN lc.only_label
+                 ELSE COALESCE(odp.org_display, 'Unknown org')
+                      || ' — ' || lc.source_config
+            END AS partition_display
+        FROM label_census lc
+        LEFT JOIN org_display_pick odp USING (source_config, org_token)
+        """
+    )
+
+    config_slug = taxonomy.config_slug_sql("f.source_config")
+    con.execute(
+        f"""
+        CREATE TABLE fact_results_partitioned AS
+        SELECT f.* EXCLUDE (org_token, _curated_source_slug, _composite_curated)
+               REPLACE (
+            CASE WHEN mo.source_config IS NOT NULL AND NOT f._composite_curated
+                 THEN {config_slug} || '--' || f.org_token
+                 ELSE f.composite_slug
+            END AS composite_slug,
+            CASE WHEN mo.source_config IS NOT NULL AND NOT f._composite_curated
+                 THEN pn.partition_display
+                 ELSE f.composite_display_name
+            END AS composite_display_name)
+        FROM fact_results_signaled f
+        LEFT JOIN _multi_org_configs mo ON mo.source_config = f.source_config
+        LEFT JOIN _partition_names pn
+               ON pn.source_config = f.source_config
+              AND pn.org_token     = f.org_token
+        """
+    )
+    con.execute("DROP TABLE fact_results_signaled")
+    con.execute(
+        "ALTER TABLE fact_results_partitioned RENAME TO fact_results_signaled"
+    )
+
+    n_multi = con.execute("SELECT count(*) FROM _multi_org_configs").fetchone()[0]
+    if n_multi:
+        parts = con.execute(
+            "SELECT count(*) FROM _partition_names"
+        ).fetchone()[0]
+        log.info(
+            "Stage E composite partitions: %d multi-org config(s) split into "
+            "%d automatic partition(s).",
+            n_multi, parts,
+        )
 
 
 # ---------------------------------------------------------------------------

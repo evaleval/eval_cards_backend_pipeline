@@ -334,6 +334,19 @@ def run(
                     f"composites.yaml / families.yaml, or wipe the snapshot "
                     f"directory under {cache.root}."
                 )
+            ccm_cols = {
+                r[1] for r in con.execute(
+                    "PRAGMA table_info('composite_config_map')"
+                ).fetchall()
+            }
+            if "specificity" not in ccm_cols:
+                raise RuntimeError(
+                    f"composite_config_map restored from cache at {cache.dir} "
+                    f"predates the composite-partition schema (missing the "
+                    f"org_token/source_slug/specificity columns). Re-run with "
+                    f"--from-stage A to rebuild it, or wipe the snapshot "
+                    f"directory under {cache.root}."
+                )
 
     # ---- Stage execution ----
     n_eee: int | None = None
@@ -403,7 +416,10 @@ def run(
                 strict_collections=(configs is None and config_limit is None),
             )
         elif letter == "E":
-            stage_e_stats = stages.stage_e_per_row_signals(con)
+            stage_e_stats = stages.stage_e_per_row_signals(
+                con,
+                strict_composites=(configs is None and config_limit is None),
+            )
             log.info(
                 "Stage E: %d rows in, %d rows out "
                 "(dropped %d no_score, %d sentinel, %d fact_id collision)",

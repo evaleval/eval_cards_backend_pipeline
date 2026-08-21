@@ -3,9 +3,18 @@
 Reads curated taxonomy data from the registry data cache and
 materialises three small in-memory tables on the DuckDB connection:
 
-- `composite_config_map(source_config, composite_slug, composite_display_name)`
+- `composite_config_map(source_config, org_token, source_slug,
+  specificity, composite_slug, composite_display_name)`
 - `family_membership(family_id, family_display_name, benchmark_id)`
 - `slice_promotions(benchmark_id)`
+
+Composite `configs` members come in two forms (composite-partition
+spec, notes/composite-partition-spec.md): a bare config string
+(matches the whole config, specificity 1) or a scoped mapping
+`{config, org[, source]}` (specificity 2/3). `org` is the org_token
+(registry org id, or kebab of the raw org string for unresolved orgs);
+`source` is the slugged guard-adjusted source label — the source-name
+half of the raw collection key.
 
 **Source preference** (the registry is the curation home):
 
@@ -44,6 +53,69 @@ def kebab_case(s: str) -> str:
     s = _KEBAB_RE.sub("-", s)
     s = re.sub(r"-+", "-", s)
     return s.strip("-")
+
+
+def kebab_case_sql(expr: str) -> str:
+    """SQL twin of `kebab_case` (collapses `-` runs). Used for the
+    org_token raw-slug fallback so Python and SQL agree byte-for-byte."""
+    return (
+        f"trim(both '-' from regexp_replace(lower({expr}), "
+        f"'[^a-z0-9]+', '-', 'g'))"
+    )
+
+
+def config_slug_sql(expr: str) -> str:
+    """The Stage D bare-composite-slug fallback expression, verbatim (it
+    predates `kebab_case_sql` and does not collapse `-` runs). The
+    partition suffix rule reuses it so `<config>--<org>` shares its prefix
+    with the config's historical bare slug byte-for-byte."""
+    return (
+        f"trim(both '-' from regexp_replace("
+        f"regexp_replace(lower({expr}), '_', '-', 'g'), "
+        f"'[^a-z0-9-]+', '-', 'g'))"
+    )
+
+
+def org_token_sql(org_id_expr: str, org_raw_expr: str) -> str:
+    """Per-row `org_token` for composite partitioning: registry-resolved
+    org id, else kebab of the raw org string (empty-safe), else the
+    `unknown-org` sentinel (excluded from the multi-org predicate)."""
+    raw_kebab = kebab_case_sql(f"COALESCE({org_raw_expr}, '')")
+    return f"COALESCE({org_id_expr}, NULLIF({raw_kebab}, ''), 'unknown-org')"
+
+
+_SCOPED_MEMBER_KEYS = {"config", "org", "source"}
+
+
+def normalise_config_member(member, composite_slug: str, where: str) -> str | dict:
+    """Validate one `configs` member. Bare strings pass through; scoped
+    mappings are validated ({config, org[, source]}, source requires org)
+    and returned as `{"config", "org", "source"}` dicts with `source`
+    slug-normalised. Malformed mappings raise — a scoped member silently
+    dropped would dump its study's rows back onto the automatic rule.
+    """
+    if not isinstance(member, dict):
+        return str(member)
+    unknown = sorted(set(member) - _SCOPED_MEMBER_KEYS)
+    if unknown or "config" not in member:
+        raise ValueError(
+            f"{where}: composite {composite_slug!r} has a malformed scoped "
+            f"configs member {member!r} — expected keys {{config, org[, source]}}."
+        )
+    if member.get("source") is not None and member.get("org") is None:
+        raise ValueError(
+            f"{where}: composite {composite_slug!r} scoped member {member!r} "
+            f"sets `source` without `org` — the precedence ladder has no "
+            f"config+source level."
+        )
+    from eval_card_backend.sources.collections import slug as _collection_slug
+
+    out: dict = {"config": str(member["config"]), "org": None, "source": None}
+    if member.get("org") is not None:
+        out["org"] = str(member["org"])
+    if member.get("source") is not None:
+        out["source"] = _collection_slug(str(member["source"]))
+    return out
 
 
 def _load_yaml(path: Path) -> dict | None:
@@ -117,10 +189,11 @@ def resolve_seed_dir(registry_root: Path | None, override: Path | None = None) -
 
 
 def load_composites(seed_dir: Path) -> dict[str, dict]:
-    """Return `{composite_slug: {display: str, configs: [str, ...]}}`.
+    """Return `{composite_slug: {display: str, configs: [str | dict, ...]}}`.
 
-    `configs` is normalised to a list. Default-display compositional
-    entries (key = slug, value = {display: ...} only) get
+    `configs` members are bare config strings or scoped
+    `{config, org[, source]}` dicts (see module docstring). Default-display
+    compositional entries (key = slug, value = {display: ...} only) get
     `configs = [slug]` so a 1:1 mapping still produces a usable map.
     """
     data = _load_yaml(seed_dir / "composites.yaml")
@@ -149,7 +222,13 @@ def load_composites(seed_dir: Path) -> dict[str, dict]:
                 slug, type(configs).__name__,
             )
             continue
-        out[slug] = {"display": str(display), "configs": [str(c) for c in configs]}
+        out[slug] = {
+            "display": str(display),
+            "configs": [
+                normalise_config_member(c, slug, "composites.yaml")
+                for c in configs
+            ],
+        }
     return out
 
 
@@ -221,33 +300,46 @@ def materialise_taxonomy_tables(
 ) -> None:
     """Create three small tables on the connection.
 
-    Validation: if any source_config appears in two composites,
-    raise — Stage D would otherwise pick an arbitrary one.
+    Composite validation is specificity-aware (composite-partition
+    spec): a curated claim key — (config), (config, org), or
+    (config, org, source) — may appear in at most one composite at the
+    SAME specificity; the same config claimed at different specificities
+    across composites is the scoped-override feature, not an error.
     """
-    # Validate composites: each source_config in at most one composite.
-    seen_configs: dict[str, str] = {}
+    # Validate composites: each claim key in at most one composite per
+    # specificity level. Repeats within one composite are tolerated.
+    seen_claims: dict[tuple, str] = {}
     for slug, entry in composites.items():
-        for cfg in entry["configs"]:
-            prior = seen_configs.get(cfg)
+        for member in entry["configs"]:
+            m = member if isinstance(member, dict) else {"config": member}
+            claim = (m["config"], m.get("org"), m.get("source"))
+            prior = seen_claims.get(claim)
             if prior is not None and prior != slug:
                 raise ValueError(
-                    f"composites.yaml: source_config {cfg!r} appears in "
-                    f"both {prior!r} and {slug!r}."
+                    f"composites.yaml: curated claim {claim!r} appears in "
+                    f"both {prior!r} and {slug!r} at the same specificity."
                 )
-            seen_configs[cfg] = slug
+            seen_claims[claim] = slug
 
     con.execute(
         "CREATE OR REPLACE TABLE composite_config_map ("
-        "source_config VARCHAR, composite_slug VARCHAR, "
+        "source_config VARCHAR, org_token VARCHAR, source_slug VARCHAR, "
+        "specificity TINYINT, composite_slug VARCHAR, "
         "composite_display_name VARCHAR)"
     )
-    composite_rows: list[tuple[str, str, str]] = []
+    composite_rows: list[tuple] = []
     for slug, entry in composites.items():
-        for cfg in entry["configs"]:
-            composite_rows.append((cfg, slug, entry["display"]))
+        for member in entry["configs"]:
+            m = member if isinstance(member, dict) else {"config": member}
+            org = m.get("org")
+            source = m.get("source")
+            specificity = 1 + (org is not None) + (source is not None)
+            composite_rows.append(
+                (m["config"], org, source, specificity, slug, entry["display"])
+            )
     if composite_rows:
         con.executemany(
-            "INSERT INTO composite_config_map VALUES (?, ?, ?)",
+            "INSERT INTO composite_config_map VALUES (?, ?, ?, ?, ?, ?)",
             composite_rows,
         )
 
@@ -281,8 +373,12 @@ def load_composites_from_parquet(registry_root: Path) -> dict[str, dict] | None:
     falls back to the YAML loader.
 
     Output shape matches `load_composites`:
-        {composite_slug: {display: str, configs: [str, ...]}}
+        {composite_slug: {display: str, configs: [str | dict, ...]}}
     `source_configs` on the parquet is JSON-encoded; we decode tolerantly.
+    Members may be strings or scoped `{config, org[, source]}` objects
+    (registry serializer, composite-partition spec). A stringified
+    mapping (pre-fix registry serializer output, e.g. "{'config': ...}")
+    stays a plain string and matches no real config — inert by design.
     """
     import json as _json
 
@@ -307,17 +403,21 @@ def load_composites_from_parquet(registry_root: Path) -> dict[str, dict] | None:
             continue
         display = row.get("display_name") or slug
         raw = row.get("source_configs")
-        configs: list[str]
+        configs: list
         if isinstance(raw, list):
-            configs = [str(c) for c in raw]
+            members = list(raw)
         elif isinstance(raw, str) and raw.strip() and raw.strip() not in ("[]", "null"):
             try:
                 decoded = _json.loads(raw)
-                configs = [str(c) for c in decoded] if isinstance(decoded, list) else []
+                members = list(decoded) if isinstance(decoded, list) else []
             except (ValueError, TypeError):
-                configs = []
+                members = []
         else:
-            configs = []
+            members = []
+        configs = [
+            normalise_config_member(c, slug, "canonical_composites.parquet")
+            for c in members
+        ]
         if not configs:
             # Display-only entries default to slug-as-config (replaces the
             # YAML loader's `slug.replace("-", "_")` heuristic).

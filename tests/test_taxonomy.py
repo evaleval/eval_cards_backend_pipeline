@@ -184,3 +184,109 @@ def test_seed_dir_override_takes_precedence(tmp_path, monkeypatch):
     monkeypatch.setenv("EVALCARD_REGISTRY_SEED_DIR", str(other))
     chosen = taxonomy.resolve_seed_dir(None, tmp_path)
     assert chosen == tmp_path
+
+
+# ---------------------------------------------------------------------------
+# Scoped configs members (composite-partition spec)
+# ---------------------------------------------------------------------------
+
+
+def test_composite_scoped_members_yaml(tmp_path):
+    """Scoped mappings load alongside bare strings; `source` is
+    slug-normalised, `org` kept verbatim (it's already an org_token)."""
+    _write(tmp_path, "composites.yaml", """
+aisi-study:
+  display: AISI study
+  configs:
+    - {config: hle, org: uk-aisi}
+    - {config: healthbench, org: uk-aisi, source: "My Fancy Study!"}
+plain:
+  configs: [plain-config]
+""")
+    out = taxonomy.load_composites(tmp_path)
+    assert out["aisi-study"]["configs"] == [
+        {"config": "hle", "org": "uk-aisi", "source": None},
+        {"config": "healthbench", "org": "uk-aisi", "source": "my-fancy-study"},
+    ]
+    assert out["plain"]["configs"] == ["plain-config"]
+
+
+def test_composite_scoped_member_source_requires_org(tmp_path):
+    _write(tmp_path, "composites.yaml", """
+bad:
+  configs:
+    - {config: hle, source: some-study}
+""")
+    with pytest.raises(ValueError, match="without `org`"):
+        taxonomy.load_composites(tmp_path)
+
+
+def test_composite_scoped_member_unknown_key(tmp_path):
+    _write(tmp_path, "composites.yaml", """
+bad:
+  configs:
+    - {config: hle, organization: uk-aisi}
+""")
+    with pytest.raises(ValueError, match="malformed scoped"):
+        taxonomy.load_composites(tmp_path)
+
+
+def test_composite_overlap_same_specificity_is_error():
+    """The same (config, org) claim in two composites is a build error."""
+    composites = {
+        "a": {"display": "A", "configs": [
+            {"config": "hle", "org": "uk-aisi", "source": None}]},
+        "b": {"display": "B", "configs": [
+            {"config": "hle", "org": "uk-aisi", "source": None}]},
+    }
+    con = duckdb.connect()
+    with pytest.raises(ValueError, match="same specificity"):
+        taxonomy.materialise_taxonomy_tables(con, composites, {}, set())
+
+
+def test_composite_overlap_across_specificities_is_feature():
+    """One config claimed config-wide by one composite and org-scoped by
+    another is the precedence ladder, not a conflict. The map carries
+    per-member specificity for Stage D's finest-first resolution."""
+    composites = {
+        "whole": {"display": "Whole", "configs": ["hle"]},
+        "scoped": {"display": "Scoped", "configs": [
+            {"config": "hle", "org": "uk-aisi", "source": None}]},
+    }
+    con = duckdb.connect()
+    taxonomy.materialise_taxonomy_tables(con, composites, {}, set())
+    rows = con.execute(
+        "SELECT source_config, org_token, source_slug, specificity, "
+        "composite_slug FROM composite_config_map ORDER BY specificity"
+    ).fetchall()
+    assert rows == [
+        ("hle", None, None, 1, "whole"),
+        ("hle", "uk-aisi", None, 2, "scoped"),
+    ]
+
+
+def test_composites_parquet_mixed_members(tmp_path):
+    """The published `source_configs` JSON may mix strings and scoped
+    objects; a stringified mapping (pre-fix registry serializer) stays a
+    plain string that matches no real config — inert by design."""
+    import json
+    import pandas as pd
+
+    df = pd.DataFrame([
+        {
+            "id": "aisi-study",
+            "display_name": "AISI study",
+            "source_configs": json.dumps([
+                "plain-config",
+                {"config": "hle", "org": "uk-aisi"},
+                "{'config': 'garbage', 'org': 'from-old-serializer'}",
+            ]),
+        },
+    ])
+    df.to_parquet(tmp_path / "canonical_composites.parquet")
+    out = taxonomy.load_composites_from_parquet(tmp_path)
+    assert out["aisi-study"]["configs"] == [
+        "plain-config",
+        {"config": "hle", "org": "uk-aisi", "source": None},
+        "{'config': 'garbage', 'org': 'from-old-serializer'}",
+    ]

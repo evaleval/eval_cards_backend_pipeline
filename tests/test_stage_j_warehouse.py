@@ -51,9 +51,11 @@ def _write_eee_fixture_two_models(eee_root: Path) -> None:
             },
             "source_metadata": {
                 "source_name": "Test", "source_type": "documentation",
-                "source_organization_name": (
-                    "OpenAI" if model_id == "openai/gpt-4o" else "Anthropic"
-                ),
+                # One submitting org for both records: this fixture models a
+                # single leaderboard page. Per-model orgs would make the
+                # config multi-org and the composite org-partition rule
+                # would split it into two one-model pages.
+                "source_organization_name": "Test Lab",
                 "evaluator_relationship": "first_party",
             },
             "eval_library": {"name": "minibench", "version": "1.0"},

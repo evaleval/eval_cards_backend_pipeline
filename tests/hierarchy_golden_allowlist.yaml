@@ -1,7 +1,7 @@
 # Allowlist for the golden-file structural-parity test against
 # /Users/jchim/projects/evaleval/ref-hierarchy_v2.json.
 #
-# Per spec §8 — structural parity + curated-diff allowlist. Each entry
+# Structural parity + curated-diff allowlist. Each entry
 # below documents an intentional divergence between our producer's
 # hierarchy.json and the reference. The test reads this file to skip
 # the listed checks; un-allowed divergences fail.

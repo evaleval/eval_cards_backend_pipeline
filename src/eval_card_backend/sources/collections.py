@@ -72,6 +72,25 @@ def slug_sql(expr: str) -> str:
     )
 
 
+def source_label_slug_sql(
+    source_name_expr: str, harness_expr: str, config_expr: str
+) -> str:
+    """Slug of the guard-adjusted source label — the source-name half of
+    the raw collection key: `slug(source_name)`, except harness bleed
+    (source_name == eval_library name) keys on `slug(source_config)` and
+    a missing label falls back to `unlabeled`. Curated composite
+    `source:` scoping matches this exact value, keeping it in lockstep
+    with collection keys.
+    """
+    name_slug = (
+        f"CASE WHEN {source_name_expr} IS NOT NULL "
+        f"AND {source_name_expr} = {harness_expr} "
+        f"THEN NULLIF({slug_sql(config_expr)}, '') "
+        f"ELSE NULLIF({slug_sql(source_name_expr)}, '') END"
+    )
+    return f"COALESCE({name_slug}, 'unlabeled')"
+
+
 def collection_raw_key_sql(
     org_expr: str, source_name_expr: str, harness_expr: str, config_expr: str
 ) -> str:
@@ -83,16 +102,8 @@ def collection_raw_key_sql(
     - missing parts fall back to `unknown` / `unlabeled`.
     """
     org_slug = f"NULLIF({slug_sql(org_expr)}, '')"
-    name_slug = (
-        f"CASE WHEN {source_name_expr} IS NOT NULL "
-        f"AND {source_name_expr} = {harness_expr} "
-        f"THEN NULLIF({slug_sql(config_expr)}, '') "
-        f"ELSE NULLIF({slug_sql(source_name_expr)}, '') END"
-    )
-    return (
-        f"(COALESCE({org_slug}, 'unknown') || '/' || "
-        f"COALESCE({name_slug}, 'unlabeled'))"
-    )
+    name_slug = source_label_slug_sql(source_name_expr, harness_expr, config_expr)
+    return f"(COALESCE({org_slug}, 'unknown') || '/' || {name_slug})"
 
 
 # ---------------------------------------------------------------------------

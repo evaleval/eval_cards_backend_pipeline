@@ -132,9 +132,11 @@ def test_aggregations_match_fact_counts(tmp_path, monkeypatch):
 
 
 def test_third_party_eval_count_xparty_fixture(tmp_path, monkeypatch):
-    """fixtures_xparty has one (benchmark, metric) covered by both first-
-    and third-party orgs → coverage_cell='both' → third_party_eval_count=1
-    and independent_verification_ratio=1.0."""
+    """fixtures_xparty carries two resolved orgs in one config, so the
+    composite org-partition rule splits it into two source pages —
+    evaluations_count counts one eval row per page. Third-party coverage
+    is keyed on (model, benchmark), independent of the split, so both
+    cells stay covered and the ratio stays 1.0."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_xparty")
     con = _materialise_views(out)
@@ -144,8 +146,8 @@ def test_third_party_eval_count_xparty_fixture(tmp_path, monkeypatch):
         "FROM models_view"
     ).fetchone()
     third_party_count, evaluations_count, ratio = row
-    assert evaluations_count == 1
-    assert third_party_count == 1
+    assert evaluations_count == 2
+    assert third_party_count == 2
     assert ratio == 1.0
 
 
