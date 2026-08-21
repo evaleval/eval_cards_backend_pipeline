@@ -15,7 +15,7 @@
 # filter on it by name.
 
 uk-aisi-inference-scaling:
-  display_name: AISI inference-scaling study
+  display_name: How Inference Compute Shapes Frontier LLM Evaluation
   kind: paper_study
   url: https://arxiv.org/abs/2606.17930
   curated: true

@@ -64,6 +64,19 @@ from eval_card_backend.sources.collections import slug  # noqa: E402
 COLLECTION_ID = "uk-aisi-inference-scaling"
 STUDY_TITLE = "How Inference Compute Shapes Frontier LLM Evaluation"
 STUDY_SLUG = slug(STUDY_TITLE)
+
+# Benchmark labels for the EMITTED synthetic rows and trajectories. The
+# study's inspect harness names two configs by its internal task names,
+# but the paper's methods section (arXiv 2606.17930) names TerminalBench
+# 2.0 and SWE-Bench Pro, and the task suite matches TB 2.x (88 of its 89
+# tasks, none outside). Emit the canonical names so the data carries the
+# real identity; the registry stays free of submission-specific label
+# quirks. Internal keying (grouping, score semantics, manifests) stays on
+# the raw config names.
+BENCHMARK_LABELS = {
+    "terminalbench": "terminal-bench-2",
+    "swebenchpro": "swe-bench-pro",
+}
 EEE_REPO = "evaleval/EEE_datastore"
 OUT_DIR = REPO_ROOT / "vendor" / "collections" / "aisi_inference_scaling"
 DEFAULT_EEE_CACHE = REPO_ROOT / ".cache" / "eee_datastore"
@@ -949,7 +962,7 @@ def build_synthetic_records(cells: list[Cell], stats: Counter) -> list[dict]:
                 details["weighting"] = "trajectory_weighted"
                 details["n_summary_records"] = str(c.n_summary_records)
             results.append({
-                "evaluation_name": c.config,
+                "evaluation_name": BENCHMARK_LABELS.get(c.config, c.config),
                 "source_data": source_data,
                 "evaluation_timestamp": _max_ts(
                     [mm.record.get("evaluation_timestamp") for mm in c.contributing]
@@ -1043,6 +1056,8 @@ def write_trajectories_parquet(trajs: list[Trajectory], out: Path) -> None:
     ):
         rows.append({
             "collection_id": COLLECTION_ID,
+            # Config name, NOT the corrected label: Stage I joins resolved
+            # ids onto trajectories via ids.source_config = t.benchmark_raw.
             "benchmark_raw": t.config,
             "model_raw": t.model_id,
             "task_id": t.sample_id,
