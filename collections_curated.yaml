@@ -20,12 +20,12 @@ uk-aisi-inference-scaling:
   url: https://arxiv.org/abs/2606.17930
   curated: true
   merge_raw_keys:
-    # Which spelling is observed depends on the EEE revision: at the
-    # current pin ALL 733 records say "Initiative" (the Institute rename
-    # sweep landed after it); post-rename revisions flip to Institute
-    # (+1 straggler Initiative record the sweep missed, PR #205/#206).
-    # Keep both until a pin lands where one side has fully disappeared,
-    # then drop the dead key (unobserved keys are warned per-run).
+    # Which spelling is observed depends on the EEE revision: the current
+    # pin (2d9a8b23, post-rename-sweep) observes "Institute" on 732
+    # records plus 1 straggler "Initiative" record the sweep missed
+    # (PR #205/#206). Keep both until a pin lands where one side has
+    # fully disappeared, then drop the dead key (unobserved keys are
+    # warned per-run).
     - uk-ai-security-institute/how-inference-compute-shapes-frontier-llm-evaluation
     - uk-ai-security-initiative/how-inference-compute-shapes-frontier-llm-evaluation
   protocol_axes:
