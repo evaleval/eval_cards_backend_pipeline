@@ -210,6 +210,36 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
         except Exception:
             return None
 
+    @functools.lru_cache(maxsize=4096)
+    def _structured_benchmark_cached(raw_name: str, source_config: str | None):
+        return resolver.resolve_structured_benchmark(raw_name, source_config)
+
+    def _structured_benchmark(raw_name: str | None, source_config: str | None):
+        """Segment-wise registry-membership resolution over a dotted
+        `evaluation_name` (see Resolver.resolve_structured_benchmark). None
+        on any miss so Stage C falls back to the clean_eval_name path."""
+        if not raw_name or not isinstance(raw_name, str) or not raw_name.strip():
+            return None
+        try:
+            return _structured_benchmark_cached(raw_name, source_config)
+        except Exception:
+            return None
+
+    def resolve_structured_benchmark_id_py(
+        raw_name: str | None, source_config: str | None
+    ) -> str | None:
+        match = _structured_benchmark(raw_name, source_config)
+        return match.canonical_id if match is not None else None
+
+    def resolve_structured_benchmark_raw_py(
+        raw_name: str | None, source_config: str | None
+    ) -> str | None:
+        """The surface form the structured match recorded: the winning
+        benchmark segment plus its subset segments. Carries the subset so
+        `_apply_slice_key` still sees a per-subset raw."""
+        match = _structured_benchmark(raw_name, source_config)
+        return match.benchmark_raw if match is not None else None
+
     return (
         resolve_canonical_id_py,
         resolve_strategy_py,
@@ -218,6 +248,8 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
         resolve_resolution_source_py,
         resolve_resolution_granularity_py,
         resolve_structured_metric_id_py,
+        resolve_structured_benchmark_id_py,
+        resolve_structured_benchmark_raw_py,
     )
 
 

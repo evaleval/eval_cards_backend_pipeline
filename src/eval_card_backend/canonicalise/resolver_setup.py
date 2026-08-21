@@ -21,6 +21,8 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
         resolve_resolution_source_py,
         resolve_resolution_granularity_py,
         resolve_structured_metric_id_py,
+        resolve_structured_benchmark_id_py,
+        resolve_structured_benchmark_raw_py,
     ) = udfs.make_resolver_udfs(resolver, metric_catch_all_ids)
 
     con.create_function(
@@ -61,6 +63,19 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
     # consulted before the extract_metric flatten.
     con.create_function(
         "resolve_structured_metric_id", resolve_structured_metric_id_py,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    # Structured benchmark pre-step: the benchmark-side counterpart, probing
+    # the dotted evaluation_name's segments against the benchmark vocabulary
+    # instead of concatenating them.
+    con.create_function(
+        "resolve_structured_benchmark_id", resolve_structured_benchmark_id_py,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    con.create_function(
+        "resolve_structured_benchmark_raw", resolve_structured_benchmark_raw_py,
         ["VARCHAR", "VARCHAR"], "VARCHAR",
         null_handling="special",
     )

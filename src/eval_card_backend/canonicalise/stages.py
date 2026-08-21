@@ -970,7 +970,17 @@ def stage_c_resolve_identities(con) -> None:
             SELECT
                 *,
                 model_info.id                                                     AS _model_raw,
-                clean_eval_name_udf(evaluation_name)                              AS _benchmark_raw,
+                -- Structured-name pre-step: for a dotted evaluation_name, the
+                -- segments are probed against the benchmark vocabulary and the
+                -- most specific surface form the registry knows wins
+                -- (bbq.bbq.overall → bbq; MMLU.MMLU-Pro.overall → MMLU-Pro;
+                -- vals_ai.mmlu_pro.biology → mmlu pro biology). NULL for every
+                -- name where no segment resolves, so those fall through to the
+                -- clean_eval_name concatenation unchanged.
+                resolve_structured_benchmark_id(evaluation_name, source_config)   AS _benchmark_id_structured,
+                COALESCE(
+                    resolve_structured_benchmark_raw(evaluation_name, source_config),
+                    clean_eval_name_udf(evaluation_name))                         AS _benchmark_raw,
                 -- Structured-id pre-step: positionless registry-membership
                 -- resolution over the namespaced metric_config.metric_id
                 -- segments (lmarena.elo.overall → elo). A registry-flagged
@@ -1029,14 +1039,17 @@ def stage_c_resolve_identities(con) -> None:
             resolve_inference_platform(_model_raw,     'model', source_config) AS inference_platform,
             resolve_resolution_source(_model_raw,      'model', source_config) AS resolution_source,
             resolve_resolution_granularity(_model_raw, 'model', source_config) AS resolution_granularity,
-            resolve_canonical_id(_benchmark_raw, 'benchmark', source_config) AS benchmark_id,
+            COALESCE(_benchmark_id_structured,
+                     resolve_canonical_id(_benchmark_raw, 'benchmark', source_config)) AS benchmark_id,
             COALESCE(_metric_id_structured,
                      resolve_canonical_id(_metric_raw, 'metric', source_config)) AS metric_id,
             resolve_canonical_id(_org_raw,       'org',       source_config) AS org_id,
             resolve_canonical_id(NULLIF(_harness_raw, ''), 'harness', source_config) AS harness_id,
 
             resolve_strategy(_model_raw,     'model',     source_config) AS model_resolution_strategy,
-            resolve_strategy(_benchmark_raw, 'benchmark', source_config) AS benchmark_resolution_strategy,
+            CASE WHEN _benchmark_id_structured IS NOT NULL THEN 'benchmark_structured'
+                 ELSE resolve_strategy(_benchmark_raw, 'benchmark', source_config)
+            END                                                          AS benchmark_resolution_strategy,
             CASE WHEN _metric_id_structured IS NOT NULL THEN 'metric_id_structured'
                  ELSE resolve_strategy(_metric_raw, 'metric', source_config)
             END                                                          AS metric_resolution_strategy,
