@@ -25,15 +25,14 @@ cheap to re-derive from the cached canonical + view parquets.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
-import numpy as np
 
 from eval_card_backend.canonicalise import evalcard_tags, hierarchy_dedup, hierarchy_hotfixes
 from eval_card_backend.config import IGNORED_CONFIGS
@@ -711,17 +710,20 @@ def write_collections(con, out_dir: Path, snapshot_meta: dict) -> Path:
 # collection_context.json
 # ---------------------------------------------------------------------------
 
-# Jeffreys posterior-predictive band. `BAND_RUNS` is the runs-per-task
-# protocol the external boards publish at; `BAND_SEED` plus the sha256 of the
-# model's aggregation key fixes the simulation so rebakes are byte-stable
-# (python's `hash()` is salted per process and must not be used here).
-BAND_DRAWS = 20_000
-BAND_RUNS = 5
-BAND_SEED = 20260823
-BAND_METHOD = "jeffreys"
+# Source orgs held out of the external side on data quality, not on identity.
+# vals-ai publishes identical score quadruples across unrelated models and
+# ships slice-shaped 0-100 rows for benchmarks it reports at overall grain, so
+# its points can't be placed on a comparable axis.
+_CONTEXT_EXCLUDED_ORGS = frozenset({"vals-ai"})
 
-# G2: the model's fullest no-feedback condition must cover this fraction of
-# the benchmark's registry-curated `official_task_count`.
+# A provenance-unknown point this close to a scaffold-labelled point for the
+# same model is treated as a re-report of that entry rather than a second
+# measurement.
+_CONTEXT_REREPORT_TOL = 0.0005
+
+# G2: the model's fullest condition must cover this fraction of the
+# benchmark's registry-curated `official_task_count`. Applied to the
+# no-feedback pick and to the assisted companion alike.
 CONTEXT_COVERAGE_MIN = 0.95
 # G3: the published score reproduces from the trajectory pool under the
 # collection's score rule to within this tolerance …
@@ -743,37 +745,47 @@ _CONTEXT_AGGREGATE = "task_mean_score"
 
 
 def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | None:
-    """collection_context.json — per (collection, benchmark, model) external
-    scaffold context: the collection's own published cell plus every current
-    (scaffold, model) entry the benchmark's maintainer publishes for that
-    model, pre-joined on `model_aggregation_key`.
+    """collection_context.json — per (collection, benchmark, model) measurement
+    context: the collection's own published cells plus every other EEE
+    measurement of the same model on the same benchmark, pre-joined on
+    `model_aggregation_key`.
+
+    The external side is every source reporting the benchmark, not just its
+    maintainer: an agent scaffold is per-point metadata (often unrecorded, and
+    a name alone doesn't pin a configuration), so a point without one is still
+    a measurement. Sources are held out only on data quality
+    (`_CONTEXT_EXCLUDED_ORGS`).
 
     Emitted from the Stage J sidecar phase rather than Stage I so the
     external values can reuse `eval_results_view`'s computed
-    `scale_conversion` for their (composite, benchmark, metric) group instead
-    of re-deriving the group-suspect detection.
+    `scale_conversion` for their (composite, benchmark) group instead of
+    re-deriving the group-suspect detection.
 
     Fails closed: a (collection, benchmark) pair is only considered when the
     collection is curated with `has_trajectories`, declares the
     `task_mean_score` rule for the benchmark, and the registry benchmark
-    entity carries both `official_task_count` and `maintainer_org_id`.
+    entity carries `official_task_count` (the G2 denominator).
     Returns None (no file) when nothing clears the gates.
 
     Shape — `{collection_id: {benchmark_key: {…}}}` where each entry is::
 
         harvested_at            snapshot id the external side was read at
         official_task_count     registry-curated denominator
-        context_sources         [{id, display_name}] of the maintainer's
+        context_sources         [{id, display_name}] of the contributing
                                 composites, ordered by id
         context_source_display  those display names joined, caption-ready
         models_without_context  display names that cleared the gates but
-                                have no external entry
+                                have no external measurement
+        models_without_assisted [{display_name, n_tasks}] for rendered models
+                                whose assisted cell missed G2 (n_tasks null
+                                when the collection ran no assisted cell)
         models                  {model_aggregation_key: {display_name, score,
-                                n_tasks, attempts_min, attempts_max,
-                                protocol_condition, band_lo, band_hi,
-                                band_runs, band_method, band_seed,
-                                external: [{scaffold, score, score_se,
-                                run_date}]}}
+                                score_se, n_tasks, attempts_min,
+                                attempts_max, protocol_condition,
+                                assisted: {score, score_se, n_tasks,
+                                protocol_condition} | null,
+                                external: [{scaffold, source, score,
+                                score_se, run_date, retrieved_at}]}}
     """
     from eval_card_backend.sources import collections as collections_src
 
@@ -844,15 +856,14 @@ def _context_collection_benchmarks(con, collection_id: str) -> list[dict]:
     ]
 
 
-def _context_registry_facts(con, benchmark_key: str) -> tuple[int | None, str | None]:
-    """`official_task_count` / `maintainer_org_id` off the benchmark
-    dimension's `registry_metadata` passthrough. Both None when the registry
-    entity doesn't carry them."""
+def _context_official_task_count(con, benchmark_key: str) -> int | None:
+    """`official_task_count` off the benchmark dimension's `registry_metadata`
+    passthrough — the G2 denominator. None when the registry entity doesn't
+    carry it, which closes the benchmark's gate."""
     row = con.execute(
         """
         SELECT TRY_CAST(json_extract_string(registry_metadata,
-                                            '$.official_task_count') AS INTEGER),
-               json_extract_string(registry_metadata, '$.maintainer_org_id')
+                                            '$.official_task_count') AS INTEGER)
         FROM benchmarks
         WHERE benchmark_id = ? AND registry_metadata IS NOT NULL
         ORDER BY composite_slug
@@ -860,9 +871,7 @@ def _context_registry_facts(con, benchmark_key: str) -> tuple[int | None, str | 
         """,
         [benchmark_key],
     ).fetchone()
-    if row is None:
-        return None, None
-    return row[0], row[1]
+    return row[0] if row else None
 
 
 def _context_metric(con, benchmark_key: str) -> str | None:
@@ -905,15 +914,24 @@ def _context_scale_multiplier(con, composite_slug: str, benchmark_key: str,
                               metric_id: str) -> float | None:
     """The Stage J scale conversion for one (composite, benchmark, metric)
     group, as a multiplier to apply to fact-grain scores. None when the group
-    is `flagged`/`no_bounds`, unclassified, or classified inconsistently —
-    all cases where the external values can't be placed on the canonical
-    scale."""
+    is `flagged`/`no_bounds`, unclassified, or classified inconsistently — all
+    cases where the external values can't be placed on the canonical scale.
+
+    Keyed on `metric_id_effective`, not the raw `metric_id`: an aggregator
+    whose metric folds into the canonical one keeps its raw id in
+    `eval_results_view` (llm-stats reports `score`), so keying on the raw id
+    finds nothing and silently drops the source. Dropping the metric predicate
+    altogether is not the answer either — a composite whose other metric
+    carries a different scale would then read as inconsistent and be dropped
+    (`scale-seal-hle`/`hle`: accuracy is div100, calibration-error is none).
+    """
     kinds = [
         r[0] for r in con.execute(
             """
             SELECT DISTINCT scale_conversion
             FROM eval_results_view
-            WHERE composite_slug = ? AND benchmark_id = ? AND metric_id = ?
+            WHERE composite_slug = ? AND benchmark_id = ?
+              AND metric_id_effective = ?
               AND scale_conversion IS NOT NULL
             ORDER BY 1
             """,
@@ -960,27 +978,41 @@ def _context_scale_multiplier(con, composite_slug: str, benchmark_key: str,
 
 
 def _context_external_points(con, *, collection_id: str, benchmark_key: str,
-                             metric_id: str, maintainer_org_id: str
+                             metric_id: str
                              ) -> tuple[list[dict], dict[str, list[dict]]]:
-    """External leaderboard entries for the benchmark, grouped under the
+    """Every other EEE measurement of this benchmark, grouped under the
     `model_aggregation_key` they join the collection's models on.
 
-    G1's source set is derived, not curated: every composite reporting this
-    benchmark whose `org_id` is the benchmark's registry maintainer, minus
-    the collection's own rows. Only the source's LATEST harvest counts, so
-    delisted entries stop rendering as current.
+    The source set is derived, not curated: every composite reporting this
+    benchmark, minus the collection's own rows and minus the quality holdouts
+    in `_CONTEXT_EXCLUDED_ORGS`. The holdout is applied when selecting sources
+    AND again per row, because a composite can span orgs (`reward-bench`
+    carries both allenai and writer) and a shared slug would otherwise carry a
+    held-out org's rows in on a clean org's ticket. Sources are matched on
+    `metric_key_effective` so an aggregator whose raw metric folds into the
+    canonical one still participates.
+
+    Currency is per (composite, model, scaffold-or-NULL): the latest row for
+    each key wins, with NO expiry. These are dated measurements, not a live
+    listing, so an entry a board has since delisted stays with the date it was
+    last seen (`retrieved_at`) beside the date it was run (`run_date`).
+    A stamp that won't parse sorts oldest rather than aborting the bake: it
+    never wins the latest slot, and never displaces a row that does parse.
     """
     sources = [
         r[0] for r in con.execute(
             """
             SELECT DISTINCT composite_slug
             FROM fact_results
-            WHERE benchmark_key = ? AND org_id = ?
+            WHERE benchmark_key = ?
+              AND metric_key_effective = ?
               AND collection_id IS DISTINCT FROM ?
+              AND org_id NOT IN (SELECT UNNEST(?))
               AND composite_slug IS NOT NULL
             ORDER BY 1
             """,
-            [benchmark_key, maintainer_org_id, collection_id],
+            [benchmark_key, metric_id, collection_id,
+             sorted(_CONTEXT_EXCLUDED_ORGS)],
         ).fetchall()
     ]
 
@@ -995,44 +1027,67 @@ def _context_external_points(con, *, collection_id: str, benchmark_key: str,
             continue
         rows = con.execute(
             """
-            WITH latest AS (
-                SELECT MAX(CAST(retrieved_timestamp AS DOUBLE)) AS ts
-                FROM fact_results
-                WHERE composite_slug = ? AND benchmark_key = ?
+            WITH keyed AS (
+                SELECT f.model_aggregation_key AS model,
+                       f.agent_scaffold_raw    AS scaffold,
+                       f.score,
+                       f.score_se,
+                       f.evaluation_timestamp  AS run_date,
+                       TRY_CAST(f.retrieved_timestamp AS DOUBLE) AS ts,
+                       MAX(TRY_CAST(f.retrieved_timestamp AS DOUBLE)) OVER (
+                           PARTITION BY f.model_aggregation_key,
+                                        f.agent_scaffold_raw
+                       ) AS key_latest_ts
+                FROM fact_results f
+                WHERE f.composite_slug = ? AND f.benchmark_key = ?
+                  AND f.metric_key_effective = ?
+                  AND f.score IS NOT NULL
+                  AND f.model_aggregation_key IS NOT NULL
+                  AND f.org_id NOT IN (SELECT UNNEST(?))
             )
-            SELECT f.model_aggregation_key,
-                   f.agent_scaffold_raw,
-                   COUNT(DISTINCT f.score)  AS n_scores,
-                   MIN(f.score)             AS score,
-                   MIN(f.score_se)          AS score_se,
-                   MIN(f.evaluation_timestamp) AS run_date
-            FROM fact_results f, latest l
-            WHERE f.composite_slug = ? AND f.benchmark_key = ?
-              AND f.metric_key = ?
-              AND f.agent_scaffold_raw IS NOT NULL
-              AND f.score IS NOT NULL
-              AND f.model_aggregation_key IS NOT NULL
-              AND CAST(f.retrieved_timestamp AS DOUBLE) = l.ts
-            GROUP BY 1, 2
-            ORDER BY 1, 2
+            SELECT model, scaffold, score,
+                   MIN(score_se) AS score_se,
+                   MIN(run_date) AS run_date,
+                   MAX(ts)       AS retrieved_ts
+            FROM keyed
+            -- MAX() skips unparseable stamps, so a key with any parseable row
+            -- keeps only those; a key with none keeps its NULL-stamped rows
+            -- rather than vanishing.
+            WHERE ts IS NOT DISTINCT FROM key_latest_ts
+            GROUP BY 1, 2, 3
+            ORDER BY 1, 2, 3
             """,
-            [composite_slug, benchmark_key,
-             composite_slug, benchmark_key, metric_id],
+            [composite_slug, benchmark_key, metric_id,
+             sorted(_CONTEXT_EXCLUDED_ORGS)],
         ).fetchall()
         if not rows:
             continue
-        ambiguous = [(r[0], r[1]) for r in rows if r[2] > 1]
+        # Every key must resolve to one score at its latest harvest; two means
+        # the source republished without us noticing which supersedes which.
+        # Scaffold-less keys are held to the same standard rather than passing
+        # both points through: the strip reads as a spread of measurements, and
+        # a source that publishes two numbers for one model at one harvest
+        # carries nothing that says they are two measurements rather than one
+        # defect.
+        key_counts: dict[tuple, int] = defaultdict(int)
+        for model_key, scaffold, *_ in rows:
+            key_counts[(model_key, scaffold)] += 1
+        ambiguous = sorted(
+            (k for k, n in key_counts.items() if n > 1),
+            key=lambda k: (k[0], k[1] or ""),
+        )
         if ambiguous:
             raise RuntimeError(
                 f"collection_context: {composite_slug}/{benchmark_key} has "
                 f"multiple distinct scores for (model, scaffold) tuples "
-                f"{ambiguous} inside one harvest — refusing to tie-break"
+                f"{ambiguous} at their latest harvest — refusing to tie-break"
             )
         kept.append({
             "id": composite_slug,
             "display_name": display_names.get(composite_slug, composite_slug),
         })
-        for model_key, scaffold, _n, score, score_se, run_date in rows:
+        for (model_key, scaffold, score, score_se, run_date,
+                retrieved_ts) in rows:
             value = score * multiplier
             if not 0.0 <= value <= 1.0:
                 raise RuntimeError(
@@ -1042,16 +1097,52 @@ def _context_external_points(con, *, collection_id: str, benchmark_key: str,
                 )
             by_model[model_key].append({
                 "scaffold": scaffold,
+                "source": display_names.get(composite_slug, composite_slug),
                 "score": round(value, 6),
                 "score_se": (
                     None if score_se is None
                     else round(score_se * multiplier, 6)
                 ),
-                "run_date": run_date,
+                "run_date": str(run_date) if run_date is not None else None,
+                "retrieved_at": _context_retrieved_date(retrieved_ts),
             })
-    for points in by_model.values():
-        points.sort(key=lambda p: (-p["score"], p["scaffold"]))
+
+    for model_key, points in by_model.items():
+        by_model[model_key] = _context_drop_rereports(model_key, points)
     return sorted(kept, key=lambda s: s["id"]), dict(by_model)
+
+
+def _context_retrieved_date(retrieved_ts) -> str | None:
+    """Calendar date of a harvest stamp, so the payload carries when a point
+    was last seen listed without leaking the raw epoch."""
+    if retrieved_ts is None:
+        return None
+    return datetime.fromtimestamp(
+        float(retrieved_ts), tz=timezone.utc
+    ).date().isoformat()
+
+
+def _context_drop_rereports(model_key: str, points: list[dict]) -> list[dict]:
+    """Drop provenance-unknown points that coincide with a scaffold-labelled
+    point for the same model: an aggregator restating a board entry is one
+    measurement reported twice, not two measurements."""
+    labelled = [p["score"] for p in points if p["scaffold"] is not None]
+    kept: list[dict] = []
+    for point in points:
+        if point["scaffold"] is None and any(
+            abs(point["score"] - score) <= _CONTEXT_REREPORT_TOL
+            for score in labelled
+        ):
+            log.info(
+                "collection_context: dropping %s point for %s at %.6f — "
+                "matches a scaffold-labelled point within %.4f (re-report)",
+                point["source"], model_key, point["score"],
+                _CONTEXT_REREPORT_TOL,
+            )
+            continue
+        kept.append(point)
+    kept.sort(key=lambda p: (-p["score"], p["scaffold"] or ""))
+    return kept
 
 
 def _context_composite_display_names(con, composites: list[str]) -> dict[str, str]:
@@ -1066,12 +1157,19 @@ def _context_composite_display_names(con, composites: list[str]) -> dict[str, st
 
 
 def _context_conditions(con, *, collection_id: str, benchmark_key: str,
-                        metric_id: str) -> list[dict]:
-    """One row per (model, no-feedback protocol condition) the collection
-    released trajectories for, already joined to the published fact row.
+                        metric_id: str, feedback: str = "none") -> list[dict]:
+    """One row per (model, protocol condition) on one feedback arm that the
+    collection released trajectories for, already joined to the published fact
+    row. Ordered so the caller's first row per model is its fullest cell.
 
-    `unknown`-feedback arms are excluded outright: an arm we couldn't
-    determine must not stand in for a known-clean run.
+    `unknown`-feedback arms are never selected: an arm we couldn't determine
+    must not stand in for a known-clean run. The assisted companion reuses this
+    with `feedback="answer_feedback"` so both marks are picked the same way.
+
+    Matched on `metric_key_effective` for the same reason the external side is:
+    a collection whose raw key folds into the canonical one would otherwise
+    return no rows and surface as the model-bridge error below, blaming the
+    dated↔undated join for a metric-key mismatch.
     """
     rows = con.execute(
         """
@@ -1080,6 +1178,7 @@ def _context_conditions(con, *, collection_id: str, benchmark_key: str,
                COUNT(DISTINCT t.task_id)                        AS n_tasks,
                COUNT(*)                                         AS n_traj,
                ARRAY_AGG(DISTINCT f.score)                      AS published_scores,
+               ARRAY_AGG(DISTINCT f.score_se)                   AS published_ses,
                ARRAY_AGG(DISTINCT t.model_raw ORDER BY t.model_raw) AS model_raws,
                ARRAY_AGG(DISTINCT t.benchmark_raw ORDER BY t.benchmark_raw) AS configs
         FROM collection_trajectories_raw t
@@ -1090,17 +1189,18 @@ def _context_conditions(con, *, collection_id: str, benchmark_key: str,
          AND f.protocol_condition = t.protocol_condition
         WHERE t.collection_id = ?
           AND f.benchmark_key = ?
-          AND f.metric_key    = ?
-          AND json_extract_string(t.protocol_condition, '$.feedback') = 'none'
+          AND f.metric_key_effective = ?
+          AND json_extract_string(t.protocol_condition, '$.feedback') = ?
         GROUP BY 1, 2
         ORDER BY 1, n_tasks DESC, n_traj DESC, 2
         """,
-        [collection_id, benchmark_key, metric_id],
+        [collection_id, benchmark_key, metric_id, feedback],
     ).fetchall()
     return [
         {"model_key": r[0], "protocol_condition": r[1], "n_tasks": r[2],
          "n_traj": r[3], "published_scores": list(r[4] or []),
-         "model_raws": list(r[5] or []), "configs": list(r[6] or [])}
+         "published_ses": list(r[5] or []),
+         "model_raws": list(r[6] or []), "configs": list(r[7] or [])}
         for r in rows
     ]
 
@@ -1128,23 +1228,71 @@ def _task_mean(values_by_task: dict[str, list[float]]) -> float:
     return sum(per_task) / len(per_task)
 
 
-def _jeffreys_band(k: list[int], n: list[int], aggregation_key: str
-                   ) -> tuple[float, float]:
-    """Posterior-predictive band for a re-run at `BAND_RUNS` runs/task: each
-    task's success rate gets a Jeffreys Beta(k+.5, n-k+.5) posterior from its
-    recorded attempts, then `BAND_RUNS` Bernoulli draws. Propagates the
-    uncertainty a plain resample drops for single-attempt tasks. NOT centred
-    on the published score."""
-    seed = int.from_bytes(
-        hashlib.sha256(aggregation_key.encode()).digest()[:8], "big"
+def _context_cell_pool(con, *, collection_id: str, cond: dict
+                       ) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+    """One cell's released attempts, bucketed per task as raw scores and as
+    is_correct outcomes."""
+    pool = _context_trajectory_pool(
+        con, collection_id=collection_id, model_raws=cond["model_raws"],
+        configs=cond["configs"], protocol_condition=cond["protocol_condition"],
     )
-    rng = np.random.default_rng([BAND_SEED, seed])
-    ka = np.asarray(k, dtype=float)
-    na = np.asarray(n, dtype=float)
-    p = rng.beta(ka + 0.5, na - ka + 0.5, size=(BAND_DRAWS, ka.size))
-    draws = rng.binomial(BAND_RUNS, p).mean(axis=1) / BAND_RUNS
-    lo, hi = np.percentile(draws, [2.5, 97.5])
-    return float(lo), float(hi)
+    scores_by_task: dict[str, list[float]] = defaultdict(list)
+    correct_by_task: dict[str, list[float]] = defaultdict(list)
+    for task_id, score, is_correct in pool:
+        scores_by_task[task_id].append(score)
+        correct_by_task[task_id].append(1.0 if is_correct else 0.0)
+    return scores_by_task, correct_by_task
+
+
+def _context_cell_failure(cond: dict, cells: tuple[dict, dict], *,
+                          official_task_count: int) -> tuple[int, str] | None:
+    """`(log level, reason)` for why this cell can't be rendered, or None when
+    it clears every gate. Shared by the no-feedback pick and the assisted
+    companion so the two marks can never be held to different standards.
+
+    Selection gates log as info (a thin cell is expected); a G3 miss logs as a
+    warning, because a published score that won't reproduce from its own
+    released attempts is an integrity signal, not a coverage fact.
+    """
+    if len(cond["published_scores"]) != 1:
+        return logging.INFO, (
+            f"its fullest condition maps to "
+            f"{len(cond['published_scores'])} published scores"
+        )
+    if cond["n_tasks"] < CONTEXT_COVERAGE_MIN * official_task_count:
+        return logging.INFO, (
+            f"G2 coverage {cond['n_tasks']} of {official_task_count} tasks"
+        )
+    scores_by_task, correct_by_task = cells
+    if not scores_by_task:
+        return logging.INFO, "no released trajectories for the cell"
+    published = float(cond["published_scores"][0])
+    recomputed = _task_mean(scores_by_task)
+    if abs(recomputed - published) >= CONTEXT_RECOMPUTE_TOL:
+        return logging.WARNING, (
+            f"G3 recompute {recomputed:.12f} vs published {published:.12f}"
+        )
+    binarised = _task_mean(correct_by_task)
+    if abs(binarised - published) > CONTEXT_BINARISED_TOL:
+        return logging.WARNING, (
+            f"G3 binarised mean {binarised:.6f} differs from published "
+            f"{published:.6f} by more than {CONTEXT_BINARISED_TOL:.2f}"
+        )
+    return None
+
+
+def _context_published_se(cond: dict, model_key: str) -> float | None:
+    """The cell's published standard error. None when the source published
+    none, or when the cell maps to more than one — the plot draws this as the
+    study's own error bar and must not invent a value."""
+    ses = [se for se in cond["published_ses"] if se is not None]
+    if len(ses) > 1:
+        log.info(
+            "collection_context: %s carries %d distinct published SEs %s for "
+            "one cell; emitting null", model_key, len(ses), sorted(ses),
+        )
+        return None
+    return round(float(ses[0]), 6) if ses else None
 
 
 def _context_display_names(con, model_keys: list[str]) -> dict[str, str]:
@@ -1160,12 +1308,16 @@ def _context_display_names(con, model_keys: list[str]) -> dict[str, str]:
 
 def _context_view_conditions(con, *, composites: list[str], benchmark_key: str,
                              metric_id: str, model_key: str) -> set[str]:
+    """The view's protocol strings for one model, keyed on
+    `metric_id_effective` to stay consistent with how the cells were selected —
+    keying on the raw id would fail the byte-identity guard below for a
+    collection whose metric folds into the canonical one."""
     rows = con.execute(
         """
         SELECT DISTINCT protocol_condition
         FROM eval_results_view
         WHERE composite_slug IN (SELECT UNNEST(?))
-          AND benchmark_id = ? AND metric_id = ? AND model_key = ?
+          AND benchmark_id = ? AND metric_id_effective = ? AND model_key = ?
         """,
         [composites, benchmark_key, metric_id, model_key],
     ).fetchall()
@@ -1183,27 +1335,19 @@ def _context_benchmark_entry(con, collection_id: str, entry: dict, bench: dict,
     if aggregates != {_CONTEXT_AGGREGATE}:
         return None
 
-    official_task_count, maintainer_org_id = _context_registry_facts(
-        con, benchmark_key
-    )
-    if official_task_count is None or maintainer_org_id is None:
-        missing = [
-            key for key, value in (("official_task_count", official_task_count),
-                                   ("maintainer_org_id", maintainer_org_id))
-            if value is None
-        ]
-        n_scaffold = con.execute(
+    official_task_count = _context_official_task_count(con, benchmark_key)
+    if official_task_count is None:
+        n_external = con.execute(
             "SELECT count(*) FROM fact_results WHERE benchmark_key = ? "
-            "AND agent_scaffold_raw IS NOT NULL "
             "AND collection_id IS DISTINCT FROM ?",
             [benchmark_key, collection_id],
         ).fetchone()[0]
-        if n_scaffold:
+        if n_external:
             log.warning(
-                "collection_context: %s reports %s and %d external "
-                "scaffold-bearing rows exist, but the registry benchmark "
-                "entity is missing %s — no context emitted",
-                collection_id, benchmark_key, n_scaffold, ", ".join(missing),
+                "collection_context: %s reports %s and %d external rows "
+                "exist, but the registry benchmark entity is missing "
+                "official_task_count — no context emitted",
+                collection_id, benchmark_key, n_external,
             )
         return None
 
@@ -1213,18 +1357,23 @@ def _context_benchmark_entry(con, collection_id: str, entry: dict, bench: dict,
 
     context_sources, external = _context_external_points(
         con, collection_id=collection_id, benchmark_key=benchmark_key,
-        metric_id=metric_id, maintainer_org_id=maintainer_org_id,
+        metric_id=metric_id,
     )
     if not external:
         return None
 
-    conditions = _context_conditions(
+    chosen: dict[str, dict] = {}
+    for cond in _context_conditions(
         con, collection_id=collection_id, benchmark_key=benchmark_key,
         metric_id=metric_id,
-    )
-    chosen: dict[str, dict] = {}
-    for cond in conditions:
+    ):
         chosen.setdefault(cond["model_key"], cond)
+    assisted_chosen: dict[str, dict] = {}
+    for cond in _context_conditions(
+        con, collection_id=collection_id, benchmark_key=benchmark_key,
+        metric_id=metric_id, feedback="answer_feedback",
+    ):
+        assisted_chosen.setdefault(cond["model_key"], cond)
 
     matched = [key for key in chosen if external.get(key)]
     if len(matched) < 2:
@@ -1237,58 +1386,27 @@ def _context_benchmark_entry(con, collection_id: str, entry: dict, bench: dict,
 
     models: dict[str, dict] = {}
     without_context: list[str] = []
+    without_assisted: list[dict] = []
     display_names = _context_display_names(
         con, sorted(set(chosen) | set(external))
     )
     for model_key in sorted(chosen):
         cond = chosen[model_key]
-        if len(cond["published_scores"]) != 1:
-            log.info(
-                "collection_context: dropping %s/%s/%s — its fullest "
-                "no-feedback condition maps to %d published scores",
-                collection_id, benchmark_key, model_key,
-                len(cond["published_scores"]),
+        cells = _context_cell_pool(
+            con, collection_id=collection_id, cond=cond,
+        )
+        failure = _context_cell_failure(
+            cond, cells, official_task_count=official_task_count,
+        )
+        if failure is not None:
+            level, reason = failure
+            log.log(
+                level, "collection_context: dropping %s/%s/%s — %s",
+                collection_id, benchmark_key, model_key, reason,
             )
             continue
         published = float(cond["published_scores"][0])
-        n_tasks = cond["n_tasks"]
-        if n_tasks < CONTEXT_COVERAGE_MIN * official_task_count:
-            log.info(
-                "collection_context: dropping %s/%s/%s — G2 coverage %d of "
-                "%d tasks", collection_id, benchmark_key, model_key,
-                n_tasks, official_task_count,
-            )
-            continue
-
-        pool = _context_trajectory_pool(
-            con, collection_id=collection_id, model_raws=cond["model_raws"],
-            configs=cond["configs"],
-            protocol_condition=cond["protocol_condition"],
-        )
-        scores_by_task: dict[str, list[float]] = defaultdict(list)
-        correct_by_task: dict[str, list[float]] = defaultdict(list)
-        for task_id, score, is_correct in pool:
-            scores_by_task[task_id].append(score)
-            correct_by_task[task_id].append(1.0 if is_correct else 0.0)
-        if not scores_by_task:
-            continue
-        recomputed = _task_mean(scores_by_task)
-        binarised = _task_mean(correct_by_task)
-        if abs(recomputed - published) >= CONTEXT_RECOMPUTE_TOL:
-            log.warning(
-                "collection_context: dropping %s/%s/%s — G3 recompute "
-                "%.12f vs published %.12f", collection_id, benchmark_key,
-                model_key, recomputed, published,
-            )
-            continue
-        if abs(binarised - published) > CONTEXT_BINARISED_TOL:
-            log.warning(
-                "collection_context: dropping %s/%s/%s — G3 binarised mean "
-                "%.6f differs from published %.6f by more than %.2f",
-                collection_id, benchmark_key, model_key, binarised, published,
-                CONTEXT_BINARISED_TOL,
-            )
-            continue
+        correct_by_task = cells[1]
 
         points = external.get(model_key)
         if not points:
@@ -1307,23 +1425,61 @@ def _context_benchmark_entry(con, collection_id: str, entry: dict, bench: dict,
                 f"sidecar string must be byte-identical to the view's"
             )
 
-        task_ids = sorted(correct_by_task)
-        attempts = [len(correct_by_task[t]) for t in task_ids]
-        band_lo, band_hi = _jeffreys_band(
-            [int(sum(correct_by_task[t])) for t in task_ids], attempts, model_key,
-        )
+        display_name = display_names.get(model_key, model_key)
+        attempts = [len(v) for v in correct_by_task.values()]
+
+        # Assisted companion: the same selection and the same gates on the
+        # answer-feedback arm. A cell that misses them is named in
+        # `models_without_assisted` rather than silently absent.
+        assisted = None
+        assisted_cond = assisted_chosen.get(model_key)
+        if assisted_cond is None:
+            without_assisted.append(
+                {"display_name": display_name, "n_tasks": None}
+            )
+        else:
+            assisted_failure = _context_cell_failure(
+                assisted_cond,
+                _context_cell_pool(
+                    con, collection_id=collection_id, cond=assisted_cond,
+                ),
+                official_task_count=official_task_count,
+            )
+            if assisted_failure is not None:
+                level, reason = assisted_failure
+                log.log(
+                    level, "collection_context: no assisted mark for %s/%s/%s "
+                    "— %s", collection_id, benchmark_key, model_key, reason,
+                )
+                without_assisted.append({
+                    "display_name": display_name,
+                    "n_tasks": assisted_cond["n_tasks"],
+                })
+            else:
+                if assisted_cond["protocol_condition"] not in view_conditions:
+                    raise RuntimeError(
+                        f"collection_context: assisted protocol_condition "
+                        f"{assisted_cond['protocol_condition']!r} for "
+                        f"{model_key} on {benchmark_key} is absent from "
+                        f"eval_results_view — the sidecar string must be "
+                        f"byte-identical to the view's"
+                    )
+                assisted = {
+                    "score": round(float(assisted_cond["published_scores"][0]), 6),
+                    "score_se": _context_published_se(assisted_cond, model_key),
+                    "n_tasks": assisted_cond["n_tasks"],
+                    "protocol_condition": assisted_cond["protocol_condition"],
+                }
+
         models[model_key] = {
-            "display_name": display_names.get(model_key, model_key),
+            "display_name": display_name,
             "score": round(published, 6),
-            "n_tasks": n_tasks,
+            "score_se": _context_published_se(cond, model_key),
+            "n_tasks": cond["n_tasks"],
             "attempts_min": min(attempts),
             "attempts_max": max(attempts),
             "protocol_condition": cond["protocol_condition"],
-            "band_lo": round(band_lo, 6),
-            "band_hi": round(band_hi, 6),
-            "band_runs": BAND_RUNS,
-            "band_method": BAND_METHOD,
-            "band_seed": BAND_SEED,
+            "assisted": assisted,
             "external": points,
         }
 
@@ -1340,6 +1496,9 @@ def _context_benchmark_entry(con, collection_id: str, entry: dict, bench: dict,
             s["display_name"] for s in context_sources
         ),
         "models_without_context": sorted(without_context),
+        "models_without_assisted": sorted(
+            without_assisted, key=lambda m: m["display_name"]
+        ),
         "models": models,
     }
 

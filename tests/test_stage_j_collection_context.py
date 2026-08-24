@@ -1,17 +1,19 @@
 """Stage J — collection_context.json.
 
-The sidecar pre-joins a curated collection's own published cell (plus a
-re-run band computed from its released trajectories) with the external
-(scaffold, model) entries the benchmark's maintainer publishes. Everything
-here is hand-built on a bare DuckDB connection: the sidecar reads six tables
-and a curated YAML, which is a far smaller surface than a pipeline run.
+The sidecar pre-joins a curated collection's own published cells (its
+no-feedback pick plus an assisted companion) with every other EEE measurement
+of the same model on the same benchmark. Everything here is hand-built on a
+bare DuckDB connection: the sidecar reads six tables and a curated YAML, which
+is a far smaller surface than a pipeline run.
 
 Fixture shape (one benchmark, `minibench`, official_task_count = 10):
 
   collection `test-study`   dated model ids, four protocol conditions on
                             model-a and four on model-b
-  composite  `board`        the maintainer org's leaderboard, undated model
-                            ids, percent-scaled scores over two harvests
+  composite  `board`        a leaderboard, undated model ids, percent-scaled
+                            scores over two harvests, scaffolds recorded
+  composite  `aggregator`   a scaffold-less aggregator on a raw metric that
+                            folds into the canonical one
 """
 from __future__ import annotations
 
@@ -30,6 +32,8 @@ BENCHMARK = "minibench"
 CONFIG = "minibench"
 METRIC = "accuracy"
 MAINTAINER_ORG = "bench-maintainer"
+AGGREGATOR_ORG = "aggregator-org"
+EXCLUDED_ORG = sorted(sidecars._CONTEXT_EXCLUDED_ORGS)[0]
 OFFICIAL_TASK_COUNT = 10
 SNAPSHOT = {"snapshot_id": "2026-04-30T00:00:00Z"}
 
@@ -38,8 +42,8 @@ MODEL_B_RAW = "vendor/model-b-20260101"
 MODEL_A_KEY = "vendor/model-a"              # undated, as the board ships it
 MODEL_B_KEY = "vendor/model-b"
 
-CURRENT_HARVEST = "2000.5"
-STALE_HARVEST = "1000.5"
+CURRENT_HARVEST = "200000.5"   # 1970-01-03
+STALE_HARVEST = "1000.5"       # 1970-01-01
 
 
 def _cond(feedback: str, variant: str) -> str:
@@ -82,6 +86,13 @@ EXTERNAL = [
     (MODEL_B_KEY, "Delta", 44.0, CURRENT_HARVEST),
 ]
 
+# Scaffold-less aggregator rows: (model_aggregation_key, percent, harvest).
+# model-a's 55.0 restates the board's Alpha entry; model-b's is its own point.
+AGGREGATED = [
+    (MODEL_A_KEY, 55.0, CURRENT_HARVEST),
+    (MODEL_B_KEY, 38.0, CURRENT_HARVEST),
+]
+
 
 def _trajectory_rows(conditions=CONDITIONS, partial_credit=()):
     """One trajectory per task, plus `extra` duplicates of task 0. Scores are
@@ -113,10 +124,12 @@ def _build_con(
     *,
     conditions=CONDITIONS,
     external=EXTERNAL,
+    aggregated=AGGREGATED,
     partial_credit=(),
     score_overrides: dict[tuple[str, str], float] | None = None,
     registry_metadata: str | None = None,
     maintainer_org: str = MAINTAINER_ORG,
+    aggregator_org: str = AGGREGATOR_ORG,
 ):
     con = duckdb.connect()
     traj = _trajectory_rows(conditions, partial_credit)
@@ -136,7 +149,8 @@ def _build_con(
     con.execute(
         "CREATE TABLE fact_results ("
         "collection_id VARCHAR, composite_slug VARCHAR, source_config VARCHAR, "
-        "benchmark_key VARCHAR, metric_key VARCHAR, metric_kind VARCHAR, "
+        "benchmark_key VARCHAR, metric_key VARCHAR, metric_key_effective VARCHAR, "
+        "metric_kind VARCHAR, "
         "model_aggregation_key VARCHAR, model_raw VARCHAR, score DOUBLE, "
         "score_se DOUBLE, retrieved_timestamp VARCHAR, "
         "evaluation_timestamp VARCHAR, agent_scaffold_raw VARCHAR, "
@@ -149,18 +163,28 @@ def _build_con(
         )
         con.execute(
             "INSERT INTO fact_results VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [COLLECTION, COLLECTION, CONFIG, BENCHMARK, METRIC, "accuracy",
-             AGG_KEY[model_raw], model_raw, score, None, "3000.0",
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [COLLECTION, COLLECTION, CONFIG, BENCHMARK, METRIC, METRIC,
+             "accuracy", AGG_KEY[model_raw], model_raw, score, 0.04, "3000.0",
              "2026-03-01", None, "study-org", condition],
         )
     for model_key, scaffold, score, harvest in external:
         con.execute(
             "INSERT INTO fact_results VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [None, "board", "board", BENCHMARK, METRIC, "accuracy",
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [None, "board", "board", BENCHMARK, METRIC, METRIC, "accuracy",
              model_key, model_key, score, 2.5, harvest, "2026-02-01",
              scaffold, maintainer_org, None],
+        )
+    # An aggregator reporting a raw metric that folds into the canonical one,
+    # with no scaffold provenance: matched on metric_key_effective.
+    for model_key, score, harvest in aggregated:
+        con.execute(
+            "INSERT INTO fact_results VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [None, "aggregator", "aggregator", BENCHMARK, "raw-score", METRIC,
+             "accuracy", model_key, model_key, score, None, harvest,
+             None, None, aggregator_org, None],
         )
 
     # eval_results_view: one row per protocol point the sidecar has to find
@@ -168,18 +192,36 @@ def _build_con(
     con.execute(
         "CREATE TABLE eval_results_view ("
         "composite_slug VARCHAR, benchmark_id VARCHAR, metric_id VARCHAR, "
+        "metric_id_effective VARCHAR, "
         "model_key VARCHAR, protocol_condition VARCHAR, "
         "scale_conversion VARCHAR)"
     )
     for model_raw, condition, *_ in conditions:
         con.execute(
-            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?)",
-            [COLLECTION, BENCHMARK, METRIC, AGG_KEY[model_raw], condition, "none"],
+            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?)",
+            [COLLECTION, BENCHMARK, METRIC, METRIC, AGG_KEY[model_raw],
+             condition, "none"],
         )
     for model_key in sorted({e[0] for e in external}):
         con.execute(
-            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?)",
-            ["board", BENCHMARK, METRIC, model_key, None, "div100"],
+            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?)",
+            ["board", BENCHMARK, METRIC, METRIC, model_key, None, "div100"],
+        )
+    # The aggregator keeps its raw id in the view and folds to the canonical
+    # one, exactly as llm-stats does in the warehouse.
+    for model_key in sorted({a[0] for a in aggregated}):
+        con.execute(
+            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?)",
+            ["aggregator", BENCHMARK, "raw-score", METRIC, model_key, None,
+             "div100"],
+        )
+    # A second metric on the board, carrying a DIFFERENT scale conversion.
+    # Scale resolution must stay scoped to the metric under test.
+    for model_key in sorted({e[0] for e in external}):
+        con.execute(
+            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?)",
+            ["board", BENCHMARK, "calibration-error", "calibration-error",
+             model_key, None, "none"],
         )
 
     if registry_metadata is None:
@@ -209,6 +251,7 @@ def _build_con(
     con.execute(
         "CREATE TABLE composites AS "
         "SELECT 'board' AS composite_slug, 'The Board' AS composite_display_name "
+        "UNION ALL SELECT 'aggregator', 'The Aggregator' "
         "UNION ALL SELECT ?, 'Test Study'", [COLLECTION]
     )
     return con
@@ -251,32 +294,80 @@ def test_context_sidecar_shape(tmp_path, monkeypatch):
 
     assert entry["harvested_at"] == SNAPSHOT["snapshot_id"]
     assert entry["official_task_count"] == OFFICIAL_TASK_COUNT
-    # G1 is derived from the maintainer org, not an allowlist; the display
-    # name rides along so caption 1 needs no client-side join
+    # The source set is every composite reporting the benchmark, not just the
+    # maintainer's; display names ride along so the caption needs no join.
     assert entry["context_sources"] == [
-        {"id": "board", "display_name": "The Board"}
+        {"id": "aggregator", "display_name": "The Aggregator"},
+        {"id": "board", "display_name": "The Board"},
     ]
-    assert entry["context_source_display"] == "The Board"
+    assert entry["context_source_display"] == "The Aggregator, The Board"
     assert entry["models_without_context"] == []
     assert sorted(entry["models"]) == [MODEL_A_KEY, MODEL_B_KEY]
 
     model_a = entry["models"][MODEL_A_KEY]
     assert model_a["display_name"] == "Model A"
     assert model_a["n_tasks"] == 10
+    assert model_a["score_se"] == 0.04
     # one attempt per task, except task 0 in the unknown-feedback arm which
     # isn't the chosen condition
     assert (model_a["attempts_min"], model_a["attempts_max"]) == (1, 1)
-    assert model_a["band_runs"] == sidecars.BAND_RUNS
-    assert model_a["band_method"] == "jeffreys"
-    assert model_a["band_seed"] == sidecars.BAND_SEED
-    assert model_a["band_lo"] <= model_a["band_hi"]
-    # external values are converted per the board's Stage J classification
-    # (div100) and ordered score-desc then scaffold
+    assert not any(key.startswith("band") for key in model_a)
+    # external values are converted per each source's Stage J classification
+    # (div100) and ordered score-desc; Gamma is a delisted board entry that
+    # survives as a dated measurement, and the aggregator's 0.55 restatement of
+    # Alpha is dropped as a re-report.
     assert [(p["scaffold"], p["score"]) for p in model_a["external"]] == [
-        ("Beta", 0.7), ("Alpha", 0.55),
+        ("Beta", 0.7), ("Gamma", 0.61), ("Alpha", 0.55),
     ]
     assert model_a["external"][0]["run_date"] == "2026-02-01"
     assert model_a["external"][0]["score_se"] == 0.025
+    assert model_a["external"][0]["source"] == "The Board"
+    assert model_a["external"][0]["retrieved_at"] == "1970-01-03"
+
+    # model-b keeps its own aggregator point: no scaffold, sourced, no SE
+    unlabelled = [
+        p for p in entry["models"][MODEL_B_KEY]["external"] if p["scaffold"] is None
+    ]
+    assert unlabelled == [{
+        "scaffold": None, "source": "The Aggregator", "score": 0.38,
+        "score_se": None, "run_date": None, "retrieved_at": "1970-01-03",
+    }]
+
+
+def test_assisted_companion_and_its_absence_are_both_reported(
+    tmp_path, monkeypatch
+):
+    _write_curated(tmp_path, monkeypatch)
+    path, _ = _write(_build_con(), tmp_path)
+    entry = _entry(path)
+    # model-a has a full-coverage answer-feedback arm, picked the same way as
+    # the no-feedback one
+    assert entry["models"][MODEL_A_KEY]["assisted"] == {
+        "score": 0.8, "score_se": 0.04, "n_tasks": 10,
+        "protocol_condition": A_FEEDBACK,
+    }
+    # model-b ran no assisted arm at all: named, with a null task count
+    assert entry["models"][MODEL_B_KEY]["assisted"] is None
+    assert entry["models_without_assisted"] == [
+        {"display_name": "Model B", "n_tasks": None}
+    ]
+
+
+def test_assisted_below_coverage_is_named_not_dropped_silently(
+    tmp_path, monkeypatch, caplog
+):
+    _write_curated(tmp_path, monkeypatch)
+    # model-a's assisted arm now covers 5 of 10 tasks — under G2
+    conditions = [c for c in CONDITIONS if c[1] != A_FEEDBACK]
+    conditions.append((MODEL_A_RAW, A_FEEDBACK, 5, 4, 10))
+    with caplog.at_level(logging.INFO, logger=sidecars.log.name):
+        path, _ = _write(_build_con(conditions=conditions), tmp_path)
+    entry = _entry(path)
+    assert entry["models"][MODEL_A_KEY]["assisted"] is None
+    assert {"display_name": "Model A", "n_tasks": 5} in entry["models_without_assisted"]
+    assert "no assisted mark" in caplog.text
+    # the no-feedback mark is untouched
+    assert entry["models"][MODEL_A_KEY]["score"] == 0.6
 
 
 def test_condition_selection_ties_and_unknown_exclusion(tmp_path, monkeypatch):
@@ -305,10 +396,10 @@ def test_aggregation_key_bridges_dated_and_undated_ids(tmp_path, monkeypatch):
     # the collection ships dated model ids and the board undated ones; both
     # land in one entry keyed by model_aggregation_key
     assert MODEL_A_RAW not in entry["models"]
-    assert len(entry["models"][MODEL_A_KEY]["external"]) == 2
+    assert len(entry["models"][MODEL_A_KEY]["external"]) == 3
 
 
-def test_band_is_deterministic_across_runs(tmp_path, monkeypatch):
+def test_output_is_byte_stable_across_runs(tmp_path, monkeypatch):
     _write_curated(tmp_path, monkeypatch)
     first, _ = _write(_build_con(), tmp_path, "run1")
     second, _ = _write(_build_con(), tmp_path, "run2")
@@ -320,14 +411,33 @@ def test_band_is_deterministic_across_runs(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_currency_drops_stale_tuple(tmp_path, monkeypatch):
+def test_currency_keeps_delisted_entries_with_their_own_date(
+    tmp_path, monkeypatch
+):
     _write_curated(tmp_path, monkeypatch)
     path, _ = _write(_build_con(), tmp_path)
-    scaffolds = {
-        p["scaffold"] for p in _entry(path)["models"][MODEL_A_KEY]["external"]
-    }
-    # Gamma only appears in the older harvest — delisted, not current
-    assert scaffolds == {"Alpha", "Beta"}
+    points = _entry(path)["models"][MODEL_A_KEY]["external"]
+    # Gamma only appears in the older harvest. These are dated measurements,
+    # not a live listing, so it stays — stamped with when it was last seen.
+    by_scaffold = {p["scaffold"]: p for p in points}
+    assert set(by_scaffold) == {"Alpha", "Beta", "Gamma"}
+    assert by_scaffold["Gamma"]["retrieved_at"] < by_scaffold["Alpha"]["retrieved_at"]
+
+
+def test_currency_keeps_only_the_latest_row_per_scaffold(tmp_path, monkeypatch):
+    _write_curated(tmp_path, monkeypatch)
+    # the board republished Alpha at a higher score in the current harvest
+    external = [e for e in EXTERNAL if (e[0], e[1]) != (MODEL_A_KEY, "Alpha")]
+    external += [
+        (MODEL_A_KEY, "Alpha", 41.0, STALE_HARVEST),
+        (MODEL_A_KEY, "Alpha", 55.0, CURRENT_HARVEST),
+    ]
+    path, _ = _write(_build_con(external=external), tmp_path)
+    alpha = [
+        p for p in _entry(path)["models"][MODEL_A_KEY]["external"]
+        if p["scaffold"] == "Alpha"
+    ]
+    assert [p["score"] for p in alpha] == [0.55]
 
 
 def test_distinct_scores_in_one_harvest_fail_loudly(tmp_path, monkeypatch):
@@ -434,19 +544,210 @@ def test_missing_registry_metadata_warns_and_emits_nothing(
     assert "missing official_task_count" in caplog.text
 
 
-def test_no_sidecar_when_no_composite_matches_the_maintainer(
+def test_non_maintainer_sources_still_count(tmp_path, monkeypatch):
+    _write_curated(tmp_path, monkeypatch)
+    # the board is no longer the maintainer's: identity doesn't gate a source,
+    # only data quality does
+    path, _ = _write(_build_con(maintainer_org="someone-else"), tmp_path)
+    entry = _entry(path)
+    assert [s["id"] for s in entry["context_sources"]] == ["aggregator", "board"]
+
+
+def test_quality_excluded_org_is_held_out(tmp_path, monkeypatch):
+    _write_curated(tmp_path, monkeypatch)
+    con = _build_con(aggregator_org=EXCLUDED_ORG)
+    path, _ = _write(con, tmp_path)
+    entry = _entry(path)
+    assert [s["id"] for s in entry["context_sources"]] == ["board"]
+    assert all(
+        p["scaffold"] is not None
+        for m in entry["models"].values() for p in m["external"]
+    )
+
+
+def test_rereport_drop_covers_a_near_miss_inside_the_window(
+    tmp_path, monkeypatch
+):
+    # An aggregator restating a board entry rarely restates it to the bit. The
+    # window, not just exact equality, is what collapses the two.
+    _write_curated(tmp_path, monkeypatch)
+    # 0.5503 vs the board's labelled 0.55: 0.0003 apart, inside the window.
+    # Literal, not derived from the constant — a test that moves with the
+    # value it pins would survive any change to it.
+    inside = 55.03
+    aggregated = [(MODEL_A_KEY, inside, CURRENT_HARVEST),
+                  (MODEL_B_KEY, 38.0, CURRENT_HARVEST)]
+    path, _ = _write(_build_con(aggregated=aggregated), tmp_path)
+    entry = _entry(path)
+    unlabelled = [p for p in entry["models"][MODEL_A_KEY]["external"]
+                  if p["scaffold"] is None]
+    assert unlabelled == []
+
+
+def test_rereport_drop_keeps_a_point_outside_the_window(tmp_path, monkeypatch):
+    # The real near-miss is 0.002 away (opus-4.5's 0.593 vs Letta Code's
+    # 0.591): outside the window, so it stays as its own measurement.
+    _write_curated(tmp_path, monkeypatch)
+    # 0.552 vs the board's labelled 0.55: 0.002 apart, the same gap as the
+    # real opus-4.5 near-miss, which must stay its own measurement.
+    outside = 55.2
+    aggregated = [(MODEL_A_KEY, outside, CURRENT_HARVEST),
+                  (MODEL_B_KEY, 38.0, CURRENT_HARVEST)]
+    path, _ = _write(_build_con(aggregated=aggregated), tmp_path)
+    entry = _entry(path)
+    unlabelled = [p for p in entry["models"][MODEL_A_KEY]["external"]
+                  if p["scaffold"] is None]
+    assert len(unlabelled) == 1
+    assert unlabelled[0]["score"] == round(outside / 100, 6)
+
+
+def test_coverage_gate_boundary_is_exclusive_on_an_integer_threshold(
+    tmp_path, monkeypatch
+):
+    # With official_task_count=20 the G2 threshold is exactly 19, so a 19-task
+    # cell pins whether the comparison is `<` or `<=`. Model A's fullest cell
+    # covers 10 of 10 tasks; widening the denominator to 20 puts it under.
+    _write_curated(tmp_path, monkeypatch)
+    registry = json.dumps({"official_task_count": 20})
+    con = _build_con(registry_metadata=registry)
+    path, _ = _write(con, tmp_path)
+    # 10 < 19: every model drops out, so nothing is emitted at all
+    assert path is None
+
+    # A cell exactly ON the threshold must be KEPT (`<`, not `<=`).
+    conditions = [
+        (MODEL_A_RAW, A_FULL, 19, 12, 0),
+        (MODEL_A_RAW, A_FEEDBACK, 19, 15, 0),
+        (MODEL_B_RAW, B1, 19, 10, 0),
+    ]
+    con = _build_con(conditions=conditions, registry_metadata=registry)
+    path, _ = _write(con, tmp_path)
+    entry = _entry(path)
+    assert entry["models"][MODEL_A_KEY]["n_tasks"] == 19
+    assert entry["models"][MODEL_A_KEY]["assisted"]["n_tasks"] == 19
+
+
+def test_unlabelled_duplicate_scores_fail_loudly(tmp_path, monkeypatch):
+    # A scaffold-less source publishing two different scores for one model at
+    # one harvest is held to the same standard as a labelled one: the strip
+    # reads as a spread, so an unexplained second number must not silently
+    # widen it.
+    _write_curated(tmp_path, monkeypatch)
+    aggregated = [
+        (MODEL_A_KEY, 55.0, CURRENT_HARVEST),
+        (MODEL_A_KEY, 62.0, CURRENT_HARVEST),
+        (MODEL_B_KEY, 38.0, CURRENT_HARVEST),
+    ]
+    with pytest.raises(RuntimeError, match="refusing to tie-break"):
+        _write(_build_con(aggregated=aggregated), tmp_path)
+
+
+def test_quality_holdout_survives_a_composite_that_spans_orgs(
+    tmp_path, monkeypatch
+):
+    # A composite can carry rows from more than one org (`reward-bench` is
+    # allenai + writer in the warehouse). Selecting the source on a clean org
+    # must not carry the held-out org's rows in on its ticket.
+    _write_curated(tmp_path, monkeypatch)
+    con = _build_con()
+    con.execute(
+        "INSERT INTO fact_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [None, "aggregator", "aggregator", BENCHMARK, "raw-score", METRIC,
+         "accuracy", MODEL_B_KEY, MODEL_B_KEY, 99.0, None, CURRENT_HARVEST,
+         None, None, EXCLUDED_ORG, None],
+    )
+    path, _ = _write(con, tmp_path)
+    entry = _entry(path)
+    scores = [p["score"] for p in entry["models"][MODEL_B_KEY]["external"]]
+    assert 0.99 not in scores
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_scale_resolution_is_scoped_to_the_metric_under_test(
+    tmp_path, monkeypatch
+):
+    # The board publishes a second metric on this benchmark under a different
+    # scale conversion. Resolving scale across all of a composite's metrics
+    # would read as inconsistent and drop the source (the real case is
+    # scale-seal-hle/hle: accuracy div100, calibration-error none).
+    _write_curated(tmp_path, monkeypatch)
+    con = _build_con()
+    assert con.execute(
+        "SELECT count(DISTINCT scale_conversion) FROM eval_results_view "
+        "WHERE composite_slug = 'board'"
+    ).fetchone()[0] > 1
+    path, _ = _write(con, tmp_path)
+    entry = _entry(path)
+    assert "board" in [s["id"] for s in entry["context_sources"]]
+    # div100 applied, not the other metric's 'none'
+    assert 0.55 in [p["score"] for p in entry["models"][MODEL_A_KEY]["external"]]
+
+
+def test_unparseable_harvest_stamp_sorts_oldest_instead_of_aborting(
+    tmp_path, monkeypatch
+):
+    # ISO-8601 stamps exist in the warehouse; CAST would abort the whole bake.
+    _write_curated(tmp_path, monkeypatch)
+    con = _build_con()
+    con.execute(
+        "UPDATE fact_results SET retrieved_timestamp = '2026-02-01T00:00:00Z' "
+        "WHERE composite_slug = 'board' AND agent_scaffold_raw = 'Beta'"
+    )
+    path, _ = _write(con, tmp_path)
+    entry = _entry(path)
+    beta = [p for p in entry["models"][MODEL_A_KEY]["external"]
+            if p["scaffold"] == "Beta"]
+    # the unparseable row is the only one for its key, so it survives with no
+    # retrieved_at rather than vanishing or aborting
+    assert len(beta) == 1
+    assert beta[0]["retrieved_at"] is None
+    # a key that also has a parseable row is unaffected
+    alpha = [p for p in entry["models"][MODEL_A_KEY]["external"]
+             if p["scaffold"] == "Alpha"]
+    assert alpha[0]["retrieved_at"] == "1970-01-03"
+
+
+def test_unparseable_stamp_never_displaces_a_parseable_one(
     tmp_path, monkeypatch
 ):
     _write_curated(tmp_path, monkeypatch)
-    path, _ = _write(_build_con(maintainer_org="someone-else"), tmp_path)
-    assert path is None
+    con = _build_con()
+    # a second Gamma row: unparseable stamp, different score. The parseable
+    # row must still win its key, and the pair must not read as ambiguous.
+    con.execute(
+        "INSERT INTO fact_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [None, "board", "board", BENCHMARK, METRIC, METRIC, "accuracy",
+         MODEL_A_KEY, MODEL_A_KEY, 88.0, 2.5, "not-a-timestamp", "2026-02-01",
+         "Gamma", MAINTAINER_ORG, None],
+    )
+    path, _ = _write(con, tmp_path)
+    entry = _entry(path)
+    gamma = [p for p in entry["models"][MODEL_A_KEY]["external"]
+             if p["scaffold"] == "Gamma"]
+    assert [p["score"] for p in gamma] == [0.61]
+
+
+def test_assisted_protocol_condition_absent_from_the_view_fails(
+    tmp_path, monkeypatch
+):
+    # the assisted string is emitted into the payload like the no-feedback one
+    # and gets the same byte-identity guarantee
+    _write_curated(tmp_path, monkeypatch)
+    con = _build_con()
+    con.execute(
+        "DELETE FROM eval_results_view WHERE protocol_condition = ?",
+        [A_FEEDBACK],
+    )
+    with pytest.raises(RuntimeError, match="assisted protocol_condition"):
+        _write(con, tmp_path)
 
 
 def test_single_matched_model_fails_the_join_assertion(tmp_path, monkeypatch):
     _write_curated(tmp_path, monkeypatch)
     external = [e for e in EXTERNAL if e[0] == MODEL_A_KEY]
+    aggregated = [a for a in AGGREGATED if a[0] == MODEL_A_KEY]
     with pytest.raises(RuntimeError, match="matched an external entry"):
-        _write(_build_con(external=external), tmp_path)
+        _write(_build_con(external=external, aggregated=aggregated), tmp_path)
 
 
 def test_flagged_scale_conversion_excludes_the_source(tmp_path, monkeypatch):
@@ -454,10 +755,24 @@ def test_flagged_scale_conversion_excludes_the_source(tmp_path, monkeypatch):
     con = _build_con()
     con.execute(
         "UPDATE eval_results_view SET scale_conversion = 'flagged' "
-        "WHERE composite_slug = 'board'"
+        "WHERE composite_slug IN ('board', 'aggregator')"
     )
     path, _ = _write(con, tmp_path)
     assert path is None
+
+
+def test_aggregator_scale_resolves_on_its_own_unfolded_metric_id(
+    tmp_path, monkeypatch
+):
+    _write_curated(tmp_path, monkeypatch)
+    # the aggregator's view rows keep metric_id='raw-score'; keying the scale
+    # lookup on the canonical id would find nothing and drop the source
+    path, _ = _write(_build_con(), tmp_path)
+    entry = _entry(path)
+    assert "aggregator" in [s["id"] for s in entry["context_sources"]]
+    scores = [p["score"] for p in entry["models"][MODEL_B_KEY]["external"]
+              if p["source"] == "The Aggregator"]
+    assert scores == [0.38]
 
 
 def test_protocol_condition_absent_from_the_view_fails(tmp_path, monkeypatch):
