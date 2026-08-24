@@ -431,3 +431,66 @@ def test_metric_config_struct_shape(tmp_path, monkeypatch):
         "evaluation_description", "lower_is_better", "score_type",
         "min_score", "max_score", "unit",
     }
+
+
+def _plant_second_metric(con) -> None:
+    """Give one model a second metric on the same benchmark, disagreeing on
+    the model-level columns the leaderboard struct carries
+    (`evaluation_timestamp`, reporting org).
+
+    That is the shape `leaderboard_per_model` has to break a tie on: it
+    groups by (composite, benchmark, model) over one row per metric, so a
+    model scored on two metrics contributes two rows to the group. The
+    planted metric sorts *after* the original one, so the pinned
+    representative must be the original.
+    """
+    con.execute(
+        "INSERT INTO fact_results SELECT * REPLACE ("
+        "  'planted-fact-1'        AS fact_id,"
+        "  'pass-at-1'             AS metric_id,"
+        "  'pass-at-1'             AS metric_key,"
+        "  'pass-at-1'             AS metric_key_effective,"
+        "  'pass@1'                AS metric_raw,"
+        "  '2026-01-01T00:00:00Z'  AS evaluation_timestamp,"
+        "  'Planted Reporting Org' AS org_display"
+        ") FROM fact_results WHERE model_aggregation_key = 'openai/gpt-4o'"
+    )
+
+
+def test_leaderboard_rows_representative_pinned_to_lowest_metric_id(
+    tmp_path, monkeypatch
+):
+    """Pin the tie-break `leaderboard_per_model` uses to collapse a model's
+    per-metric rows into one struct.
+
+    Those rows can disagree on the model-level columns, and the pick used to
+    be `ANY_VALUE` — whichever row the aggregate saw first, which flipped
+    between two bakes of identical inputs. It is now `arg_min(..., metric_id)`,
+    so the representative is the lowest-metric_id row and nothing else.
+
+    Note the fixture corpus cannot reproduce the *flip*: at this scale the
+    ROW_NUMBER window upstream sorts on its partition keys (which include
+    metric_id), so even ANY_VALUE lands on the same row single-threaded. What
+    this test pins is the contract — that the emitted values come from one
+    identified row rather than an unspecified one.
+    """
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    con = _materialise_views(out, mutate=_plant_second_metric)
+
+    rows = con.execute(
+        "SELECT lr.metrics_present, lr.evaluation_timestamp, "
+        "       lr.source_metadata.source_organization_name "
+        "FROM evals_view, UNNEST(leaderboard_rows) AS t(lr) "
+        "WHERE lr.metrics_present = 2"
+    ).fetchall()
+
+    # Guard against a vacuous pass: the plant must really have produced the
+    # two-metric group the aggregate has to collapse.
+    assert len(rows) == 1, rows
+    _, timestamp, org_name = rows[0]
+
+    # 'accuracy' < 'pass-at-1', so the representative is the original row —
+    # never the planted one, whichever order the rows arrive in.
+    assert timestamp.year == 2026 and timestamp.month == 4
+    assert org_name != "Planted Reporting Org"

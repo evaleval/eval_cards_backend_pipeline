@@ -18,8 +18,11 @@ from huggingface_hub import snapshot_download
 from eval_card_backend.config import BENCHMARK_METADATA_DATASET_REPO
 from eval_card_backend.sources._revision_cache import (
     cache_revision_ok as _cache_revision_ok,
+    cached_revision,  # re-exported: the revision this cache actually holds
     write_cache_revision as _write_cache_revision,
 )
+
+__all__ = ["cached_revision", "ensure_snapshot", "load_cards"]
 
 
 def _has_cached(target: Path) -> bool:

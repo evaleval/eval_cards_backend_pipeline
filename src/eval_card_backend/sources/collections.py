@@ -240,17 +240,9 @@ def _consumed_eee_revision(eee_root: Path | None, pinned: str | None) -> str | N
     """The EEE revision this run actually consumes: the explicit pin when
     set, else the revision recorded in the snapshot listing file (None for
     hand-built fixture trees)."""
-    if pinned:
-        return pinned
-    if eee_root is None:
-        return None
-    listing = Path(eee_root) / ".eee_file_listing.json"
-    if not listing.exists():
-        return None
-    try:
-        return json.loads(listing.read_text(encoding="utf-8")).get("revision")
-    except (ValueError, OSError):
-        return None
+    from eval_card_backend.sources import eee
+
+    return pinned or eee.cached_revision(eee_root)
 
 
 def apply_vendor_collections(

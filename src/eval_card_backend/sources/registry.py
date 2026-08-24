@@ -39,8 +39,24 @@ log = logging.getLogger(__name__)
 from eval_card_backend.config import ENTITY_REGISTRY_DATASET_REPO
 from eval_card_backend.sources._revision_cache import (
     cache_revision_ok as _cache_revision_ok,
+    cached_revision,  # re-exported: the revision this cache actually holds
     write_cache_revision as _write_cache_revision,
 )
+
+__all__ = [
+    "ALIASES_TABLE",
+    "ALL_TABLES",
+    "DIM_TABLES",
+    "EXPECTED_REGISTRY_SCHEMA_MAJOR",
+    "RegistrySchemaMismatch",
+    "aliases_path",
+    "assert_manifest_compatible",
+    "cached_revision",
+    "ensure_snapshot",
+    "load_alias_store",
+    "open_dim_paths",
+    "read_parquet_arg",
+]
 
 # Registry schema major. Bumped when the registry removes/renames a
 # column the producer reads. Minor bumps (additive columns) don't

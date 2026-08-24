@@ -1506,6 +1506,17 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             CAST(to_json(j.generation_config.additional_details) AS VARCHAR) AS generation_additional_details,
             CAST(to_json(j.metric_config.additional_details)     AS VARCHAR) AS metric_additional_details,
 
+            -- Agent scaffold the run was executed under, when the source
+            -- publishes one. Field contract: sources participate by emitting
+            -- `model_info.additional_details.agent_name` (terminal_bench_2,
+            -- exgentic, cocoabench, researchgym) or `agent_scaffold` (HAL).
+            -- Distinct from `harness_raw`/`harness_id` — the scaffold is the
+            -- agent loop, not the eval library that ran it.
+            COALESCE(
+                NULLIF(TRIM(j.model_info.additional_details['agent_name']), ''),
+                NULLIF(TRIM(j.model_info.additional_details['agent_scaffold']), '')
+            )                                                                            AS agent_scaffold_raw,
+
             -- upstream EEE record pointer (repo-relative path of the source
             -- JSON this row was exploded from; Stage J builds the HF URL).
             j.source_record_path,
@@ -4645,11 +4656,28 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 erv.composite_slug,
                 erv.benchmark_id,
                 erv.model_key,
-                ANY_VALUE(erv.model_route_id)                  AS model_route_id,
-                ANY_VALUE(erv.model_info)                      AS model_info,
-                ANY_VALUE(erv.evaluation_timestamp)            AS evaluation_timestamp,
-                ANY_VALUE(erv.source_metadata)                 AS source_metadata,
-                ANY_VALUE(erv.source_data)                     AS source_data,
+                -- arg_min not ANY_VALUE: a model scored on several metrics
+                -- contributes one row per metric to this group, and those
+                -- rows can disagree on these columns (per-metric records
+                -- carrying different upload timestamps or reporting orgs).
+                -- ANY_VALUE returned whichever row the hash aggregate saw
+                -- first, so the emitted leaderboard struct flipped
+                -- run-to-run. metric_id is unique within the group (the
+                -- CTE above keeps one row per metric), so it is a total
+                -- order; FILTER keeps ANY_VALUE's "first non-null" reach.
+                arg_min(erv.model_route_id, erv.metric_id)
+                    FILTER (WHERE erv.model_route_id IS NOT NULL)
+                                                               AS model_route_id,
+                arg_min(erv.model_info, erv.metric_id)
+                    FILTER (WHERE erv.model_info IS NOT NULL)  AS model_info,
+                arg_min(erv.evaluation_timestamp, erv.metric_id)
+                    FILTER (WHERE erv.evaluation_timestamp IS NOT NULL)
+                                                               AS evaluation_timestamp,
+                arg_min(erv.source_metadata, erv.metric_id)
+                    FILTER (WHERE erv.source_metadata IS NOT NULL)
+                                                               AS source_metadata,
+                arg_min(erv.source_data, erv.metric_id)
+                    FILTER (WHERE erv.source_data IS NOT NULL) AS source_data,
                 MAP(
                     ARRAY_AGG(erv.metric_id ORDER BY erv.metric_id),
                     ARRAY_AGG(erv.score     ORDER BY erv.metric_id)

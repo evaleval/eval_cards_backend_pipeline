@@ -120,6 +120,24 @@ def _read_listing_file(listing_path: Path) -> list[str]:
     return _listing_cache[key]
 
 
+def cached_revision(local_dir: Path | None) -> str | None:
+    """The EEE revision the snapshot on disk was downloaded at, or None.
+
+    `ensure_snapshot` resolves HEAD to a concrete sha before listing and
+    records it in the listing file, so this is truthful for unpinned runs
+    too. None for hand-built fixture trees, which have no listing file.
+    """
+    if local_dir is None:
+        return None
+    listing = Path(local_dir) / _LISTING_PATH
+    if not listing.exists():
+        return None
+    try:
+        return json.loads(listing.read_text(encoding="utf-8")).get("revision")
+    except (ValueError, OSError):
+        return None
+
+
 def _local_paths(local_dir: Path) -> list[str]:
     """Aggregate paths known to a local snapshot dir.
 

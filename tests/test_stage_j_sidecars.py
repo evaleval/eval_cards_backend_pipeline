@@ -920,3 +920,76 @@ def test_peer_ranks_uses_primary_metric(tmp_path, monkeypatch):
             assert (rank["position"], rank["total"]) == (pos, tot)
             seen.add(key)
     assert seen == set(expected.keys()), "missing entries vs. eval_results_view"
+
+
+def _comparison_index_units(out_dir: Path, tmp_path: Path, scan_order: str) -> dict:
+    """Build `comparison-index.json` with one model's `metric_unit` changed
+    so a leaderboard bucket holds two different units, and with
+    `eval_results_view` pinned to `scan_order`.
+
+    A bucket keyed by (evaluation_id, metric_summary_id) spans models, and
+    `metric_unit` is a per-row value, so the models in one bucket really can
+    disagree — 29 buckets do in the production corpus. Returns the emitted
+    unit per eval.
+    """
+    from eval_card_backend.canonicalise import sidecars, stages
+    from eval_card_backend.canonicalise.resolver_setup import register_udfs
+    from eval_card_backend.sources import registry as registry_src
+    from eval_entity_resolver import Resolver
+
+    con = duckdb.connect()
+    alias_store = registry_src.load_alias_store(FIXTURES / "entity_registry")
+    register_udfs(con, Resolver(alias_store))
+    for table in (
+        "fact_results", "benchmarks", "composites", "families", "models",
+        "canonical_metrics",
+    ):
+        con.execute(
+            f"CREATE TABLE {table} AS "
+            f"SELECT * FROM read_parquet('{out_dir}/{table}.parquet')"
+        )
+    con.execute(
+        "UPDATE fact_results SET metric_unit = 'percent' "
+        "WHERE model_aggregation_key = 'openai/gpt-4o'"
+    )
+    stages.stage_j_eval_results_view(con, "2026-04-30T00:00:00Z")
+    con.execute(
+        "CREATE OR REPLACE TABLE eval_results_view AS SELECT * FROM "
+        f"eval_results_view ORDER BY metric_id {scan_order}, model_key {scan_order}"
+    )
+    stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_merged_evals_view(con, "2026-04-30T00:00:00Z")
+
+    dest = tmp_path / f"ci-{scan_order}"
+    dest.mkdir(parents=True, exist_ok=True)
+    snap = json.loads((out_dir / "snapshot_meta.json").read_text())
+    sidecars.write_comparison_index(con, dest, snap)
+    ci = json.loads((dest / "comparison-index.json").read_text())
+    return {
+        eval_id: [m["unit"] for m in entry["metrics"]]
+        for eval_id, entry in ci["evals"].items()
+    }
+
+
+def test_comparison_index_unit_is_scan_order_independent(tmp_path, monkeypatch):
+    """The metric-level fields of a comparison-index entry are read off one
+    representative row of the leaderboard bucket. The bucket is filled in
+    DuckDB scan order, which is not stable run to run, so an unpinned
+    representative made the emitted `unit` flip between identical bakes.
+
+    The representative is now the lowest `model_route_id` in the bucket.
+    """
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+
+    forward = _comparison_index_units(out, tmp_path, "ASC")
+    reverse = _comparison_index_units(out, tmp_path, "DESC")
+
+    assert forward == reverse
+
+    # Guard against a vacuous pass: the plant gave openai/gpt-4o 'percent'
+    # while community/fine-tune-7b kept 'proportion', so the bucket really
+    # does hold two units — and the emitted one must be the lower route id's.
+    assert set(forward) == {"fixtures-clean%2Fmmlu"}, forward
+    assert forward["fixtures-clean%2Fmmlu"] == ["proportion"], forward

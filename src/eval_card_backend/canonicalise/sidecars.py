@@ -25,12 +25,15 @@ cheap to re-derive from the cached canonical + view parquets.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import re
 from collections import defaultdict
 from pathlib import Path
 
 import duckdb
+import numpy as np
 
 from eval_card_backend.canonicalise import evalcard_tags, hierarchy_dedup, hierarchy_hotfixes
 from eval_card_backend.config import IGNORED_CONFIGS
@@ -40,6 +43,7 @@ from eval_card_backend.signals.reproducibility import (
 )
 from eval_card_backend.slugs import url_encode
 
+log = logging.getLogger(__name__)
 
 CONFIG_VERSION = 1
 SIGNAL_VERSION = "1.0"
@@ -108,6 +112,9 @@ def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
             "benchmark_index":   "benchmark_index.json",
             "organizations":     "organizations.json",
             "collections":       "collections.json",
+            # Only written when ≥1 (collection, benchmark) pair clears the
+            # context gates; consumers degrade to {} on a 404.
+            "collection_context": "collection_context.json",
         },
     }
     path = out_dir / "manifest.json"
@@ -698,6 +705,643 @@ def write_collections(con, out_dir: Path, snapshot_meta: dict) -> Path:
         json.dumps(payload, indent=2, sort_keys=True, default=_json_default)
     )
     return path
+
+
+# ---------------------------------------------------------------------------
+# collection_context.json
+# ---------------------------------------------------------------------------
+
+# Jeffreys posterior-predictive band. `BAND_RUNS` is the runs-per-task
+# protocol the external boards publish at; `BAND_SEED` plus the sha256 of the
+# model's aggregation key fixes the simulation so rebakes are byte-stable
+# (python's `hash()` is salted per process and must not be used here).
+BAND_DRAWS = 20_000
+BAND_RUNS = 5
+BAND_SEED = 20260823
+BAND_METHOD = "jeffreys"
+
+# G2: the model's fullest no-feedback condition must cover this fraction of
+# the benchmark's registry-curated `official_task_count`.
+CONTEXT_COVERAGE_MIN = 0.95
+# G3: the published score reproduces from the trajectory pool under the
+# collection's score rule to within this tolerance …
+CONTEXT_RECOMPUTE_TOL = 1e-9
+# … and the is_correct-binarised task mean sits within the documented
+# partial-credit gap of the published score.
+CONTEXT_BINARISED_TOL = 0.02
+
+# Metric kinds whose values can share one accuracy axis with an external
+# leaderboard's headline number. The registry's canonical_metrics doesn't
+# populate `metric_kind` yet, so the observed per-row kind (the producer's
+# layered metric-meta chain) stands in when the dim is NULL.
+_ACCURACY_LIKE_METRIC_KINDS = frozenset(
+    {"accuracy", "pass_rate", "success_rate", "solve_rate", "exact_match"}
+)
+
+# Only the collection score rule G3 knows how to reproduce.
+_CONTEXT_AGGREGATE = "task_mean_score"
+
+
+def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | None:
+    """collection_context.json — per (collection, benchmark, model) external
+    scaffold context: the collection's own published cell plus every current
+    (scaffold, model) entry the benchmark's maintainer publishes for that
+    model, pre-joined on `model_aggregation_key`.
+
+    Emitted from the Stage J sidecar phase rather than Stage I so the
+    external values can reuse `eval_results_view`'s computed
+    `scale_conversion` for their (composite, benchmark, metric) group instead
+    of re-deriving the group-suspect detection.
+
+    Fails closed: a (collection, benchmark) pair is only considered when the
+    collection is curated with `has_trajectories`, declares the
+    `task_mean_score` rule for the benchmark, and the registry benchmark
+    entity carries both `official_task_count` and `maintainer_org_id`.
+    Returns None (no file) when nothing clears the gates.
+
+    Shape — `{collection_id: {benchmark_key: {…}}}` where each entry is::
+
+        harvested_at            snapshot id the external side was read at
+        official_task_count     registry-curated denominator
+        context_sources         [{id, display_name}] of the maintainer's
+                                composites, ordered by id
+        context_source_display  those display names joined, caption-ready
+        models_without_context  display names that cleared the gates but
+                                have no external entry
+        models                  {model_aggregation_key: {display_name, score,
+                                n_tasks, attempts_min, attempts_max,
+                                protocol_condition, band_lo, band_hi,
+                                band_runs, band_method, band_seed,
+                                external: [{scaffold, score, score_se,
+                                run_date}]}}
+    """
+    from eval_card_backend.sources import collections as collections_src
+
+    required = ("fact_results", "eval_results_view", "collection_trajectories_raw",
+                "benchmarks", "canonical_benchmarks", "canonical_metrics")
+    if not all(_table_exists(con, t) for t in required):
+        return None
+    if not _column_exists(con, "fact_results", "agent_scaffold_raw"):
+        log.warning(
+            "collection_context: fact_results has no agent_scaffold_raw "
+            "column (pre-Stage-D-column snapshot); skipping"
+        )
+        return None
+
+    payload: dict[str, dict] = {}
+    curated = collections_src.load_curated()
+    for collection_id in sorted(curated):
+        entry = curated[collection_id]
+        if not entry.get("has_trajectories"):
+            continue
+        for bench in _context_collection_benchmarks(con, collection_id):
+            built = _context_benchmark_entry(
+                con, collection_id, entry, bench, snapshot_meta
+            )
+            if built is not None:
+                payload.setdefault(collection_id, {})[bench["benchmark_key"]] = built
+
+    if not payload:
+        return None
+    path = out_dir / "collection_context.json"
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=_json_default)
+    )
+    return path
+
+
+def _column_exists(con, table: str, column: str) -> bool:
+    rows = con.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ?",
+        [table, column],
+    ).fetchall()
+    return bool(rows)
+
+
+def _context_collection_benchmarks(con, collection_id: str) -> list[dict]:
+    """The benchmarks this collection reports on, with the composites it
+    reports them under and the EEE source_configs behind them (the key
+    `score_semantics` is written against)."""
+    rows = con.execute(
+        """
+        SELECT benchmark_key,
+               ARRAY_AGG(DISTINCT composite_slug ORDER BY composite_slug)
+                   FILTER (WHERE composite_slug IS NOT NULL) AS composites,
+               ARRAY_AGG(DISTINCT source_config ORDER BY source_config)
+                   FILTER (WHERE source_config IS NOT NULL)  AS configs
+        FROM fact_results
+        WHERE collection_id = ? AND benchmark_key IS NOT NULL
+        GROUP BY 1
+        ORDER BY 1
+        """,
+        [collection_id],
+    ).fetchall()
+    return [
+        {"benchmark_key": r[0], "composites": list(r[1] or []),
+         "configs": list(r[2] or [])}
+        for r in rows
+    ]
+
+
+def _context_registry_facts(con, benchmark_key: str) -> tuple[int | None, str | None]:
+    """`official_task_count` / `maintainer_org_id` off the benchmark
+    dimension's `registry_metadata` passthrough. Both None when the registry
+    entity doesn't carry them."""
+    row = con.execute(
+        """
+        SELECT TRY_CAST(json_extract_string(registry_metadata,
+                                            '$.official_task_count') AS INTEGER),
+               json_extract_string(registry_metadata, '$.maintainer_org_id')
+        FROM benchmarks
+        WHERE benchmark_id = ? AND registry_metadata IS NOT NULL
+        ORDER BY composite_slug
+        LIMIT 1
+        """,
+        [benchmark_key],
+    ).fetchone()
+    if row is None:
+        return None, None
+    return row[0], row[1]
+
+
+def _context_metric(con, benchmark_key: str) -> str | None:
+    """The registry `preferred_metric_id` for the benchmark, when its kind is
+    accuracy-like and its bounds are a sane [0, 1]. None otherwise — the
+    context strip has no axis to place external points on."""
+    row = con.execute(
+        """
+        SELECT cb.preferred_metric_id, cm.metric_kind,
+               cm.min_score, cm.max_score, cm.lower_is_better
+        FROM canonical_benchmarks cb
+        LEFT JOIN canonical_metrics cm ON cm.id = cb.preferred_metric_id
+        WHERE cb.id = ?
+        """,
+        [benchmark_key],
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    metric_id, kind, min_score, max_score, lower_is_better = row
+    if kind is None:
+        kind = con.execute(
+            """
+            SELECT metric_kind FROM fact_results
+            WHERE benchmark_key = ? AND metric_key = ? AND metric_kind IS NOT NULL
+            GROUP BY 1
+            ORDER BY count(*) DESC, metric_kind
+            LIMIT 1
+            """,
+            [benchmark_key, metric_id],
+        ).fetchone()
+        kind = kind[0] if kind else None
+    if kind not in _ACCURACY_LIKE_METRIC_KINDS:
+        return None
+    if min_score != 0 or max_score != 1 or lower_is_better:
+        return None
+    return metric_id
+
+
+def _context_scale_multiplier(con, composite_slug: str, benchmark_key: str,
+                              metric_id: str) -> float | None:
+    """The Stage J scale conversion for one (composite, benchmark, metric)
+    group, as a multiplier to apply to fact-grain scores. None when the group
+    is `flagged`/`no_bounds`, unclassified, or classified inconsistently —
+    all cases where the external values can't be placed on the canonical
+    scale."""
+    kinds = [
+        r[0] for r in con.execute(
+            """
+            SELECT DISTINCT scale_conversion
+            FROM eval_results_view
+            WHERE composite_slug = ? AND benchmark_id = ? AND metric_id = ?
+              AND scale_conversion IS NOT NULL
+            ORDER BY 1
+            """,
+            [composite_slug, benchmark_key, metric_id],
+        ).fetchall()
+    ]
+    usable = [k for k in kinds if k not in ("flagged", "no_bounds")]
+    if len(usable) != 1:
+        log.warning(
+            "collection_context: %s/%s/%s has no single usable Stage J scale "
+            "conversion (saw %s); dropping the source",
+            composite_slug, benchmark_key, metric_id, kinds or ["<none>"],
+        )
+        return None
+    conversion = usable[0]
+    if conversion == "none":
+        return 1.0
+    if conversion == "div100":
+        return 0.01
+    if conversion == "mul100":
+        return 100.0
+    if conversion == "curated":
+        factor = None
+        if _table_exists(con, "benchmark_metric_folds"):
+            row = con.execute(
+                "SELECT scale_factor FROM benchmark_metric_folds "
+                "WHERE benchmark_id = ? AND from_metric_id = ? "
+                "AND scale_factor IS NOT NULL LIMIT 1",
+                [benchmark_key, metric_id],
+            ).fetchone()
+            factor = row[0] if row else None
+        if factor is None:
+            log.warning(
+                "collection_context: %s/%s/%s is scale-conversion 'curated' "
+                "but carries no fold scale_factor; dropping the source",
+                composite_slug, benchmark_key, metric_id,
+            )
+        return factor
+    log.warning(
+        "collection_context: unknown scale_conversion %r on %s/%s/%s; "
+        "dropping the source", conversion, composite_slug, benchmark_key, metric_id,
+    )
+    return None
+
+
+def _context_external_points(con, *, collection_id: str, benchmark_key: str,
+                             metric_id: str, maintainer_org_id: str
+                             ) -> tuple[list[dict], dict[str, list[dict]]]:
+    """External leaderboard entries for the benchmark, grouped under the
+    `model_aggregation_key` they join the collection's models on.
+
+    G1's source set is derived, not curated: every composite reporting this
+    benchmark whose `org_id` is the benchmark's registry maintainer, minus
+    the collection's own rows. Only the source's LATEST harvest counts, so
+    delisted entries stop rendering as current.
+    """
+    sources = [
+        r[0] for r in con.execute(
+            """
+            SELECT DISTINCT composite_slug
+            FROM fact_results
+            WHERE benchmark_key = ? AND org_id = ?
+              AND collection_id IS DISTINCT FROM ?
+              AND composite_slug IS NOT NULL
+            ORDER BY 1
+            """,
+            [benchmark_key, maintainer_org_id, collection_id],
+        ).fetchall()
+    ]
+
+    kept: list[dict] = []
+    by_model: dict[str, list[dict]] = defaultdict(list)
+    display_names = _context_composite_display_names(con, sources)
+    for composite_slug in sources:
+        multiplier = _context_scale_multiplier(
+            con, composite_slug, benchmark_key, metric_id
+        )
+        if multiplier is None:
+            continue
+        rows = con.execute(
+            """
+            WITH latest AS (
+                SELECT MAX(CAST(retrieved_timestamp AS DOUBLE)) AS ts
+                FROM fact_results
+                WHERE composite_slug = ? AND benchmark_key = ?
+            )
+            SELECT f.model_aggregation_key,
+                   f.agent_scaffold_raw,
+                   COUNT(DISTINCT f.score)  AS n_scores,
+                   MIN(f.score)             AS score,
+                   MIN(f.score_se)          AS score_se,
+                   MIN(f.evaluation_timestamp) AS run_date
+            FROM fact_results f, latest l
+            WHERE f.composite_slug = ? AND f.benchmark_key = ?
+              AND f.metric_key = ?
+              AND f.agent_scaffold_raw IS NOT NULL
+              AND f.score IS NOT NULL
+              AND f.model_aggregation_key IS NOT NULL
+              AND CAST(f.retrieved_timestamp AS DOUBLE) = l.ts
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+            """,
+            [composite_slug, benchmark_key,
+             composite_slug, benchmark_key, metric_id],
+        ).fetchall()
+        if not rows:
+            continue
+        ambiguous = [(r[0], r[1]) for r in rows if r[2] > 1]
+        if ambiguous:
+            raise RuntimeError(
+                f"collection_context: {composite_slug}/{benchmark_key} has "
+                f"multiple distinct scores for (model, scaffold) tuples "
+                f"{ambiguous} inside one harvest — refusing to tie-break"
+            )
+        kept.append({
+            "id": composite_slug,
+            "display_name": display_names.get(composite_slug, composite_slug),
+        })
+        for model_key, scaffold, _n, score, score_se, run_date in rows:
+            value = score * multiplier
+            if not 0.0 <= value <= 1.0:
+                raise RuntimeError(
+                    f"collection_context: {composite_slug}/{benchmark_key} "
+                    f"external point {model_key}/{scaffold} converts to "
+                    f"{value!r}, outside [0, 1]"
+                )
+            by_model[model_key].append({
+                "scaffold": scaffold,
+                "score": round(value, 6),
+                "score_se": (
+                    None if score_se is None
+                    else round(score_se * multiplier, 6)
+                ),
+                "run_date": run_date,
+            })
+    for points in by_model.values():
+        points.sort(key=lambda p: (-p["score"], p["scaffold"]))
+    return sorted(kept, key=lambda s: s["id"]), dict(by_model)
+
+
+def _context_composite_display_names(con, composites: list[str]) -> dict[str, str]:
+    if not composites or not _table_exists(con, "composites"):
+        return {}
+    rows = con.execute(
+        "SELECT composite_slug, composite_display_name FROM composites "
+        "WHERE composite_slug IN (SELECT UNNEST(?))",
+        [composites],
+    ).fetchall()
+    return {r[0]: r[1] for r in rows if r[1]}
+
+
+def _context_conditions(con, *, collection_id: str, benchmark_key: str,
+                        metric_id: str) -> list[dict]:
+    """One row per (model, no-feedback protocol condition) the collection
+    released trajectories for, already joined to the published fact row.
+
+    `unknown`-feedback arms are excluded outright: an arm we couldn't
+    determine must not stand in for a known-clean run.
+    """
+    rows = con.execute(
+        """
+        SELECT f.model_aggregation_key,
+               t.protocol_condition,
+               COUNT(DISTINCT t.task_id)                        AS n_tasks,
+               COUNT(*)                                         AS n_traj,
+               ARRAY_AGG(DISTINCT f.score)                      AS published_scores,
+               ARRAY_AGG(DISTINCT t.model_raw ORDER BY t.model_raw) AS model_raws,
+               ARRAY_AGG(DISTINCT t.benchmark_raw ORDER BY t.benchmark_raw) AS configs
+        FROM collection_trajectories_raw t
+        JOIN fact_results f
+          ON f.collection_id      = t.collection_id
+         AND f.model_raw          = t.model_raw
+         AND f.source_config      = t.benchmark_raw
+         AND f.protocol_condition = t.protocol_condition
+        WHERE t.collection_id = ?
+          AND f.benchmark_key = ?
+          AND f.metric_key    = ?
+          AND json_extract_string(t.protocol_condition, '$.feedback') = 'none'
+        GROUP BY 1, 2
+        ORDER BY 1, n_tasks DESC, n_traj DESC, 2
+        """,
+        [collection_id, benchmark_key, metric_id],
+    ).fetchall()
+    return [
+        {"model_key": r[0], "protocol_condition": r[1], "n_tasks": r[2],
+         "n_traj": r[3], "published_scores": list(r[4] or []),
+         "model_raws": list(r[5] or []), "configs": list(r[6] or [])}
+        for r in rows
+    ]
+
+
+def _context_trajectory_pool(con, *, collection_id: str, model_raws: list[str],
+                             configs: list[str], protocol_condition: str
+                             ) -> list[tuple[str, float, bool]]:
+    rows = con.execute(
+        """
+        SELECT task_id, score, COALESCE(is_correct, score > 0)
+        FROM collection_trajectories_raw
+        WHERE collection_id = ?
+          AND model_raw IN (SELECT UNNEST(?))
+          AND benchmark_raw IN (SELECT UNNEST(?))
+          AND protocol_condition = ?
+          AND score IS NOT NULL
+        """,
+        [collection_id, model_raws, configs, protocol_condition],
+    ).fetchall()
+    return [(r[0], float(r[1]), bool(r[2])) for r in rows]
+
+
+def _task_mean(values_by_task: dict[str, list[float]]) -> float:
+    per_task = [sum(v) / len(v) for v in values_by_task.values()]
+    return sum(per_task) / len(per_task)
+
+
+def _jeffreys_band(k: list[int], n: list[int], aggregation_key: str
+                   ) -> tuple[float, float]:
+    """Posterior-predictive band for a re-run at `BAND_RUNS` runs/task: each
+    task's success rate gets a Jeffreys Beta(k+.5, n-k+.5) posterior from its
+    recorded attempts, then `BAND_RUNS` Bernoulli draws. Propagates the
+    uncertainty a plain resample drops for single-attempt tasks. NOT centred
+    on the published score."""
+    seed = int.from_bytes(
+        hashlib.sha256(aggregation_key.encode()).digest()[:8], "big"
+    )
+    rng = np.random.default_rng([BAND_SEED, seed])
+    ka = np.asarray(k, dtype=float)
+    na = np.asarray(n, dtype=float)
+    p = rng.beta(ka + 0.5, na - ka + 0.5, size=(BAND_DRAWS, ka.size))
+    draws = rng.binomial(BAND_RUNS, p).mean(axis=1) / BAND_RUNS
+    lo, hi = np.percentile(draws, [2.5, 97.5])
+    return float(lo), float(hi)
+
+
+def _context_display_names(con, model_keys: list[str]) -> dict[str, str]:
+    if not model_keys or not _table_exists(con, "models_view"):
+        return {}
+    rows = con.execute(
+        "SELECT model_key, model_name FROM models_view "
+        "WHERE model_key IN (SELECT UNNEST(?))",
+        [model_keys],
+    ).fetchall()
+    return {r[0]: r[1] for r in rows if r[1]}
+
+
+def _context_view_conditions(con, *, composites: list[str], benchmark_key: str,
+                             metric_id: str, model_key: str) -> set[str]:
+    rows = con.execute(
+        """
+        SELECT DISTINCT protocol_condition
+        FROM eval_results_view
+        WHERE composite_slug IN (SELECT UNNEST(?))
+          AND benchmark_id = ? AND metric_id = ? AND model_key = ?
+        """,
+        [composites, benchmark_key, metric_id, model_key],
+    ).fetchall()
+    return {r[0] for r in rows if r[0] is not None}
+
+
+def _context_benchmark_entry(con, collection_id: str, entry: dict, bench: dict,
+                             snapshot_meta: dict) -> dict | None:
+    """Assemble one benchmark's context block, or None when a gate closes."""
+    benchmark_key = bench["benchmark_key"]
+    semantics = entry.get("score_semantics") or {}
+    aggregates = {
+        (semantics.get(cfg) or {}).get("aggregate") for cfg in bench["configs"]
+    }
+    if aggregates != {_CONTEXT_AGGREGATE}:
+        return None
+
+    official_task_count, maintainer_org_id = _context_registry_facts(
+        con, benchmark_key
+    )
+    if official_task_count is None or maintainer_org_id is None:
+        missing = [
+            key for key, value in (("official_task_count", official_task_count),
+                                   ("maintainer_org_id", maintainer_org_id))
+            if value is None
+        ]
+        n_scaffold = con.execute(
+            "SELECT count(*) FROM fact_results WHERE benchmark_key = ? "
+            "AND agent_scaffold_raw IS NOT NULL "
+            "AND collection_id IS DISTINCT FROM ?",
+            [benchmark_key, collection_id],
+        ).fetchone()[0]
+        if n_scaffold:
+            log.warning(
+                "collection_context: %s reports %s and %d external "
+                "scaffold-bearing rows exist, but the registry benchmark "
+                "entity is missing %s — no context emitted",
+                collection_id, benchmark_key, n_scaffold, ", ".join(missing),
+            )
+        return None
+
+    metric_id = _context_metric(con, benchmark_key)
+    if metric_id is None:
+        return None
+
+    context_sources, external = _context_external_points(
+        con, collection_id=collection_id, benchmark_key=benchmark_key,
+        metric_id=metric_id, maintainer_org_id=maintainer_org_id,
+    )
+    if not external:
+        return None
+
+    conditions = _context_conditions(
+        con, collection_id=collection_id, benchmark_key=benchmark_key,
+        metric_id=metric_id,
+    )
+    chosen: dict[str, dict] = {}
+    for cond in conditions:
+        chosen.setdefault(cond["model_key"], cond)
+
+    matched = [key for key in chosen if external.get(key)]
+    if len(matched) < 2:
+        raise RuntimeError(
+            f"collection_context: only {len(matched)} of {collection_id}'s "
+            f"models on {benchmark_key} matched an external entry — "
+            f"model_aggregation_key is the dated↔undated bridge and a "
+            f"near-empty join means it broke"
+        )
+
+    models: dict[str, dict] = {}
+    without_context: list[str] = []
+    display_names = _context_display_names(
+        con, sorted(set(chosen) | set(external))
+    )
+    for model_key in sorted(chosen):
+        cond = chosen[model_key]
+        if len(cond["published_scores"]) != 1:
+            log.info(
+                "collection_context: dropping %s/%s/%s — its fullest "
+                "no-feedback condition maps to %d published scores",
+                collection_id, benchmark_key, model_key,
+                len(cond["published_scores"]),
+            )
+            continue
+        published = float(cond["published_scores"][0])
+        n_tasks = cond["n_tasks"]
+        if n_tasks < CONTEXT_COVERAGE_MIN * official_task_count:
+            log.info(
+                "collection_context: dropping %s/%s/%s — G2 coverage %d of "
+                "%d tasks", collection_id, benchmark_key, model_key,
+                n_tasks, official_task_count,
+            )
+            continue
+
+        pool = _context_trajectory_pool(
+            con, collection_id=collection_id, model_raws=cond["model_raws"],
+            configs=cond["configs"],
+            protocol_condition=cond["protocol_condition"],
+        )
+        scores_by_task: dict[str, list[float]] = defaultdict(list)
+        correct_by_task: dict[str, list[float]] = defaultdict(list)
+        for task_id, score, is_correct in pool:
+            scores_by_task[task_id].append(score)
+            correct_by_task[task_id].append(1.0 if is_correct else 0.0)
+        if not scores_by_task:
+            continue
+        recomputed = _task_mean(scores_by_task)
+        binarised = _task_mean(correct_by_task)
+        if abs(recomputed - published) >= CONTEXT_RECOMPUTE_TOL:
+            log.warning(
+                "collection_context: dropping %s/%s/%s — G3 recompute "
+                "%.12f vs published %.12f", collection_id, benchmark_key,
+                model_key, recomputed, published,
+            )
+            continue
+        if abs(binarised - published) > CONTEXT_BINARISED_TOL:
+            log.warning(
+                "collection_context: dropping %s/%s/%s — G3 binarised mean "
+                "%.6f differs from published %.6f by more than %.2f",
+                collection_id, benchmark_key, model_key, binarised, published,
+                CONTEXT_BINARISED_TOL,
+            )
+            continue
+
+        points = external.get(model_key)
+        if not points:
+            without_context.append(display_names.get(model_key, model_key))
+            continue
+
+        view_conditions = _context_view_conditions(
+            con, composites=bench["composites"], benchmark_key=benchmark_key,
+            metric_id=metric_id, model_key=model_key,
+        )
+        if cond["protocol_condition"] not in view_conditions:
+            raise RuntimeError(
+                f"collection_context: protocol_condition "
+                f"{cond['protocol_condition']!r} for {model_key} on "
+                f"{benchmark_key} is absent from eval_results_view — the "
+                f"sidecar string must be byte-identical to the view's"
+            )
+
+        task_ids = sorted(correct_by_task)
+        attempts = [len(correct_by_task[t]) for t in task_ids]
+        band_lo, band_hi = _jeffreys_band(
+            [int(sum(correct_by_task[t])) for t in task_ids], attempts, model_key,
+        )
+        models[model_key] = {
+            "display_name": display_names.get(model_key, model_key),
+            "score": round(published, 6),
+            "n_tasks": n_tasks,
+            "attempts_min": min(attempts),
+            "attempts_max": max(attempts),
+            "protocol_condition": cond["protocol_condition"],
+            "band_lo": round(band_lo, 6),
+            "band_hi": round(band_hi, 6),
+            "band_runs": BAND_RUNS,
+            "band_method": BAND_METHOD,
+            "band_seed": BAND_SEED,
+            "external": points,
+        }
+
+    if not models:
+        return None
+    return {
+        "harvested_at": snapshot_meta["snapshot_id"],
+        "official_task_count": official_task_count,
+        "context_sources": context_sources,
+        # Caption-ready label for the source side, pre-joined so the reader
+        # never resolves composite ids itself. Joined in `context_sources`
+        # order on the (so far hypothetical) multi-source case.
+        "context_source_display": ", ".join(
+            s["display_name"] for s in context_sources
+        ),
+        "models_without_context": sorted(without_context),
+        "models": models,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1390,6 +2034,32 @@ _FALLBACK_ACRONYMS: frozenset[str] = frozenset({
 
 _acronyms_cache: frozenset[str] | None = None
 _bench_display_names_cache: dict[str, str] | None = None
+_registry_root: Path | None = None
+
+
+def set_registry_root(root: Path | str | None) -> None:
+    """Point the display-override loader at the registry snapshot this run
+    actually loaded.
+
+    Without this the loader read a hardcoded `.cache/entity_registry/…`
+    path relative to the launch directory, so it ignored
+    `ENTITY_REGISTRY_LOCAL_DIR` / `--registry-local-dir` entirely and found
+    nothing (or the wrong tree) whenever the process wasn't started from the
+    repo root. Clears the lazy caches so a second run in the same process
+    doesn't serve the previous root's overrides.
+    """
+    global _registry_root, _acronyms_cache, _bench_display_names_cache
+    _registry_root = Path(root) if root is not None else None
+    _acronyms_cache = None
+    _bench_display_names_cache = None
+
+
+def _display_overrides_path() -> Path:
+    root = _registry_root
+    if root is None:
+        from eval_card_backend.config import Settings
+        root = Path(Settings.from_env().registry_local_dir)
+    return root / "display_overrides.yaml"
 
 
 def _load_display_overrides() -> tuple[frozenset[str], dict[str, str]]:
@@ -1397,28 +2067,22 @@ def _load_display_overrides() -> tuple[frozenset[str], dict[str, str]]:
     global _acronyms_cache, _bench_display_names_cache
     if _acronyms_cache is not None and _bench_display_names_cache is not None:
         return _acronyms_cache, _bench_display_names_cache
-    candidates = [
-        Path(".cache/entity_registry/display_overrides.yaml"),
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
+    path = _display_overrides_path()
+    if path.exists():
         try:
             import yaml as _yaml
             data = _yaml.safe_load(path.read_text()) or {}
         except (ImportError, OSError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        items = data.get("acronyms")
-        if isinstance(items, list):
-            _acronyms_cache = frozenset(str(s).lower() for s in items if s)
-        names = data.get("benchmark_display_names")
-        if isinstance(names, dict):
-            _bench_display_names_cache = {
-                str(k).lower(): str(v) for k, v in names.items()
-            }
-        break
+            data = {}
+        if isinstance(data, dict):
+            items = data.get("acronyms")
+            if isinstance(items, list):
+                _acronyms_cache = frozenset(str(s).lower() for s in items if s)
+            names = data.get("benchmark_display_names")
+            if isinstance(names, dict):
+                _bench_display_names_cache = {
+                    str(k).lower(): str(v) for k, v in names.items()
+                }
     if _acronyms_cache is None:
         _acronyms_cache = _FALLBACK_ACRONYMS
     if _bench_display_names_cache is None:
@@ -1427,28 +2091,10 @@ def _load_display_overrides() -> tuple[frozenset[str], dict[str, str]]:
 
 
 def _load_acronyms() -> frozenset[str]:
-    """Read curated acronyms from the registry cache. Cached at module
-    level — the seed YAML is small and immutable per snapshot."""
-    global _acronyms_cache
-    if _acronyms_cache is not None:
-        return _acronyms_cache
-    candidates = [
-        Path(".cache/entity_registry/display_overrides.yaml"),
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            import yaml as _yaml
-            data = _yaml.safe_load(path.read_text()) or {}
-        except (ImportError, OSError, ValueError):
-            continue
-        items = data.get("acronyms") if isinstance(data, dict) else None
-        if isinstance(items, list):
-            _acronyms_cache = frozenset(str(s).lower() for s in items if s)
-            return _acronyms_cache
-    _acronyms_cache = _FALLBACK_ACRONYMS
-    return _acronyms_cache
+    """Curated acronyms from the registry snapshot, falling back to
+    `_FALLBACK_ACRONYMS`. Cached at module level — the seed YAML is small
+    and immutable per snapshot."""
+    return _load_display_overrides()[0]
 
 
 def _title_segment(seg: str, acronyms: frozenset[str]) -> str:
@@ -2272,13 +2918,22 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
     )
 
     for (eval_id, metric_summary_id), peer_rows in grouped.items():
+        # Pin the bucket order *before* anything reads peer_rows[0]. The
+        # query above has no ORDER BY, so DuckDB fills these buckets in
+        # parallel-scan order, which is not stable run to run — and `first`
+        # supplies the metric-level fields for the whole entry. metric_unit
+        # genuinely disagrees across models inside a bucket (e.g. 'points'
+        # vs 'proportion'), so an arbitrary pick flipped the emitted unit
+        # between otherwise identical bakes. model_route_id is unique within
+        # a bucket (the QUALIFY keeps one row per route), so it is a total
+        # order.
+        peer_rows.sort(key=lambda r: r["model_route_id"])
         first = peer_rows[0]
         lower_is_better = bool(first["lower_is_better"])
 
-        # Two-pass stable sort: route id ascending tiebreak, then score in
-        # the metric's preferred direction. Mirrors the legacy producer's
-        # ordering so existing UI ranks don't shift on cutover.
-        peer_rows.sort(key=lambda r: r["model_route_id"])
+        # Stable second pass: score in the metric's preferred direction,
+        # ties keeping the route-id order above. Mirrors the legacy
+        # producer's ordering so existing UI ranks don't shift on cutover.
         peer_rows.sort(
             key=lambda r: r["score"], reverse=not lower_is_better
         )

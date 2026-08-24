@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+# src/eval_card_backend/config.py -> repo root. Same anchor the other
+# repo-relative data paths already use (see `sources/collections.py`).
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Env-overridable for testing against a fork/mirror. The same repo serves
 # both the snapshot download and the eee_record_url deep-links.
@@ -9,10 +14,16 @@ EEE_DATASET_REPO = os.environ.get("EEE_DATASET_REPO", "evaleval/EEE_datastore")
 BENCHMARK_METADATA_DATASET_REPO = "evaleval/auto-benchmarkcards"
 ENTITY_REGISTRY_DATASET_REPO = "evaleval/entity-registry-data"
 
-DEFAULT_EEE_LOCAL_DIR = ".cache/eee_datastore"
-DEFAULT_BENCHMARK_METADATA_LOCAL_DIR = ".cache/auto_benchmarkcards"
-DEFAULT_REGISTRY_LOCAL_DIR = ".cache/entity_registry"
-DEFAULT_WAREHOUSE_DIR = "warehouse"
+# Anchored at the repo root, not the launch directory. These were plain
+# relative strings, so a bake started from a subdirectory silently forked a
+# second empty cache (and a second warehouse) next to itself instead of
+# reusing the repo's. CI runs from the repo root, so the resolved paths are
+# unchanged there. Explicit overrides (the env vars below, --warehouse-dir,
+# --registry-local-dir) are still honoured exactly as given.
+DEFAULT_EEE_LOCAL_DIR = str(REPO_ROOT / ".cache" / "eee_datastore")
+DEFAULT_BENCHMARK_METADATA_LOCAL_DIR = str(REPO_ROOT / ".cache" / "auto_benchmarkcards")
+DEFAULT_REGISTRY_LOCAL_DIR = str(REPO_ROOT / ".cache" / "entity_registry")
+DEFAULT_WAREHOUSE_DIR = str(REPO_ROOT / "warehouse")
 
 # Configs unconditionally excluded due to upstream data-quality issues.
 # Filter applies even when a user explicitly passes the config name via

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 import duckdb
@@ -100,6 +101,52 @@ def _hf_dataset_snapshot(
         log.warning("hf_dataset_snapshot lookup failed for %s: %s: %s",
                     repo_id, type(exc).__name__, exc)
         return None
+
+
+_SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")
+
+
+def _upstream_pin(
+    repo_id: str,
+    *,
+    pinned: str | None,
+    cached: str | None,
+    hf_token: str | None,
+) -> dict:
+    """One `upstream_pins` entry, stamped at the revision the run consumed.
+
+    `revision_source` says how that revision was established:
+      - ``"pin"``        an explicit ``*_REVISION`` env pin, which the
+                         download honoured.
+      - ``"local_cache"`` unpinned: the revision the on-disk snapshot was
+                         downloaded at, read back from the cache's own
+                         metadata. Unpinned runs reuse the cache without
+                         downloading, so this — not HEAD — is what was read.
+      - ``"unknown"``    unpinned and the cache carries no revision record
+                         (a hand-built fixture tree). We stamp ``sha: null``:
+                         a HEAD lookup here would name a revision the run
+                         never read, which is what this field exists to
+                         rule out.
+    """
+    revision = pinned or cached
+    source = "pin" if pinned else ("local_cache" if cached else "unknown")
+    if revision is None:
+        return {
+            "repo_id": repo_id, "sha": None, "last_modified": None,
+            "revision_source": source,
+        }
+    info = _hf_dataset_snapshot(repo_id, hf_token, revision=revision)
+    if info is None:
+        # Offline / auth failure: the consumed revision is still known, just
+        # not when it was last modified. Only stamp it when it is a commit
+        # sha — a branch or tag pin doesn't name a fixed revision.
+        return {
+            "repo_id": repo_id,
+            "sha": revision if _SHA_RE.match(revision) else None,
+            "last_modified": None,
+            "revision_source": source,
+        }
+    return {"repo_id": repo_id, **info, "revision_source": source}
 
 
 def _hf_revision(repo_id: str, hf_token: str | None) -> str | None:
@@ -262,6 +309,9 @@ def run(
         force_refresh=settings.refresh_registry,
         revision=settings.registry_revision,
     )
+    # Display overrides live in the registry snapshot; the sidecar writers
+    # must read them from the tree this run loaded, not a fixed path.
+    sidecars.set_registry_root(registry_root)
 
     runs_stage_a = (from_stage in (None, "A"))
     if not skip_preflight and runs_stage_a:
@@ -554,6 +604,9 @@ def run(
         stage_e_stats=stage_e_stats,
         n_unit_inconsistent=n_unit_inconsistent,
         view_layer_emitted=j_in_slice,
+        eee_root=eee_root,
+        registry_root=registry_root,
+        cards_root=cards_root,
     )
     (out_dir / "snapshot_meta.json").write_text(json.dumps(meta, indent=2))
 
@@ -569,10 +622,12 @@ def run(
         sidecars.write_peer_ranks(con, out_dir, meta)
         sidecars.write_organizations(con, out_dir, meta)
         sidecars.write_collections(con, out_dir, meta)
+        context_path = sidecars.write_collection_context(con, out_dir, meta)
         log.info(
             "Stage J: wrote sidecars (manifest, headline, hierarchy, "
             "comparison-index, benchmark_index, peer-ranks, organizations, "
-            "collections) to %s",
+            "collections%s) to %s",
+            ", collection_context" if context_path else "",
             out_dir,
         )
 
@@ -632,6 +687,9 @@ def _build_snapshot_meta(
     stage_e_stats: stages.StageEStats,
     n_unit_inconsistent: int | None,
     view_layer_emitted: bool,
+    eee_root: Path | None,
+    registry_root: Path | None,
+    cards_root: Path | None,
 ) -> dict:
     """Assemble `snapshot_meta.json` payload. Pure data: doesn't touch
     DuckDB. The HF-revision lookups talk to HF's HTTP API and are best-
@@ -661,33 +719,42 @@ def _build_snapshot_meta(
     # Single HTTP call per upstream — captures both sha and last_modified
     # so manifest.json can surface "registry parquet was last refreshed
     # at <ts>; this snapshot's run consumed it" without a follow-up query.
-    eee_info = _hf_dataset_snapshot(
-        EEE_DATASET_REPO, settings.hf_token, revision=settings.eee_revision
+    # The revision queried is the one the run consumed: the pin when set,
+    # else what the reused local cache actually holds (see `_upstream_pin`).
+    eee_pin = _upstream_pin(
+        EEE_DATASET_REPO,
+        pinned=settings.eee_revision,
+        cached=eee.cached_revision(eee_root),
+        hf_token=settings.hf_token,
     )
-    registry_info = _hf_dataset_snapshot(
-        ENTITY_REGISTRY_DATASET_REPO, settings.hf_token,
-        revision=settings.registry_revision,
+    registry_pin = _upstream_pin(
+        ENTITY_REGISTRY_DATASET_REPO,
+        pinned=settings.registry_revision,
+        cached=registry_src.cached_revision(registry_root),
+        hf_token=settings.hf_token,
     )
-    cards_info = _hf_dataset_snapshot(
-        BENCHMARK_METADATA_DATASET_REPO, settings.hf_token,
-        revision=settings.benchmark_metadata_revision,
+    cards_pin = _upstream_pin(
+        BENCHMARK_METADATA_DATASET_REPO,
+        pinned=settings.benchmark_metadata_revision,
+        cached=benchmark_cards.cached_revision(cards_root),
+        hf_token=settings.hf_token,
     )
 
     return {
         "snapshot_id": snapshot_id,
         "generated_at": _make_snapshot_id(),
         "configs": chosen,
-        "eee_revision": eee_info["sha"] if eee_info else None,
-        "registry_revision": registry_info["sha"] if registry_info else None,
-        "cards_revision": cards_info["sha"] if cards_info else None,
+        "eee_revision": eee_pin["sha"],
+        "registry_revision": registry_pin["sha"],
+        "cards_revision": cards_pin["sha"],
         # Structured upstream-pin records — same data as the *_revision
-        # scalars plus last_modified. Consumed by `write_manifest` so the
-        # warehouse manifest carries enough info to diagnose stale-input
-        # runs without re-querying HF.
+        # scalars plus last_modified and revision_source. Consumed by
+        # `write_manifest` so the warehouse manifest carries enough info to
+        # diagnose stale-input runs without re-querying HF.
         "upstream_pins": {
-            "eee_datastore": {"repo_id": EEE_DATASET_REPO, **(eee_info or {"sha": None, "last_modified": None})},
-            "entity_registry": {"repo_id": ENTITY_REGISTRY_DATASET_REPO, **(registry_info or {"sha": None, "last_modified": None})},
-            "benchmark_metadata": {"repo_id": BENCHMARK_METADATA_DATASET_REPO, **(cards_info or {"sha": None, "last_modified": None})},
+            "eee_datastore": eee_pin,
+            "entity_registry": registry_pin,
+            "benchmark_metadata": cards_pin,
         },
         "tables": tables,
         "sidecars": sidecars,

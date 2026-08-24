@@ -14,6 +14,10 @@ dependencies = [
     # PyYAML for the composite/family/slice taxonomy seed (composites.yaml,
     # families.yaml, slice_overrides.yaml in evalcard-registry/seed/).
     "pyyaml>=6",
+    # numpy backs the collection_context Jeffreys band simulation. Runtime,
+    # not dev: a --no-dev production bake would ImportError without it
+    # (it arrives today only transitively through the dev pandas pin).
+    "numpy>=1.26",
 ]
 
 [project.scripts]
