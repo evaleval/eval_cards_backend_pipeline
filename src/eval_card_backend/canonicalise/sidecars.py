@@ -721,16 +721,12 @@ _CONTEXT_EXCLUDED_ORGS = frozenset({"vals-ai"})
 # measurement.
 _CONTEXT_REREPORT_TOL = 0.0005
 
-# G2: the model's fullest condition must cover this fraction of the
-# benchmark's registry-curated `official_task_count`. Applied to the
-# no-feedback pick and to the assisted companion alike.
-CONTEXT_COVERAGE_MIN = 0.95
-# G3: the published score reproduces from the trajectory pool under the
-# collection's score rule to within this tolerance …
+# A context mark may cover a different task subset from another mark. Coverage
+# is therefore emitted as provenance (`n_tasks` versus `official_task_count`),
+# not used as an eligibility gate. The published score must still reproduce
+# from the exact selected trajectory cell under the collection's declared
+# score rule.
 CONTEXT_RECOMPUTE_TOL = 1e-9
-# … and the is_correct-binarised task mean sits within the documented
-# partial-credit gap of the published score.
-CONTEXT_BINARISED_TOL = 0.02
 
 # Metric kinds whose values can share one accuracy axis with an external
 # leaderboard's headline number. The registry's canonical_metrics doesn't
@@ -764,7 +760,7 @@ def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | 
     Fails closed: a (collection, benchmark) pair is only considered when the
     collection is curated with `has_trajectories`, declares the
     `task_mean_score` rule for the benchmark, and the registry benchmark
-    entity carries `official_task_count` (the G2 denominator).
+    entity carries `official_task_count` (shown as coverage context).
     Returns None (no file) when nothing clears the gates.
 
     Shape — `{collection_id: {benchmark_key: {…}}}` where each entry is::
@@ -777,8 +773,9 @@ def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | 
         models_without_context  display names that cleared the gates but
                                 have no external measurement
         models_without_assisted [{display_name, n_tasks}] for rendered models
-                                whose assisted cell missed G2 (n_tasks null
-                                when the collection ran no assisted cell)
+                                with no assisted mark: n_tasks null when the
+                                collection ran no assisted cell, else the cell
+                                that missed an integrity gate
         models                  {model_aggregation_key: {display_name, score,
                                 score_se, n_tasks, attempts_min,
                                 attempts_max, protocol_condition,
@@ -1244,11 +1241,12 @@ def _context_cell_pool(con, *, collection_id: str, cond: dict
     return scores_by_task, correct_by_task
 
 
-def _context_cell_failure(cond: dict, cells: tuple[dict, dict], *,
-                          official_task_count: int) -> tuple[int, str] | None:
+def _context_cell_failure(
+    cond: dict, cells: tuple[dict, dict]
+) -> tuple[int, str] | None:
     """`(log level, reason)` for why this cell can't be rendered, or None when
-    it clears every gate. Shared by the no-feedback pick and the assisted
-    companion so the two marks can never be held to different standards.
+    it clears every integrity gate. Shared by the no-feedback pick and the
+    assisted companion so the two marks are held to the same standard.
 
     Selection gates log as info (a thin cell is expected); a G3 miss logs as a
     warning, because a published score that won't reproduce from its own
@@ -1259,11 +1257,7 @@ def _context_cell_failure(cond: dict, cells: tuple[dict, dict], *,
             f"its fullest condition maps to "
             f"{len(cond['published_scores'])} published scores"
         )
-    if cond["n_tasks"] < CONTEXT_COVERAGE_MIN * official_task_count:
-        return logging.INFO, (
-            f"G2 coverage {cond['n_tasks']} of {official_task_count} tasks"
-        )
-    scores_by_task, correct_by_task = cells
+    scores_by_task, _correct_by_task = cells
     if not scores_by_task:
         return logging.INFO, "no released trajectories for the cell"
     published = float(cond["published_scores"][0])
@@ -1271,12 +1265,6 @@ def _context_cell_failure(cond: dict, cells: tuple[dict, dict], *,
     if abs(recomputed - published) >= CONTEXT_RECOMPUTE_TOL:
         return logging.WARNING, (
             f"G3 recompute {recomputed:.12f} vs published {published:.12f}"
-        )
-    binarised = _task_mean(correct_by_task)
-    if abs(binarised - published) > CONTEXT_BINARISED_TOL:
-        return logging.WARNING, (
-            f"G3 binarised mean {binarised:.6f} differs from published "
-            f"{published:.6f} by more than {CONTEXT_BINARISED_TOL:.2f}"
         )
     return None
 
@@ -1395,9 +1383,7 @@ def _context_benchmark_entry(con, collection_id: str, entry: dict, bench: dict,
         cells = _context_cell_pool(
             con, collection_id=collection_id, cond=cond,
         )
-        failure = _context_cell_failure(
-            cond, cells, official_task_count=official_task_count,
-        )
+        failure = _context_cell_failure(cond, cells)
         if failure is not None:
             level, reason = failure
             log.log(
@@ -1428,7 +1414,7 @@ def _context_benchmark_entry(con, collection_id: str, entry: dict, bench: dict,
         display_name = display_names.get(model_key, model_key)
         attempts = [len(v) for v in correct_by_task.values()]
 
-        # Assisted companion: the same selection and the same gates on the
+        # Assisted companion: the same selection and integrity gates on the
         # answer-feedback arm. A cell that misses them is named in
         # `models_without_assisted` rather than silently absent.
         assisted = None
@@ -1443,7 +1429,6 @@ def _context_benchmark_entry(con, collection_id: str, entry: dict, bench: dict,
                 _context_cell_pool(
                     con, collection_id=collection_id, cond=assisted_cond,
                 ),
-                official_task_count=official_task_count,
             )
             if assisted_failure is not None:
                 level, reason = assisted_failure

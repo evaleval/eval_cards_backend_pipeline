@@ -1,4 +1,4 @@
-"""AISI inference-scaling collection extractor (v4).
+"""AISI inference-scaling collection extractor (v6).
 
 Reassembles the UK AISI inference-scaling batch (arXiv 2606.17930) from the
 EEE datastore's per-sample JSONLs into complete per-setting results:
@@ -68,8 +68,7 @@ STUDY_SLUG = slug(STUDY_TITLE)
 # Benchmark labels for the EMITTED synthetic rows and trajectories. The
 # study's inspect harness names two configs by its internal task names,
 # but the paper's methods section (arXiv 2606.17930) names TerminalBench
-# 2.0 and SWE-Bench Pro, and the task suite matches TB 2.x (88 of its 89
-# tasks, none outside). Emit the canonical names so the data carries the
+# 2.0 and SWE-Bench Pro. Emit the canonical names so the data carries the
 # real identity; the registry stays free of submission-specific label
 # quirks. Internal keying (grouping, score semantics, manifests) stays on
 # the raw config names.
@@ -81,11 +80,23 @@ EEE_REPO = "evaleval/EEE_datastore"
 OUT_DIR = REPO_ROOT / "vendor" / "collections" / "aisi_inference_scaling"
 DEFAULT_EEE_CACHE = REPO_ROOT / ".cache" / "eee_datastore"
 
-# Per-benchmark score semantics (v4 — measured, see the collections spec):
+# Appendix A.1.1 fixes the paper's TerminalBench population at 86 of the 89
+# TB2 tasks whose scorers reliably emit score events. The pinned release ships
+# 88 task ids: a fully crossed 86-task core plus these two sparsely present
+# tasks. Exclude them in this study adapter only; condition-level coverage may
+# still be below 86 and remains provenance rather than an eligibility gate.
+PAPER_TERMINALBENCH_TASK_COUNT = 86
+PAPER_TERMINALBENCH_EXCLUDED_TASKS = frozenset({
+    "filter-js-from-html",
+    "mcmc-sampling-stan",
+})
+
+# Per-benchmark score semantics (v6 — measured, see the collections spec):
 # - trajectory_outcome: which per-row field is the per-attempt outcome
 #   shown in trajectories.parquet (None = no per-attempt score exists).
 # - aggregate: how the cell headline is computed. `task_mean_score` =
-#   per-task mean of row `score`, then mean over tasks (equal task
+#   per-task mean of the declared `aggregate_source`, then mean over tasks
+#   (equal task
 #   weighting — cancels the "re-runs oversample hard tasks" bias).
 #   `record_summary_mean` = row-count-weighted mean of the member
 #   records' own summary aggregates (healthbench: per-row scores are
@@ -101,7 +112,13 @@ BENCHMARKS: dict[str, dict] = {
     },
     "terminalbench": {
         "outcome": "binary", "metric": "accuracy",
-        "trajectory_outcome": "score", "aggregate": "task_mean_score",
+        # The study credits a trajectory when any submission is fully correct.
+        # A present submission history is authoritative at the paper's
+        # retroactive repetition-guard cut. The final evaluation is used only
+        # when that history is absent. `is_correct == score > 0` is not this
+        # outcome.
+        "trajectory_outcome": "ever_correct", "aggregate": "task_mean_score",
+        "aggregate_source": "trajectory_outcome",
         "upstream_rule": "task_mean_score",
     },
     "swebenchpro": {
@@ -326,6 +343,9 @@ class Trajectory:
     wall_time_s: float | None
     working_time_s: float | None
     last_submission_score: float | None = None
+    submission_ever_correct: bool | None = None
+    submit_count: int | None = None
+    ever_correct: bool | None = None
     # Behavioural feedback-arm markers (perfect specificity on all 372
     # known-arm records): a success-stop can only happen when the run
     # actually received correctness feedback; a fully-correct submission
@@ -347,6 +367,8 @@ class Trajectory:
             return None if self.is_correct is None else float(self.is_correct)
         if src == "last_submission_score":
             return self.last_submission_score
+        if src == "ever_correct":
+            return None if self.ever_correct is None else float(self.ever_correct)
         return None
 
 
@@ -362,6 +384,31 @@ def _to_float(v: Any) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _terminalbench_ever_correct(
+    score: float | None,
+    submission_ever_correct: bool | None,
+    submit_count: int | None,
+    stop_reason: str | None,
+) -> bool | None:
+    """Binary TerminalBench trajectory outcome used by the study.
+
+    The paper credits a trajectory iff any submission is fully correct and
+    applies missed repetition guards retroactively. A present submission
+    history is therefore authoritative at that cut. When submission history is
+    absent, a successful-submit stop or `evaluation.score == 1` is the binary
+    fallback. A row with no outcome evidence remains unknown.
+    """
+    if submission_ever_correct is not None:
+        return submission_ever_correct
+    if stop_reason == "completed_on_successful_submit":
+        return True
+    if score is not None:
+        return score == 1.0
+    if submit_count == 0:
+        return False
+    return None
 
 
 def parse_sample_row(member: Member, row: dict, stats: Counter) -> Trajectory | None:
@@ -414,16 +461,53 @@ def parse_sample_row(member: Member, row: dict, stats: Counter) -> Trajectory | 
 
     subs_raw = meta.get("submissions")
     sub_scores: list[float] = []
+    submission_ever_correct: bool | None = None
+    parsed_submissions: list | None = None
+    submission_parse_error = False
     if isinstance(subs_raw, str) and subs_raw:
         try:
-            sub_scores = [
-                float(s["score"]) for s in json.loads(subs_raw)
-                if isinstance(s, dict) and isinstance(s.get("score"), (int, float))
-            ]
-        except ValueError:
+            candidate = json.loads(subs_raw)
+            if isinstance(candidate, list):
+                parsed_submissions = candidate
+            else:
+                stats["rows_submissions_parse_error"] += 1
+                submission_parse_error = True
+        except (TypeError, ValueError):
             stats["rows_submissions_parse_error"] += 1
+            submission_parse_error = True
+    elif isinstance(subs_raw, list):
+        parsed_submissions = subs_raw
+    elif subs_raw is not None:
+        stats["rows_submissions_parse_error"] += 1
+        submission_parse_error = True
+
+    if member.config == "terminalbench" and submission_parse_error:
+        stats["terminalbench_submissions_parse_error"] += 1
+
+    if parsed_submissions is not None:
+        sub_scores = [
+            float(s["score"])
+            for s in parsed_submissions
+            if isinstance(s, dict)
+            and isinstance(s.get("score"), (int, float))
+            and not isinstance(s.get("score"), bool)
+        ]
+        if member.config == "terminalbench":
+            submission_rows_valid = (
+                len(sub_scores) == len(parsed_submissions)
+                and all(0.0 <= value <= 1.0 for value in sub_scores)
+            )
+            if submission_rows_valid:
+                submission_ever_correct = any(
+                    value == 1.0 for value in sub_scores
+                )
+            else:
+                stats["rows_submissions_incomplete"] += 1
+                stats["terminalbench_submissions_incomplete"] += 1
     stop = meta.get("traj_stopping_reason") or meta.get("stop_reason")
 
+    score = _to_float(ev.get("score"))
+    submit_count = _to_int(meta.get("traj_submit_count"))
     return Trajectory(
         member=member,
         config=member.config,
@@ -433,7 +517,7 @@ def parse_sample_row(member: Member, row: dict, stats: Counter) -> Trajectory | 
         condition=condition,
         epoch=epoch,
         token_limit=token_limit,
-        score=_to_float(ev.get("score")),
+        score=score,
         is_correct=ev.get("is_correct") if isinstance(ev.get("is_correct"), bool) else None,
         num_turns=_to_int(ev.get("num_turns")),
         tool_calls=_to_int(ev.get("tool_calls_count")),
@@ -444,6 +528,14 @@ def parse_sample_row(member: Member, row: dict, stats: Counter) -> Trajectory | 
         wall_time_s=wall,
         working_time_s=working,
         last_submission_score=sub_scores[-1] if sub_scores else None,
+        submission_ever_correct=submission_ever_correct,
+        submit_count=submit_count,
+        ever_correct=(
+            _terminalbench_ever_correct(
+                score, submission_ever_correct, submit_count, stop
+            )
+            if member.config == "terminalbench" else None
+        ),
         success_stop=(stop == "completed_on_successful_submit"),
         continued_after_correct=any(v >= 1.0 for v in sub_scores[:-1]),
         cum_seq=cum_seq,
@@ -545,6 +637,106 @@ def dedupe_and_guard(trajs: list[Trajectory], stats: Counter) -> list[Trajectory
                     stats["containment_pairs"] += 1
     stats["trajectories_total"] = len(kept)
     return kept
+
+
+def filter_paper_terminalbench_tasks(
+    trajs: list[Trajectory], stats: Counter
+) -> list[Trajectory]:
+    """Apply the paper's study-local 86-task TerminalBench population.
+
+    The raw release is retained for upstream aggregate reconciliation before
+    this function runs. Only emitted study cells and trajectories are filtered.
+    Exact task and exclusion counts are pinned so a future data refresh cannot
+    silently change the paper population.
+    """
+    excluded = [
+        t for t in trajs
+        if t.config == "terminalbench"
+        and t.sample_id in PAPER_TERMINALBENCH_EXCLUDED_TASKS
+    ]
+    observed_excluded = {t.sample_id for t in excluded}
+    kept = [
+        t for t in trajs
+        if not (
+            t.config == "terminalbench"
+            and t.sample_id in PAPER_TERMINALBENCH_EXCLUDED_TASKS
+        )
+    ]
+    paper_tasks = {
+        t.sample_id for t in kept if t.config == "terminalbench"
+    }
+
+    stats["trajectories_before_paper_task_filter"] = len(trajs)
+    stats["terminalbench_paper_excluded_trajectories"] = len(excluded)
+    stats["terminalbench_paper_excluded_tasks_observed"] = len(
+        observed_excluded
+    )
+    stats["terminalbench_paper_task_count"] = len(paper_tasks)
+    stats["trajectories_total"] = len(kept)
+
+    if observed_excluded != PAPER_TERMINALBENCH_EXCLUDED_TASKS:
+        raise ValueError(
+            "TerminalBench paper exclusions changed: observed "
+            f"{sorted(observed_excluded)}, expected "
+            f"{sorted(PAPER_TERMINALBENCH_EXCLUDED_TASKS)}"
+        )
+    if len(paper_tasks) != PAPER_TERMINALBENCH_TASK_COUNT:
+        raise ValueError(
+            "TerminalBench paper task population changed: observed "
+            f"{len(paper_tasks)}, expected "
+            f"{PAPER_TERMINALBENCH_TASK_COUNT}"
+        )
+    return kept
+
+
+def summarise_terminalbench_outcomes(
+    trajs: list[Trajectory], stats: Counter
+) -> None:
+    """Record the evidence and fallback coverage behind TB2 outcomes.
+
+    These diagnostics are part of the vendored manifest. They make the
+    paper-aligned derivation auditable without changing the generic parquet
+    schema or platform metric vocabulary.
+    """
+    rows = [t for t in trajs if t.config == "terminalbench"]
+    stats["terminalbench_trajectories"] = len(rows)
+    stats.setdefault("terminalbench_submissions_parse_error", 0)
+    stats.setdefault("terminalbench_submissions_incomplete", 0)
+    stats["terminalbench_submission_history_present"] = sum(
+        t.submission_ever_correct is not None for t in rows
+    )
+    stats["terminalbench_submission_history_missing"] = sum(
+        t.submission_ever_correct is None for t in rows
+    )
+    stats["terminalbench_final_score_fallback"] = sum(
+        t.submission_ever_correct is None and t.score is not None
+        and not t.success_stop
+        for t in rows
+    )
+    stats["terminalbench_final_score_fallback_positive"] = sum(
+        t.submission_ever_correct is None and t.score == 1.0
+        and not t.success_stop
+        for t in rows
+    )
+    stats["terminalbench_post_cut_score1_rows"] = sum(
+        t.score == 1.0 and t.submission_ever_correct is False
+        and t.stop_reason == "repetition_guard"
+        for t in rows
+    )
+    stats["terminalbench_unexplained_score1_submission0"] = sum(
+        t.score == 1.0 and t.submission_ever_correct is False
+        and t.stop_reason != "repetition_guard"
+        for t in rows
+    )
+    stats["terminalbench_success_stop_submission0_conflicts"] = sum(
+        t.success_stop and t.submission_ever_correct is False for t in rows
+    )
+    stats["terminalbench_outcome_unknown"] = sum(
+        t.ever_correct is None for t in rows
+    )
+    stats["terminalbench_score_out_of_range"] = sum(
+        t.score is not None and not 0.0 <= t.score <= 1.0 for t in rows
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +902,13 @@ def build_cells(
         if method == "record_summary_mean":
             agg = _aggregate_from_record_summaries(rows, stats)
         else:
-            agg = _aggregate_task_mean_score(rows, stats)
+            agg = _aggregate_task_mean_score(
+                rows,
+                stats,
+                source=BENCHMARKS.get(config, {}).get(
+                    "aggregate_source", "score"
+                ),
+            )
         if agg is None:
             stats["cells_no_scores"] += 1
             dropped.append({
@@ -741,16 +939,17 @@ def build_cells(
 
 
 def _aggregate_task_mean_score(
-    rows: list[Trajectory], stats: Counter
+    rows: list[Trajectory], stats: Counter, *, source: str = "score"
 ) -> tuple[float, float | None, int, None] | None:
-    """Equal task weighting: per-task mean of row `score`, then mean over
-    tasks; SE over task means (clustered estimator). Equal task
+    """Equal task weighting: per-task mean of the benchmark's declared
+    aggregate source, then mean over tasks; SE over task means. Equal task
     weighting is what cancels the installment bias (re-run batches
     oversample hard tasks)."""
     by_task: dict[str, list[float]] = defaultdict(list)
     for t in rows:
-        if t.score is not None:
-            by_task[t.sample_id].append(t.score)
+        value = t.outcome() if source == "trajectory_outcome" else t.score
+        if value is not None:
+            by_task[t.sample_id].append(value)
     if not by_task:
         return None
     task_means = [statistics.fmean(v) for v in by_task.values()]
@@ -1054,6 +1253,7 @@ def write_trajectories_parquet(trajs: list[Trajectory], out: Path) -> None:
         key=lambda t: (t.config, t.model_id, t.condition or "", t.sample_id,
                        t.epoch or 0, t.member.path),
     ):
+        outcome = t.outcome()
         rows.append({
             "collection_id": COLLECTION_ID,
             # Config name, NOT the corrected label: Stage I joins resolved
@@ -1065,9 +1265,10 @@ def write_trajectories_parquet(trajs: list[Trajectory], out: Path) -> None:
             # v4: one row = one complete trajectory; the index is the
             # upstream global attempt counter.
             "trajectory_idx": t.epoch,
-            "score": t.outcome(),
-            "is_correct": t.is_correct
-            if BENCHMARKS.get(t.config, {}).get("outcome") == "binary" else None,
+            "score": outcome,
+            "is_correct": (
+                t.ever_correct if t.config == "terminalbench" else t.is_correct
+            ) if BENCHMARKS.get(t.config, {}).get("outcome") == "binary" else None,
             "total_tokens": t.total_tokens,
             "output_tokens": t.output_tokens,
             "reasoning_tokens": t.reasoning_tokens,
@@ -1243,22 +1444,30 @@ def main() -> None:
             f"the reassembled aggregates."
         )
     trajs = dedupe_and_guard(trajs, stats)
+    # Reconciliation deliberately sees the untouched release: it verifies our
+    # raw-field reading against upstream record summaries, which include the
+    # two sparse tasks that the paper later excludes from its 86-task study.
+    reconciliation = reconcile_record_aggregates(members, trajs)
+    trajs = filter_paper_terminalbench_tasks(trajs, stats)
+    summarise_terminalbench_outcomes(trajs, stats)
     assign_protocols(trajs, stats)
     cells, dropped_cells = build_cells(trajs, stats)
     synthetic = build_synthetic_records(cells, stats)
-    reconciliation = reconcile_record_aggregates(members, trajs)
 
     # ---- gates -----------------------------------------------------
     n_rows = stats["rows_total"]
     accounted = (
         stats["trajectories_total"] + stats["rows_parse_error"]
         + stats["rows_duplicate_removed"]
+        + stats["terminalbench_paper_excluded_trajectories"]
     )
     if accounted != n_rows:
         raise SystemExit(
             f"row reconciliation failed: {stats['trajectories_total']} "
             f"trajectories + {stats['rows_parse_error']} parse errors + "
-            f"{stats['rows_duplicate_removed']} duplicates != {n_rows} rows."
+            f"{stats['rows_duplicate_removed']} duplicates + "
+            f"{stats['terminalbench_paper_excluded_trajectories']} "
+            f"paper-task exclusions != {n_rows} rows."
         )
 
     if stats["containment_pairs"]:
@@ -1267,6 +1476,32 @@ def main() -> None:
             f"turn histories — installment pieces exist after all; the "
             f"one-row-one-trajectory model undercounts. Re-diagnose before "
             f"shipping."
+        )
+
+    if (
+        stats["terminalbench_submissions_parse_error"]
+        or stats["terminalbench_submissions_incomplete"]
+    ):
+        raise SystemExit(
+            "TerminalBench submission history is malformed or contains an "
+            "unsupported score — the paper-defined trajectory outcome cannot "
+            "be reconstructed safely."
+        )
+
+    if (
+        stats["terminalbench_unexplained_score1_submission0"]
+        or stats["terminalbench_success_stop_submission0_conflicts"]
+    ):
+        raise SystemExit(
+            "TerminalBench outcome channels conflict without the paper's "
+            "documented retroactive repetition-guard explanation — "
+            "re-diagnose before shipping."
+        )
+
+    if stats["terminalbench_score_out_of_range"]:
+        raise SystemExit(
+            "TerminalBench evaluation.score contains values outside [0, 1] — "
+            "the binary final-score fallback is not valid."
         )
 
     n_traj = max(stats["trajectories_total"], 1)
@@ -1334,6 +1569,14 @@ def main() -> None:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "expected_drop_count": sum(m.n_results for m in members),
         "score_semantics": BENCHMARKS,
+        "paper_task_scope": {
+            "terminalbench": {
+                "task_count": PAPER_TERMINALBENCH_TASK_COUNT,
+                "excluded_released_task_ids": sorted(
+                    PAPER_TERMINALBENCH_EXCLUDED_TASKS
+                ),
+            },
+        },
         "members": [
             {
                 "record_uuid": m.uuid,

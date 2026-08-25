@@ -3,7 +3,7 @@
   "study_slug": "how-inference-compute-shapes-frontier-llm-evaluation",
   "extractor": "scripts/collections/aisi_inference_scaling.py",
   "eee_revision": "2d9a8b23e813347a233e9585ede44b0bbb4f829f",
-  "generated_at": "2026-08-21T14:54:13.678521+00:00",
+  "generated_at": "2026-08-25T15:35:10.368394+00:00",
   "expected_drop_count": 561,
   "score_semantics": {
     "hle": {
@@ -16,8 +16,9 @@
     "terminalbench": {
       "outcome": "binary",
       "metric": "accuracy",
-      "trajectory_outcome": "score",
+      "trajectory_outcome": "ever_correct",
       "aggregate": "task_mean_score",
+      "aggregate_source": "trajectory_outcome",
       "upstream_rule": "task_mean_score"
     },
     "swebenchpro": {
@@ -40,6 +41,15 @@
       "trajectory_outcome": "last_submission_score",
       "aggregate": "record_summary_mean",
       "upstream_rule": null
+    }
+  },
+  "paper_task_scope": {
+    "terminalbench": {
+      "task_count": 86,
+      "excluded_released_task_ids": [
+        "filter-js-from-html",
+        "mcmc-sampling-stan"
+      ]
     }
   },
   "members": [
@@ -5271,14 +5281,30 @@
     "rows_total": 36400,
     "synthetic_records": 125,
     "synthetic_results": 125,
+    "terminalbench_final_score_fallback": 1158,
+    "terminalbench_final_score_fallback_positive": 630,
+    "terminalbench_outcome_unknown": 0,
+    "terminalbench_paper_excluded_tasks_observed": 2,
+    "terminalbench_paper_excluded_trajectories": 38,
+    "terminalbench_paper_task_count": 86,
+    "terminalbench_post_cut_score1_rows": 61,
+    "terminalbench_score_out_of_range": 0,
+    "terminalbench_submission_history_missing": 1158,
+    "terminalbench_submission_history_present": 5066,
+    "terminalbench_submissions_incomplete": 0,
+    "terminalbench_submissions_parse_error": 0,
+    "terminalbench_success_stop_submission0_conflicts": 0,
+    "terminalbench_trajectories": 6224,
+    "terminalbench_unexplained_score1_submission0": 0,
+    "trajectories_before_paper_task_filter": 36327,
     "trajectories_feedback_unknown": 1261,
-    "trajectories_total": 36327,
+    "trajectories_total": 36289,
     "rates": {
       "unstitchable": 0.0,
       "duplicate_rows": 0.002005,
       "missing_turns": 0.0,
       "missing_messages": 0.014808,
-      "feedback_unknown": 0.034712,
+      "feedback_unknown": 0.034749,
       "cells_no_scores": 0.087591,
       "listing_unreadable": 0.0
     },

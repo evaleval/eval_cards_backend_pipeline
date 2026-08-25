@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pytest
@@ -40,6 +42,288 @@ def _load_extractor_module():
     sys.modules["aisi_extractor"] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def test_aisi_terminalbench_uses_binary_ever_correct_outcome(tmp_path):
+    extractor = _load_extractor_module()
+    member = extractor.Member(
+        path="data/terminalbench/openai/model/record.json",
+        uuid="record",
+        config="terminalbench",
+        record={
+            "model_info": {"id": "openai/model"},
+            # The upstream summary describes the raw fractional row scores,
+            # not the paper-defined binary trajectory outcomes emitted below.
+            "evaluation_results": [{
+                "evaluation_name": "accuracy",
+                "score_details": {"score": 3 / 7},
+            }],
+        },
+        evaluation_id="terminalbench/openai-model/1",
+        n_results=1,
+        feedback="answer_feedback",
+        reasoning_effort="high",
+        reasoning_tokens=16000,
+        generation_config=None,
+        source_data=None,
+    )
+    cases = [
+        # Fractional final reward, but a fully-correct submission: success.
+        ("fractional-success", 0.5, [1.0], None, True),
+        # The same fractional reward with only failed submissions: failure.
+        ("fractional-failure", 0.5, [0.0, 0.0], None, False),
+        # Work after a retroactive repetition cut is outside the credited
+        # trajectory, so the pre-cut submission history is authoritative.
+        ("post-cut-final-success", 1.0, [0.0], "repetition_guard", False),
+        # A fully-correct final evaluation is also sufficient when submission
+        # instrumentation is absent.
+        ("missing-history-final-success", 1.0, None, None, True),
+        ("missing-history-failure", 0.0, None, "tool_calls", False),
+        # The harness stop is independent positive evidence.
+        ("successful-stop", 0.0, None, "completed_on_successful_submit", True),
+        ("failure", 0.0, [], "repetition_guard", False),
+        ("no-evidence", None, None, None, None),
+    ]
+    trajectories = []
+    stats = Counter()
+    for index, (task, score, submissions, stop, expected) in enumerate(cases):
+        row = {
+            "sample_id": task,
+            "evaluation": {
+                "score": score,
+                "is_correct": score > 0 if score is not None else None,
+            },
+            "metadata": {
+                "epoch": index,
+                "stop_reason": stop,
+            },
+        }
+        if submissions is not None:
+            row["metadata"]["submissions"] = json.dumps(
+                [{"score": value} for value in submissions]
+            )
+        trajectory = extractor.parse_sample_row(
+            member,
+            row,
+            stats,
+        )
+        assert trajectory is not None
+        assert trajectory.outcome() == (
+            None if expected is None else float(expected)
+        )
+        trajectory.protocol = {
+            "scaffold": "S-adaptive",
+            "compaction": True,
+            "feedback": "answer_feedback",
+            "token_limit": 10_000_000,
+            "reasoning_tokens": 16_000,
+            "reasoning_effort": "high",
+        }
+        trajectory.included = True
+        trajectories.append(trajectory)
+
+    extractor.summarise_terminalbench_outcomes(trajectories, stats)
+    assert {
+        key: stats[key]
+        for key in (
+            "terminalbench_submission_history_present",
+            "terminalbench_submission_history_missing",
+            "terminalbench_final_score_fallback",
+            "terminalbench_final_score_fallback_positive",
+            "terminalbench_post_cut_score1_rows",
+            "terminalbench_unexplained_score1_submission0",
+            "terminalbench_success_stop_submission0_conflicts",
+            "terminalbench_outcome_unknown",
+        )
+    } == {
+        "terminalbench_submission_history_present": 4,
+        "terminalbench_submission_history_missing": 4,
+        "terminalbench_final_score_fallback": 2,
+        "terminalbench_final_score_fallback_positive": 1,
+        "terminalbench_post_cut_score1_rows": 1,
+        "terminalbench_unexplained_score1_submission0": 0,
+        "terminalbench_success_stop_submission0_conflicts": 0,
+        "terminalbench_outcome_unknown": 1,
+    }
+
+    malformed_stats = Counter()
+    malformed = extractor.parse_sample_row(
+        member,
+        {
+            "sample_id": "malformed-history",
+            "evaluation": {"score": 0.0, "is_correct": False},
+            "metadata": {"submissions": "{not-json"},
+        },
+        malformed_stats,
+    )
+    assert malformed is not None
+    assert malformed.outcome() == 0.0
+    assert malformed_stats["rows_submissions_parse_error"] == 1
+    assert malformed_stats["terminalbench_submissions_parse_error"] == 1
+
+    incomplete_stats = Counter()
+    incomplete = extractor.parse_sample_row(
+        member,
+        {
+            "sample_id": "incomplete-history",
+            "evaluation": {"score": 0.0, "is_correct": False},
+            "metadata": {"submissions": json.dumps([{"score": "unknown"}])},
+        },
+        incomplete_stats,
+    )
+    assert incomplete is not None
+    assert incomplete.outcome() == 0.0
+    assert incomplete_stats["rows_submissions_incomplete"] == 1
+    assert incomplete_stats["terminalbench_submissions_incomplete"] == 1
+
+    unexplained_stats = Counter()
+    unexplained = extractor.parse_sample_row(
+        member,
+        {
+            "sample_id": "unexplained-final-success",
+            "evaluation": {"score": 1.0, "is_correct": True},
+            "metadata": {
+                "submissions": json.dumps([{"score": 0.0}]),
+                "traj_stopping_reason": "tool_calls",
+            },
+        },
+        unexplained_stats,
+    )
+    assert unexplained is not None
+    extractor.summarise_terminalbench_outcomes(
+        [unexplained], unexplained_stats
+    )
+    assert unexplained_stats[
+        "terminalbench_unexplained_score1_submission0"
+    ] == 1
+
+    cells, dropped = extractor.build_cells(trajectories, Counter())
+    assert dropped == []
+    assert len(cells) == 1
+    assert cells[0].score == pytest.approx(3 / 7)
+    assert cells[0].n_tasks == 7
+
+    reconciliation = extractor.reconcile_record_aggregates(
+        [member], trajectories
+    )["terminalbench"]
+    assert reconciliation["records"] == 1
+    assert reconciliation["exact"] == 1
+
+    out = tmp_path / "trajectories.parquet"
+    extractor.write_trajectories_parquet(trajectories, out)
+    emitted = duckdb.connect().execute(
+        "SELECT task_id, score, is_correct FROM read_parquet(?) ORDER BY task_id",
+        [str(out)],
+    ).fetchall()
+    assert emitted == [
+        ("failure", 0.0, False),
+        ("fractional-failure", 0.0, False),
+        ("fractional-success", 1.0, True),
+        ("missing-history-failure", 0.0, False),
+        ("missing-history-final-success", 1.0, True),
+        ("no-evidence", None, None),
+        ("post-cut-final-success", 0.0, False),
+        ("successful-stop", 1.0, True),
+    ]
+
+
+def test_aisi_terminalbench_filters_to_papers_86_task_population():
+    extractor = _load_extractor_module()
+    rows = [
+        SimpleNamespace(config="terminalbench", sample_id=f"paper-task-{i}")
+        for i in range(86)
+    ]
+    rows.extend([
+        SimpleNamespace(
+            config="terminalbench", sample_id="filter-js-from-html"
+        ),
+        SimpleNamespace(
+            config="terminalbench", sample_id="mcmc-sampling-stan"
+        ),
+        # The exclusion is scoped to this study's TerminalBench data.
+        SimpleNamespace(config="hle", sample_id="filter-js-from-html"),
+    ])
+    stats = Counter()
+
+    filtered = extractor.filter_paper_terminalbench_tasks(rows, stats)
+
+    assert len(filtered) == 87
+    assert {row.sample_id for row in filtered if row.config == "terminalbench"} == {
+        f"paper-task-{i}" for i in range(86)
+    }
+    assert any(row.config == "hle" for row in filtered)
+    assert stats["terminalbench_paper_task_count"] == 86
+    assert stats["terminalbench_paper_excluded_tasks_observed"] == 2
+    assert stats["terminalbench_paper_excluded_trajectories"] == 2
+
+    with pytest.raises(ValueError, match="paper exclusions changed"):
+        extractor.filter_paper_terminalbench_tasks(rows[:-2], Counter())
+
+
+def test_aisi_frontiermath_keeps_raw_score_for_cell_aggregation(tmp_path):
+    extractor = _load_extractor_module()
+    member = extractor.Member(
+        path="data/frontiermath/openai/model/record.json",
+        uuid="record",
+        config="frontiermath",
+        record={
+            "model_info": {"id": "openai/model"},
+            "evaluation_results": [{
+                "evaluation_name": "accuracy",
+                "score_details": {"score": 0.25},
+            }],
+        },
+        evaluation_id="frontiermath/openai-model/1",
+        n_results=1,
+        feedback=None,
+        reasoning_effort="high",
+        reasoning_tokens=16000,
+        generation_config=None,
+        source_data=None,
+    )
+    trajectories = []
+    for index, is_correct in enumerate((True, False)):
+        trajectory = extractor.parse_sample_row(
+            member,
+            {
+                "sample_id": f"task-{index}",
+                "evaluation": {"score": 0.25, "is_correct": is_correct},
+                "metadata": {"epoch": index},
+            },
+            Counter(),
+        )
+        assert trajectory is not None
+        trajectory.protocol = {
+            "scaffold": "S-adaptive",
+            "compaction": False,
+            "feedback": "none",
+            "token_limit": 1_000_000,
+            "reasoning_tokens": 16_000,
+            "reasoning_effort": "high",
+        }
+        trajectory.included = True
+        trajectories.append(trajectory)
+
+    cells, dropped = extractor.build_cells(trajectories, Counter())
+    assert dropped == []
+    assert len(cells) == 1
+    # FrontierMath rows carry a pre-averaged task solve rate in `score`.
+    # Its headline must therefore stay 0.25, not become mean(is_correct)=0.5.
+    assert cells[0].score == 0.25
+
+    reconciliation = extractor.reconcile_record_aggregates(
+        [member], trajectories
+    )["frontiermath"]
+    assert reconciliation["records"] == 1
+    assert reconciliation["exact"] == 1
+
+    out = tmp_path / "frontiermath-trajectories.parquet"
+    extractor.write_trajectories_parquet(trajectories, out)
+    emitted = duckdb.connect().execute(
+        "SELECT score, is_correct FROM read_parquet(?) ORDER BY task_id",
+        [str(out)],
+    ).fetchall()
+    assert emitted == [(1.0, True), (0.0, False)]
 
 
 # ---------------------------------------------------------------------------

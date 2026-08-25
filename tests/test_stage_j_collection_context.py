@@ -97,8 +97,8 @@ AGGREGATED = [
 def _trajectory_rows(conditions=CONDITIONS, partial_credit=()):
     """One trajectory per task, plus `extra` duplicates of task 0. Scores are
     0/1 unless the (model, condition) is in `partial_credit`, where correct
-    tasks score 0.5 — task_mean_score then diverges from the is_correct mean
-    by more than G3's binarisation tolerance."""
+    tasks score 0.5. The latter pins that source-specific score semantics are
+    not rejected merely because `is_correct` has a different meaning."""
     rows = []
     for model_raw, condition, n_tasks, n_correct, extra in conditions:
         hit = 0.5 if (model_raw, condition) in partial_credit else 1.0
@@ -353,21 +353,39 @@ def test_assisted_companion_and_its_absence_are_both_reported(
     ]
 
 
-def test_assisted_below_coverage_is_named_not_dropped_silently(
-    tmp_path, monkeypatch, caplog
+def test_assisted_below_coverage_is_kept_with_its_own_task_count(
+    tmp_path, monkeypatch
 ):
+    # model-a's assisted arm covers 5 of 10 tasks. Coverage is provenance, not
+    # an eligibility gate, and the payload carries the exact task count.
     _write_curated(tmp_path, monkeypatch)
-    # model-a's assisted arm now covers 5 of 10 tasks — under G2
     conditions = [c for c in CONDITIONS if c[1] != A_FEEDBACK]
     conditions.append((MODEL_A_RAW, A_FEEDBACK, 5, 4, 10))
-    with caplog.at_level(logging.INFO, logger=sidecars.log.name):
-        path, _ = _write(_build_con(conditions=conditions), tmp_path)
+    path, _ = _write(_build_con(conditions=conditions), tmp_path)
     entry = _entry(path)
-    assert entry["models"][MODEL_A_KEY]["assisted"] is None
-    assert {"display_name": "Model A", "n_tasks": 5} in entry["models_without_assisted"]
-    assert "no assisted mark" in caplog.text
+    assert entry["models"][MODEL_A_KEY]["assisted"]["n_tasks"] == 5
+    assert "Model A" not in [
+        m["display_name"] for m in entry["models_without_assisted"]
+    ]
     # the no-feedback mark is untouched
     assert entry["models"][MODEL_A_KEY]["score"] == 0.6
+    assert entry["models"][MODEL_A_KEY]["n_tasks"] == 10
+
+
+def test_assisted_that_fails_an_integrity_gate_is_named_not_dropped_silently(
+    tmp_path, monkeypatch, caplog
+):
+    # G3 still applies to the companion: a published score that will not
+    # reproduce from its own released attempts is not rendered, and the model
+    # is named rather than silently losing its second mark.
+    _write_curated(tmp_path, monkeypatch)
+    con = _build_con(score_overrides={(MODEL_A_RAW, A_FEEDBACK): 0.61})
+    with caplog.at_level(logging.INFO, logger=sidecars.log.name):
+        path, _ = _write(con, tmp_path)
+    entry = _entry(path)
+    assert entry["models"][MODEL_A_KEY]["assisted"] is None
+    assert {"display_name": "Model A", "n_tasks": 10} in entry["models_without_assisted"]
+    assert "no assisted mark" in caplog.text
 
 
 def test_condition_selection_ties_and_unknown_exclusion(tmp_path, monkeypatch):
@@ -455,20 +473,22 @@ def test_external_value_outside_unit_range_fails(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# G2 / G3
+# Integrity gates
 # ---------------------------------------------------------------------------
 
 
-def test_g2_coverage_drops_thin_model(tmp_path, monkeypatch, caplog):
+def test_thin_no_feedback_cell_is_kept_with_its_task_count(
+    tmp_path, monkeypatch
+):
     _write_curated(tmp_path, monkeypatch)
     # model-b's only no-feedback arm now covers 5 of 10 tasks
     conditions = [c for c in CONDITIONS if c[0] != MODEL_B_RAW]
     conditions.append((MODEL_B_RAW, B1, 5, 3, 0))
-    with caplog.at_level(logging.INFO, logger=sidecars.log.name):
-        path, _ = _write(_build_con(conditions=conditions), tmp_path)
+    path, _ = _write(_build_con(conditions=conditions), tmp_path)
     entry = _entry(path)
-    assert sorted(entry["models"]) == [MODEL_A_KEY]
-    assert "G2 coverage 5 of 10" in caplog.text
+    assert sorted(entry["models"]) == [MODEL_A_KEY, MODEL_B_KEY]
+    assert entry["models"][MODEL_B_KEY]["n_tasks"] == 5
+    assert entry["official_task_count"] == 10
 
 
 def test_g3_recompute_mismatch_drops_one_model_not_the_bake(
@@ -483,15 +503,17 @@ def test_g3_recompute_mismatch_drops_one_model_not_the_bake(
     assert "G3 recompute" in caplog.text
 
 
-def test_g3_binarisation_gap_drops_model(tmp_path, monkeypatch, caplog):
+def test_is_correct_gap_does_not_drop_a_reproducible_score(
+    tmp_path, monkeypatch
+):
     _write_curated(tmp_path, monkeypatch)
     # model-a's correct tasks score 0.5, so task_mean_score is 0.30 while the
-    # is_correct mean is 0.60 — well past the partial-credit tolerance.
+    # is_correct mean is 0.60. The declared score still reproduces exactly.
     con = _build_con(partial_credit={(MODEL_A_RAW, A_FULL)})
-    with caplog.at_level(logging.WARNING, logger=sidecars.log.name):
-        path, _ = _write(con, tmp_path)
-    assert sorted(_entry(path)["models"]) == [MODEL_B_KEY]
-    assert "G3 binarised mean" in caplog.text
+    path, _ = _write(con, tmp_path)
+    entry = _entry(path)
+    assert sorted(entry["models"]) == [MODEL_A_KEY, MODEL_B_KEY]
+    assert entry["models"][MODEL_A_KEY]["score"] == 0.3
 
 
 def test_models_without_context_lists_unmatched_models(tmp_path, monkeypatch):
@@ -601,20 +623,20 @@ def test_rereport_drop_keeps_a_point_outside_the_window(tmp_path, monkeypatch):
     assert unlabelled[0]["score"] == round(outside / 100, 6)
 
 
-def test_coverage_gate_boundary_is_exclusive_on_an_integer_threshold(
+def test_official_task_count_is_context_not_an_eligibility_threshold(
     tmp_path, monkeypatch
 ):
-    # With official_task_count=20 the G2 threshold is exactly 19, so a 19-task
-    # cell pins whether the comparison is `<` or `<=`. Model A's fullest cell
-    # covers 10 of 10 tasks; widening the denominator to 20 puts it under.
+    # Widening the registry denominator must not suppress thinner study cells.
     _write_curated(tmp_path, monkeypatch)
     registry = json.dumps({"official_task_count": 20})
     con = _build_con(registry_metadata=registry)
     path, _ = _write(con, tmp_path)
-    # 10 < 19: every model drops out, so nothing is emitted at all
-    assert path is None
+    entry = _entry(path)
+    assert entry["official_task_count"] == 20
+    assert entry["models"][MODEL_A_KEY]["n_tasks"] == 10
+    assert entry["models"][MODEL_B_KEY]["n_tasks"] == 10
 
-    # A cell exactly ON the threshold must be KEPT (`<`, not `<=`).
+    # Larger cells retain their own counts against the same denominator.
     conditions = [
         (MODEL_A_RAW, A_FULL, 19, 12, 0),
         (MODEL_A_RAW, A_FEEDBACK, 19, 15, 0),
@@ -623,6 +645,7 @@ def test_coverage_gate_boundary_is_exclusive_on_an_integer_threshold(
     con = _build_con(conditions=conditions, registry_metadata=registry)
     path, _ = _write(con, tmp_path)
     entry = _entry(path)
+    assert entry["official_task_count"] == 20
     assert entry["models"][MODEL_A_KEY]["n_tasks"] == 19
     assert entry["models"][MODEL_A_KEY]["assisted"]["n_tasks"] == 19
 

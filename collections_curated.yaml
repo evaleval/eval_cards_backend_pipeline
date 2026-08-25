@@ -41,16 +41,16 @@ uk-aisi-inference-scaling:
     swebenchpro: binary
     frontiermath: binary
     healthbench: graded
-  # Per-benchmark score semantics (v4 — measured against the upload's own
-  # summaries; the extractor proves each reading per run by recomputing
-  # them). `trajectory_outcome`: which per-attempt field is the outcome
-  # (null = none exists upstream). `aggregate`: how the headline result is
-  # computed. `metric`: what it is reported AS — healthbench is a
+  # Per-benchmark score semantics (v6). The extractor separately reconciles
+  # untouched raw scores against the upload's summaries. `trajectory_outcome`
+  # is the emitted per-attempt outcome; `aggregate_source` overrides raw score
+  # when the cell headline must use that outcome. `aggregate` is how the
+  # headline is computed. `metric` is what it is reported AS — healthbench is a
   # different measurement (rubric score) and stays its own metric, never
   # blended with accuracy.
   score_semantics:
     hle:          {metric: accuracy, trajectory_outcome: score, aggregate: task_mean_score}
-    terminalbench: {metric: accuracy, trajectory_outcome: score, aggregate: task_mean_score}
+    terminalbench: {metric: accuracy, trajectory_outcome: ever_correct, aggregate: task_mean_score, aggregate_source: trajectory_outcome}
     swebenchpro:  {metric: accuracy, trajectory_outcome: score, aggregate: task_mean_score}
     frontiermath: {metric: accuracy, trajectory_outcome: is_correct, aggregate: task_mean_score}
     healthbench:  {metric: healthbench_score, trajectory_outcome: last_submission_score, aggregate: record_summary_mean}
