@@ -1940,5 +1940,21 @@
   ],
   "LAMBADA": [
     "linguistic_core"
+  ],
+  "AlpacaEval 1.0": [
+    "applied_reasoning",
+    "general"
+  ],
+  "LEXam": [
+    "law",
+    "applied_reasoning"
+  ],
+  "LEXam Open Questions": [
+    "law",
+    "applied_reasoning"
+  ],
+  "LEXam MCQ": [
+    "law",
+    "applied_reasoning"
   ]
 }
