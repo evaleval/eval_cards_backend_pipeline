@@ -1858,5 +1858,87 @@
   ],
   "ZebraLogic": [
     "logical_reasoning"
+  ],
+  "GLUE": [
+    "linguistic_core",
+    "general"
+  ],
+  "CoLA": [
+    "linguistic_core"
+  ],
+  "MNLI": [
+    "linguistic_core"
+  ],
+  "MRPC": [
+    "linguistic_core"
+  ],
+  "QNLI": [
+    "linguistic_core"
+  ],
+  "QQP": [
+    "linguistic_core"
+  ],
+  "RTE": [
+    "linguistic_core"
+  ],
+  "SST-2": [
+    "linguistic_core"
+  ],
+  "STS-B": [
+    "linguistic_core"
+  ],
+  "WNLI": [
+    "linguistic_core",
+    "commonsense_reasoning"
+  ],
+  "CommitmentBank": [
+    "linguistic_core"
+  ],
+  "COPA": [
+    "commonsense_reasoning"
+  ],
+  "MultiRC": [
+    "linguistic_core"
+  ],
+  "ReCoRD": [
+    "linguistic_core",
+    "commonsense_reasoning"
+  ],
+  "WiC": [
+    "linguistic_core"
+  ],
+  "WSC": [
+    "commonsense_reasoning"
+  ],
+  "ANLI": [
+    "linguistic_core",
+    "logical_reasoning"
+  ],
+  "ANLI R1": [
+    "linguistic_core",
+    "logical_reasoning"
+  ],
+  "ANLI R2": [
+    "linguistic_core",
+    "logical_reasoning"
+  ],
+  "ANLI R3": [
+    "linguistic_core",
+    "logical_reasoning"
+  ],
+  "HEAD-QA": [
+    "knowledge",
+    "natural_sciences"
+  ],
+  "MedMCQA": [
+    "knowledge",
+    "natural_sciences"
+  ],
+  "SciQ": [
+    "natural_sciences",
+    "knowledge"
+  ],
+  "LAMBADA": [
+    "linguistic_core"
   ]
 }
