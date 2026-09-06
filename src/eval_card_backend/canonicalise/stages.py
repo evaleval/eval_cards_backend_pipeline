@@ -3391,18 +3391,27 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 m.input_modalities            AS m_input_modalities,
                 m.output_modalities           AS m_output_modalities,
                 cmet.display_name             AS metric_display_name,
-                cmet.min_score                AS cmet_min_score,
-                cmet.max_score                AS cmet_max_score,
+                -- Registry bounds behind the view's min_score / max_score /
+                -- score_normalized. An infinite side (the registry's
+                -- "unbounded by definition") is folded to NULL here so
+                -- those columns read exactly as they did for a NULL bound
+                -- ([0, 1] defaults) instead of a 0/inf range that would
+                -- normalise every score to 0.
+                CASE WHEN isinf(cmet.min_score) THEN NULL ELSE cmet.min_score END AS cmet_min_score,
+                CASE WHEN isinf(cmet.max_score) THEN NULL ELSE cmet.max_score END AS cmet_max_score,
                 -- Fold-aware effective metric (same derivation as Stage C's
                 -- metric_id_effective — the fold map is deterministic on
                 -- (benchmark_key, metric_key)) + its registry bounds for
                 -- canonical-scale conversion. Unmasked on purpose: NULL
                 -- bounds must stay NULL ('no_bounds'), not become [0,1].
+                -- An INFINITE bound (the registry's "unbounded by
+                -- definition") is likewise no bound for scale placement:
+                -- a [0, inf) metric can be neither a fraction nor a percent.
                 COALESCE(bmf.to_metric_id, ta.metric_key) AS metric_key_effective,
                 bmf.scale_factor              AS eff_scale_factor,
                 cmet_eff.lower_is_better      AS eff_lower_is_better,
-                cmet_eff.min_score            AS eff_min_score,
-                cmet_eff.max_score            AS eff_max_score,
+                CASE WHEN isinf(cmet_eff.min_score) THEN NULL ELSE cmet_eff.min_score END AS eff_min_score,
+                CASE WHEN isinf(cmet_eff.max_score) THEN NULL ELSE cmet_eff.max_score END AS eff_max_score,
                 b.parent_benchmark_id         AS b_parent_benchmark_id,
                 b.composite_display_name      AS b_composite_display_name,
                 b.family_id                   AS b_family_id,
@@ -4879,6 +4888,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             pf.avg_score,
             CASE
                 WHEN cmet.min_score IS NULL OR cmet.max_score IS NULL
+                  OR isinf(cmet.min_score) OR isinf(cmet.max_score)
                   OR cmet.max_score = cmet.min_score THEN NULL
                 ELSE (pf.avg_score - cmet.min_score) / (cmet.max_score - cmet.min_score)
             END                                          AS avg_score_norm,

@@ -27,6 +27,7 @@ from pathlib import Path
 
 import duckdb
 
+from eval_card_backend.canonicalise.sidecars import _json_finite
 from eval_card_backend.canonicalise import sidecars, stages, udfs
 from eval_card_backend.canonicalise.cache import (
     STAGE_ORDER,
@@ -616,7 +617,9 @@ def run(
         registry_root=registry_root,
         cards_root=cards_root,
     )
-    (out_dir / "snapshot_meta.json").write_text(json.dumps(meta, indent=2))
+    # Same non-finite wire form as every other sidecar (nothing in the meta
+    # carries a registry float today; the invariant is what matters).
+    (out_dir / "snapshot_meta.json").write_text(json.dumps(_json_finite(meta), indent=2))
 
     # View-layer JSON sidecars (manifest, headline, hierarchy). Only emitted
     # when Stage J was in the executed slice — the consumers all key off

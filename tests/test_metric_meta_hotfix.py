@@ -84,6 +84,50 @@ def test_eee_min_max_used_when_registry_null():
     assert _provenance_counter[("max_score", "eee_record")] == 1
 
 
+def test_infinite_registry_bound_is_no_bound():
+    """The registry spells "unbounded by definition" as an infinite float.
+    For the per-fact meta that is exactly what a NULL side was: the chain
+    falls through to the record's own declared range, and the output stays
+    finite-or-None so nothing downstream ever divides by an infinite
+    range or compares against it."""
+    out = derive_metric_meta(
+        eee_metric_config={"min_score": 0.0, "max_score": 1000.0},
+        registry_metric_kind=None,
+        registry_metric_unit=None,
+        registry_min_score=0.0,
+        registry_max_score=float("inf"),
+        registry_lower_is_better=True,
+        metric_name="perplexity",
+    )
+    assert out["min_score"] == 0.0
+    assert out["max_score"] == 1000.0
+    assert _provenance_counter[("min_score", "registry")] == 1
+    assert _provenance_counter[("max_score", "eee_record_under_unbounded_registry")] == 1
+
+
+def test_infinite_bounds_on_both_layers_fold_to_none():
+    """A record that spells its own unbounded side as an infinite float
+    (the Arrow pad normally nulls the "Infinity" string first) folds the
+    same way; both layers unbounded means no bound at all."""
+    out = derive_metric_meta(
+        eee_metric_config={"min_score": float("-inf"), "max_score": "Infinity"},
+        registry_metric_kind=None,
+        registry_metric_unit=None,
+        registry_min_score=float("-inf"),
+        registry_max_score=float("inf"),
+        registry_lower_is_better=None,
+        metric_name="elo",
+    )
+    assert out["min_score"] is None
+    # The string form is not a number; it passes through for the caller's
+    # existing coercion exactly as before this guard.
+    assert out["max_score"] == "Infinity"
+    # The record supplied nothing usable on the lower side: that is a
+    # default under an unbounded registry, not a record value.
+    assert _provenance_counter[("min_score", "default_null_under_unbounded_registry")] == 1
+    assert _provenance_counter[("max_score", "eee_record_under_unbounded_registry")] == 1
+
+
 # ---------- proportion-shape heuristic ----------
 
 def test_heuristic_proportion_when_zero_to_one_continuous_eee():
@@ -382,3 +426,19 @@ def test_provenance_default_null_for_unit():
     )
     assert out["metric_unit"] is None
     assert out["metric_unit_provenance"] == "default_null"
+
+
+def test_provenance_when_registry_unbounded_and_record_silent():
+    out = derive_metric_meta(
+        eee_metric_config={},
+        registry_metric_kind=None,
+        registry_metric_unit=None,
+        registry_min_score=0.0,
+        registry_max_score=float("inf"),
+        registry_lower_is_better=None,
+        metric_name="latency",
+    )
+    assert out["min_score"] == 0.0 and out["max_score"] is None
+    assert _provenance_counter[("min_score", "registry")] == 1
+    assert _provenance_counter[("max_score", "default_null_under_unbounded_registry")] == 1
+    assert _provenance_counter[("max_score", "eee_record_under_unbounded_registry")] == 0

@@ -325,6 +325,12 @@ def test_compute_threshold_four_rules():
     t, b = compute_threshold({"min_score": 0, "max_score": 100})
     assert t == 5.0 and b == "range_5pct"
     assert compute_threshold({}) == (0.05, "fallback_default")
+    # An open-ended range (the registry's `.inf` for "unbounded by
+    # definition") has no 5%-of-range; it must take the fallback rather
+    # than an infinite threshold that would make every group non-divergent.
+    assert compute_threshold({"min_score": 0, "max_score": float("inf")}) == (0.05, "fallback_default")
+    assert compute_threshold({"min_score": float("-inf"), "max_score": float("inf")}) == (0.05, "fallback_default")
+    assert compute_threshold({"min_score": 0, "max_score": float("nan")}) == (0.05, "fallback_default")
     assert compute_threshold(None) == (0.05, "fallback_default")
 
 

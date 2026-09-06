@@ -26,6 +26,7 @@ cheap to re-derive from the cached canonical + view parquets.
 from __future__ import annotations
 
 import json
+import math
 import logging
 import re
 from collections import defaultdict
@@ -117,7 +118,7 @@ def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
         },
     }
     path = out_dir / "manifest.json"
-    path.write_text(json.dumps(payload, indent=2))
+    path.write_text(json.dumps(_json_finite(payload), indent=2))
     return path
 
 
@@ -582,7 +583,7 @@ def write_headline(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "tags":            _tags_list(con),
     }
     path = out_dir / "headline.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, default=_json_default))
     return path
 
 
@@ -652,7 +653,7 @@ def write_organizations(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "orgs": orgs,
     }
     path = out_dir / "organizations.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, default=_json_default))
     return path
 
 
@@ -701,7 +702,7 @@ def write_collections(con, out_dir: Path, snapshot_meta: dict) -> Path:
 
     path = out_dir / "collections.json"
     path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, default=_json_default)
+        json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default)
     )
     return path
 
@@ -814,7 +815,7 @@ def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | 
         return None
     path = out_dir / "collection_context.json"
     path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, default=_json_default)
+        json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default)
     )
     return path
 
@@ -1561,7 +1562,7 @@ def write_hierarchy(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "benchmark_index": benchmark_index,
     }
     path = out_dir / "hierarchy.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, default=_json_default))
     return path
 
 
@@ -3374,7 +3375,7 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
     # sort_keys: evals/by_model insertion order follows DuckDB scan order,
     # which is run-to-run unstable — key order is meaningless to JSON
     # consumers, so sort for byte-deterministic builds.
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default))
     return path
 
 
@@ -3500,7 +3501,7 @@ def write_benchmark_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "benchmarks":      benchmarks,
     }
     path = out_dir / "benchmark_index.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, default=_json_default))
     return path
 
 
@@ -3562,13 +3563,33 @@ def write_peer_ranks(con, out_dir: Path, snapshot_meta: dict) -> Path:
     }
     path = out_dir / "peer-ranks.json"
     # sort_keys: by-eval dict order follows scan order (run-unstable).
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default))
     return path
 
 
 # ---------------------------------------------------------------------------
 # JSON helpers
 # ---------------------------------------------------------------------------
+
+
+def _json_finite(value):
+    """Wire form for non-finite floats: the registry marks a metric bound
+    that is unbounded by definition with an infinite float, which JSON
+    cannot carry; it is emitted as the string "Infinity" / "-Infinity", the
+    form every_eval_ever's schema uses, and NaN as null. Applied to every
+    sidecar payload before json.dumps (which would otherwise write the
+    invalid literal `Infinity`, unreadable by JSON.parse)."""
+    if isinstance(value, float):
+        if math.isinf(value):
+            return "Infinity" if value > 0 else "-Infinity"
+        if math.isnan(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {k: _json_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_finite(v) for v in value]
+    return value
 
 
 def _json_default(obj):

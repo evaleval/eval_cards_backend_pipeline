@@ -3,7 +3,7 @@
 The four basis labels and their threshold values are pinned here:
     proportion       → 0.05
     percent          → 5.0  (percentage points)
-    range_5pct       → 0.05 * (max_score - min_score)
+    range_5pct       → 0.05 * (max_score - min_score)   (finite bounds only)
     fallback_default → 0.05  (absolute)
 
 Inputs come from the per-row resolved metric meta (the
@@ -57,7 +57,15 @@ def threshold_factor() -> float:
 
 
 def _is_real_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    # Finite only: the registry spells an unbounded side as an infinite
+    # float, and 0.05 * inf would be an infinite threshold that silently
+    # makes every group on that metric non-divergent. An open-ended range
+    # has no 5%-of-range, so it takes the fallback like a missing one.
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 def _base_threshold(metric_config: Any) -> tuple[float, str]:

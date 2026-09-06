@@ -41,8 +41,8 @@ DESIGN
       |-----------------|-----------------------------------|-------------------------------|---------------------------------------------|
       | metric_kind     | canonical_metrics.metric_kind     | metric_config.metric_kind     | regex on metric_name; default 'score'       |
       | metric_unit     | canonical_metrics.metric_unit     | metric_config.metric_unit     | [min=0, max=1, continuous] → 'proportion'   |
-      | min_score       | canonical_metrics.min_score       | metric_config.min_score       | —                                           |
-      | max_score       | canonical_metrics.max_score       | metric_config.max_score       | —                                           |
+      | min_score       | canonical_metrics.min_score       | metric_config.min_score       | — (an infinite side counts as absent)       |
+      | max_score       | canonical_metrics.max_score       | metric_config.max_score       | — (an infinite side counts as absent)       |
       | lower_is_better | canonical_metrics.lower_is_better | metric_config.lower_is_better | default False                               |
 
     Synonym normalisation (last step): metric_unit `'percentage'` → `'percent'`.
@@ -58,6 +58,7 @@ DESIGN
 """
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from typing import Any
@@ -155,6 +156,40 @@ def _is_real_number(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _usable_bound(v: Any) -> Any:
+    """A bound the chain can place a score against; an infinite side is
+    folded to None so the per-fact meta stays finite-or-NULL.
+
+    The registry spells "unbounded by definition" as an infinite float
+    (`.inf` in its seed). That is a definitional fact about the metric,
+    and the registry's canonical_metrics row keeps carrying it (the
+    sidecars stamp it as "Infinity"). The PER-FACT meta is a different
+    question: its consumers — the -1 sentinel drop, the scale-anomaly
+    flag, the 5%-of-range divergence threshold, the frontend's
+    normalisation — all need a finite range or none, and for them an
+    open side is no side. So the chain does NOT let the registry's
+    infinity beat the record's own declared bound; it falls through to
+    the record, exactly as a NULL registry bound always did.
+
+    Measured on the published warehouse when the registry adopted `.inf`
+    (2026-09): 4,187 facts sat on unbounded-upper metrics (elo, rank,
+    cost-per-task, latencies, avg-attempts) and every one carried a
+    record-declared finite upper bound — converter clamps or observed
+    maxima (Elo 3000, rank = row count, cost = max seen). Letting the
+    infinity win would have nulled those and moved their divergence
+    threshold from 5% of the clamp to the 0.05 absolute fallback,
+    flagging nearly every cross-source Elo pair as divergent. The right
+    threshold basis for open-ended metrics is an open design question;
+    until it is settled the record's range is the only finite one there
+    is, and today's outputs rely on it.
+
+    Non-numeric junk passes through untouched for the caller's existing
+    handling; NaN is folded like an infinity."""
+    if _is_real_number(v) and not math.isfinite(v):
+        return None
+    return v
+
+
 def _infer_metric_kind_from_name(name: str | None) -> str | None:
     if not name or not isinstance(name, str):
         return None
@@ -209,15 +244,30 @@ def derive_metric_meta(
     # for the proportion-shape heuristic; not exposed downstream.
     eee_score_type      = eee_metric_config.get("score_type") or registry_score_type
 
-    # min_score / max_score / lower_is_better — straightforward chain.
+    # min_score / max_score / lower_is_better — straightforward chain. An
+    # infinite bound on either side (registry `.inf`, or a record's own
+    # "Infinity" if the Arrow pad ever lets one through) is no bound for
+    # the per-fact meta; see _usable_bound for why the registry's
+    # infinity does not beat the record's finite range. The provenance
+    # label keeps that fallthrough countable in the run log.
+    registry_unbounded_min = _is_real_number(registry_min_score) and not math.isfinite(registry_min_score)
+    registry_unbounded_max = _is_real_number(registry_max_score) and not math.isfinite(registry_max_score)
+    registry_min_score = _usable_bound(registry_min_score)
+    registry_max_score = _usable_bound(registry_max_score)
+    eee_min = _usable_bound(eee_min)
+    eee_max = _usable_bound(eee_max)
     min_score = _coalesce(registry_min_score, eee_min)
     max_score = _coalesce(registry_max_score, eee_max)
-    if min_score is None and max_score is None:
-        _record("min_score", "default_null")
-        _record("max_score", "default_null")
-    else:
-        _record("min_score", "registry" if registry_min_score is not None else "eee_record")
-        _record("max_score", "registry" if registry_max_score is not None else "eee_record")
+    for field, reg, resolved, unbounded in (
+        ("min_score", registry_min_score, min_score, registry_unbounded_min),
+        ("max_score", registry_max_score, max_score, registry_unbounded_max),
+    ):
+        if reg is not None:
+            _record(field, "registry")
+        elif resolved is not None:
+            _record(field, "eee_record_under_unbounded_registry" if unbounded else "eee_record")
+        else:
+            _record(field, "default_null_under_unbounded_registry" if unbounded else "default_null")
 
     if registry_lower_is_better is not None:
         lower_is_better = bool(registry_lower_is_better)

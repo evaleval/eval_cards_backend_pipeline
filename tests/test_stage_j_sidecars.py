@@ -1179,3 +1179,23 @@ def test_forced_composites_layout_also_follows_the_curated_primary():
     finally:
         del sidecars._FORCE_LAYOUT["forced"]
     assert [c["key"] for c in fam["composites"] if c["is_primary"]] == ["bbb-comp"]
+
+
+def test_sidecar_json_carries_infinite_bounds_as_strings(tmp_path):
+    """The registry marks unbounded metric bounds with an infinite float;
+    json.dumps would write the invalid literal `Infinity`, which JSON.parse
+    rejects. Sidecars emit "Infinity" / "-Infinity" instead."""
+    import json
+
+    from eval_card_backend.canonicalise import sidecars
+
+    payload = {"metrics": [{"canonical_min_score": 1.0, "canonical_max_score": float("inf")},
+                           {"canonical_min_score": float("-inf"), "canonical_max_score": float("nan")}],
+               "nested": [[float("inf")]]}
+    text = json.dumps(sidecars._json_finite(payload))
+    back = json.loads(text)
+    assert back["metrics"][0]["canonical_max_score"] == "Infinity"
+    assert back["metrics"][1]["canonical_min_score"] == "-Infinity"
+    assert back["metrics"][1]["canonical_max_score"] is None
+    assert back["nested"] == [["Infinity"]]
+    assert "inf" not in text.replace("Infinity", "")
