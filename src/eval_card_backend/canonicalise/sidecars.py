@@ -1666,14 +1666,17 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
     from collections import defaultdict
 
     # --- Pull family / composite curation from registry tables ---
+    # `_load_dim` materialises the full _DIM_SCHEMAS shape, so the column is
+    # always present (NULL-padded on a registry snapshot that predates it).
     fam_rows = con.execute(
         "SELECT id, display_name, category, tags, "
-        "       benchmark_ids, composite_keys, folder_aliases "
+        "       benchmark_ids, composite_keys, folder_aliases, "
+        "       primary_benchmark_key "
         "  FROM canonical_families"
     ).fetchall() if _table_exists(con, "canonical_families") else []
     families_curated: dict[str, dict] = {}
     for r in fam_rows:
-        fid, display, cat, tags, bench_ids, comp_keys, folder_aliases = r
+        fid, display, cat, tags, bench_ids, comp_keys, folder_aliases, primary = r
         families_curated[fid] = {
             "display_name":    display or fid,
             "category":        (cat or "other"),
@@ -1681,6 +1684,10 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
             "benchmark_ids":   _decode_json_list(bench_ids),
             "composite_keys":  _decode_json_list(comp_keys),
             "folder_aliases":  _decode_json_list(folder_aliases),
+            # The registry's curated headline benchmark (families.yaml
+            # `primary_benchmark_key`); consulted by
+            # `_mark_family_primary_benchmark` ahead of the local override map.
+            "primary_benchmark_key": primary or None,
         }
 
     comp_rows = con.execute(
@@ -1806,16 +1813,27 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
         # Mark the headline benchmark within this family. Sets
         # is_primary on each benchmark row across whatever layout the
         # family ends up using.
-        _mark_family_primary_benchmark(fid, all_benchmarks)
+        _mark_family_primary_benchmark(
+            fid, all_benchmarks,
+            preferred=(curated or {}).get("primary_benchmark_key"),
+        )
 
+        # The primary composite is the one holding the family's curated
+        # headline benchmark when the registry names one (apex -> apex-v1),
+        # else the first by key; the same choice serves a forced layout.
+        preferred_key = (curated or {}).get("primary_benchmark_key")
+        primary_comp = next(
+            (c for c in sorted(family_composites, key=lambda c: c["key"])
+             if preferred_key and any(
+                 b.get("key") == preferred_key for b in c.get("benchmarks", []))),
+            None,
+        ) or sorted(family_composites, key=lambda c: c["key"])[0]
         force = _FORCE_LAYOUT.get(fid)
         if force == "composites" and family_composites:
-            primary_comp = sorted(family_composites, key=lambda c: c["key"])[0]
             for comp in family_composites:
                 comp["is_primary"] = (comp["key"] == primary_comp["key"])
             family_record["composites"] = family_composites
         elif len(family_composites) >= 2:
-            primary_comp = sorted(family_composites, key=lambda c: c["key"])[0]
             for comp in family_composites:
                 comp["is_primary"] = (comp["key"] == primary_comp["key"])
             family_record["composites"] = family_composites
@@ -1929,7 +1947,9 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
         family_record["reproducibility_summary"] = _aggregate_reproducibility(benches)
         family_record["provenance_summary"]      = _aggregate_provenance(benches)
         family_record["comparability_summary"]   = _aggregate_comparability(benches)
-        _mark_family_primary_benchmark(bfid, benches)
+        _mark_family_primary_benchmark(
+            bfid, benches, preferred=(curated or {}).get("primary_benchmark_key"),
+        )
         if len(benches) == 1:
             family_record["standalone_benchmarks"] = benches
         else:
@@ -2345,7 +2365,7 @@ _FAMILY_PRIMARY_OVERRIDE: dict[str, str] = {
 
 
 def _mark_family_primary_benchmark(
-    family_key: str, benchmarks: list[dict]
+    family_key: str, benchmarks: list[dict], preferred: str | None = None
 ) -> None:
     """Mutate `benchmarks` in place: set `is_overall` (this row IS the
     family root) and `is_primary` (this row is the family's headline
@@ -2356,9 +2376,11 @@ def _mark_family_primary_benchmark(
     with no `bfcl` benchmark) has no overall row — all False.
 
     `is_primary` selection:
-      1. _FAMILY_PRIMARY_OVERRIDE explicit map (curator-supplied).
-      2. The benchmark with `is_overall=True` (the family-root row).
-      3. The first benchmark by ascending key (stable tie-break).
+      1. _FAMILY_PRIMARY_OVERRIDE explicit map (producer-local hotfix).
+      2. `preferred`, the registry's curated `primary_benchmark_key`, when
+         it names one of these benchmarks.
+      3. The benchmark with `is_overall=True` (the family-root row).
+      4. The first benchmark by ascending key (stable tie-break).
     """
     if not benchmarks:
         return
@@ -2366,8 +2388,11 @@ def _mark_family_primary_benchmark(
         b["is_overall"] = (b["key"] == family_key)
 
     override = _FAMILY_PRIMARY_OVERRIDE.get(family_key)
-    if override:
+    keys = {b["key"] for b in benchmarks}
+    if override in keys:
         primary_key = override
+    elif preferred in keys:
+        primary_key = preferred
     else:
         overall = next((b for b in benchmarks if b["is_overall"]), None)
         primary_key = (overall or sorted(benchmarks, key=lambda x: x["key"])[0])["key"]

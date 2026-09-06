@@ -1036,7 +1036,8 @@ def test_curated_family_keeps_its_root_benchmark():
         SELECT 'superglue' AS id, 'SuperGLUE family' AS display_name,
                'general' AS category, '[]' AS tags,
                '["superglue", "boolq"]' AS benchmark_ids,
-               '[]' AS composite_keys, '[]' AS folder_aliases
+               '[]' AS composite_keys, '[]' AS folder_aliases,
+               NULL AS primary_benchmark_key
         """
     )
     con.execute(
@@ -1069,3 +1070,112 @@ def test_curated_family_keeps_its_root_benchmark():
     assert members["boolq"]["is_primary"] is False
     # The uncurated self-keyed singleton still does not become a family.
     assert "hellaswag" not in by_key
+
+
+def test_curated_primary_benchmark_key_picks_the_headline():
+    """families.yaml `primary_benchmark_key` is the registry's curation of the
+    family headline; it was loaded into the dim and never read, so the
+    producer fell back to the root-or-alphabetical rule."""
+    from eval_card_backend.canonicalise import sidecars
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        CREATE TABLE canonical_families AS
+        SELECT 'apex' AS id, 'APEX' AS display_name, 'agentic' AS category,
+               '[]' AS tags, '["apex-v1", "apex-agents", "apex-swe"]' AS benchmark_ids,
+               '[]' AS composite_keys, '[]' AS folder_aliases,
+               'apex-v1' AS primary_benchmark_key
+        """
+    )
+    con.execute("CREATE TABLE fact_results (source_config VARCHAR, composite_slug VARCHAR)")
+    composites = [{
+        "key": "vals-ai", "display_name": "Vals.ai", "evals_count": 3,
+        "benchmarks": [
+            _synthetic_bench("apex-agents", "apex", "vals-ai"),
+            _synthetic_bench("apex-swe", "apex", "vals-ai"),
+            _synthetic_bench("apex-v1", "apex", "vals-ai"),
+        ],
+    }]
+    fam = next(f for f in sidecars._hierarchy_families(con, composites) if f["key"] == "apex")
+    primary = [b["key"] for b in fam["benchmarks"] if b["is_primary"]]
+    # Without the curated key the alphabetical fallback would pick apex-agents.
+    assert primary == ["apex-v1"]
+
+
+def test_curated_primary_benchmark_key_also_picks_the_primary_composite():
+    """In a composites layout the primary composite is the one holding the
+    curated headline benchmark, so the headline does not sit inside a
+    composite marked not-primary (apex: apex-v1 lives under the apex-v1
+    composite, not the alphabetically-first apex-agents)."""
+    from eval_card_backend.canonicalise import sidecars
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        CREATE TABLE canonical_families AS
+        SELECT 'apex' AS id, 'APEX' AS display_name, 'agentic' AS category,
+               '[]' AS tags, '["apex-v1", "apex-agents"]' AS benchmark_ids,
+               '["apex-agents", "apex-v1"]' AS composite_keys, '[]' AS folder_aliases,
+               'apex-v1' AS primary_benchmark_key
+        """
+    )
+    con.execute(
+        "CREATE TABLE canonical_composites AS "
+        "SELECT 'apex-agents' AS id, 'apex' AS family_id UNION ALL SELECT 'apex-v1', 'apex'"
+    )
+    con.execute("CREATE TABLE fact_results (source_config VARCHAR, composite_slug VARCHAR)")
+    composites = [
+        {"key": "apex-agents", "display_name": "APEX Agents", "evals_count": 1,
+         "benchmarks": [_synthetic_bench("apex-agents", "apex", "apex-agents")]},
+        {"key": "apex-v1", "display_name": "APEX v1", "evals_count": 1,
+         "benchmarks": [_synthetic_bench("apex-v1", "apex", "apex-v1")]},
+    ]
+    fam = next(f for f in sidecars._hierarchy_families(con, composites) if f["key"] == "apex")
+    assert [c["key"] for c in fam["composites"] if c["is_primary"]] == ["apex-v1"]
+    primary_benches = [b["key"] for c in fam["composites"] for b in c["benchmarks"] if b["is_primary"]]
+    assert primary_benches == ["apex-v1"]
+
+
+def test_primary_override_naming_an_absent_benchmark_falls_through():
+    from eval_card_backend.canonicalise import sidecars
+
+    benches = [_synthetic_bench("b-two", "fam", "c"), _synthetic_bench("b-one", "fam", "c")]
+    sidecars._FAMILY_PRIMARY_OVERRIDE["fam"] = "not-rendered"
+    try:
+        sidecars._mark_family_primary_benchmark("fam", benches)
+    finally:
+        del sidecars._FAMILY_PRIMARY_OVERRIDE["fam"]
+    assert [b["key"] for b in benches if b["is_primary"]] == ["b-one"]
+
+
+def test_forced_composites_layout_also_follows_the_curated_primary():
+    from eval_card_backend.canonicalise import sidecars
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        CREATE TABLE canonical_families AS
+        SELECT 'forced' AS id, 'Forced' AS display_name, 'general' AS category,
+               '[]' AS tags, '["zzz-bench", "aaa-bench"]' AS benchmark_ids,
+               '["aaa-comp", "bbb-comp"]' AS composite_keys, '[]' AS folder_aliases,
+               'zzz-bench' AS primary_benchmark_key
+        """
+    )
+    con.execute(
+        "CREATE TABLE canonical_composites AS "
+        "SELECT 'aaa-comp' AS id, 'forced' AS family_id UNION ALL SELECT 'bbb-comp', 'forced'"
+    )
+    con.execute("CREATE TABLE fact_results (source_config VARCHAR, composite_slug VARCHAR)")
+    composites = [
+        {"key": "aaa-comp", "display_name": "A", "evals_count": 1,
+         "benchmarks": [_synthetic_bench("aaa-bench", "forced", "aaa-comp")]},
+        {"key": "bbb-comp", "display_name": "B", "evals_count": 1,
+         "benchmarks": [_synthetic_bench("zzz-bench", "forced", "bbb-comp")]},
+    ]
+    sidecars._FORCE_LAYOUT["forced"] = "composites"
+    try:
+        fam = next(f for f in sidecars._hierarchy_families(con, composites) if f["key"] == "forced")
+    finally:
+        del sidecars._FORCE_LAYOUT["forced"]
+    assert [c["key"] for c in fam["composites"] if c["is_primary"]] == ["bbb-comp"]
