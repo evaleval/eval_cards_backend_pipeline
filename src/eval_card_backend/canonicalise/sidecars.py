@@ -1858,7 +1858,9 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
             # to the benchmark's own canonical_id by
             # `_hierarchy_composite_benchmark`. Those aren't curated
             # family edges; surfacing them here creates singleton
-            # noise-families.
+            # noise-families. (A curated family's ROOT also hits this
+            # branch — mmlu in [mmlu, mmlu-pro] — and is pulled back in
+            # by the curation-driven pass below.)
             if bfid == bench.get("key"):
                 continue
             # Dedupe by benchmark_id: the same canonical can live
@@ -1869,12 +1871,17 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
 
     # Registry-curation-driven families: a `canonical_families` entry can
     # list `benchmark_ids` directly (e.g. cyse2 → [cyse2_interpreter_abuse,
-    # cyse2_prompt_injection, cyse2_vulnerability_exploit]). When the
-    # member benchmarks don't carry an explicit `family_id` (so the
-    # walk above missed them), pull them in by ID match against
-    # everything we've already rendered.
+    # cyse2_prompt_injection, cyse2_vulnerability_exploit]). Pull every
+    # listed member in by ID match against everything already rendered.
+    # This must run even when the walk above already seeded the group:
+    # the walk skips a benchmark whose family_id equals its own key, which
+    # is exactly a curated family's root (mmlu -> [mmlu, mmlu-pro],
+    # superglue -> [superglue, boolq, ...]). Without this pass the root
+    # never renders in its own family and `_mark_family_primary_benchmark`
+    # falls back to the alphabetically-first member. `setdefault` keeps
+    # the walk's entries and dedupes.
     for fid, curated in families_curated.items():
-        if fid in composite_driven_keys or fid in benchmark_family_groups:
+        if fid in composite_driven_keys:
             continue
         member_ids = set(curated.get("benchmark_ids") or [])
         if not member_ids:

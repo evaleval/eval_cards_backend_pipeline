@@ -993,3 +993,79 @@ def test_comparison_index_unit_is_scan_order_independent(tmp_path, monkeypatch):
     # does hold two units — and the emitted one must be the lower route id's.
     assert set(forward) == {"fixtures-clean%2Fmmlu"}, forward
     assert forward["fixtures-clean%2Fmmlu"] == ["proportion"], forward
+
+
+def _synthetic_bench(key: str, family_id: str, composite_slug: str) -> dict:
+    """Minimal benchmark record in the shape `_hierarchy_composite_benchmark`
+    emits, for driving `_hierarchy_families` without the dim tables."""
+    return {
+        "key": key,
+        "benchmark_id": key,
+        "display_name": key.upper(),
+        "family_id": family_id,
+        "is_slice": False,
+        "is_overall": False,
+        "primary_metric_key": "accuracy",
+        "has_card": False,
+        "tags": {"domains": [], "languages": [], "tasks": []},
+        "metrics": [],
+        "slices": [],
+        "constituent_evaluation_ids": [f"{composite_slug}%2F{key}"],
+        "reproducibility_summary": None,
+        "provenance_summary": None,
+        "comparability_summary": None,
+    }
+
+
+def test_curated_family_keeps_its_root_benchmark():
+    """A curated family whose key is also a member benchmark (superglue ->
+    [superglue, boolq, ...], mmlu -> [mmlu, mmlu-pro]) must surface that
+    root row in the benchmark-driven family, and mark it overall/primary.
+
+    Regression: the auto-fallback guard (`family_id == key` means "no
+    curated family, skip") also matched the curated root, so the family
+    rendered with only its other members and the headline fell back to
+    the alphabetically-first one (SuperGLUE -> BoolQ).
+    """
+    from eval_card_backend.canonicalise import sidecars
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        CREATE TABLE canonical_families AS
+        SELECT 'superglue' AS id, 'SuperGLUE family' AS display_name,
+               'general' AS category, '[]' AS tags,
+               '["superglue", "boolq"]' AS benchmark_ids,
+               '[]' AS composite_keys, '[]' AS folder_aliases
+        """
+    )
+    con.execute(
+        "CREATE TABLE fact_results (source_config VARCHAR, composite_slug VARCHAR)"
+    )
+    composites = [
+        {
+            "key": "llm-stats", "display_name": "LLM Stats", "evals_count": 2,
+            "benchmarks": [
+                _synthetic_bench("superglue", "superglue", "llm-stats"),
+                # Auto-fallback singleton: family_id == key and NOT curated.
+                # Must still be skipped (no noise family for it).
+                _synthetic_bench("hellaswag", "hellaswag", "llm-stats"),
+            ],
+        },
+        {
+            "key": "helm-classic", "display_name": "HELM Classic", "evals_count": 1,
+            "benchmarks": [_synthetic_bench("boolq", "superglue", "helm-classic")],
+        },
+    ]
+
+    families = sidecars._hierarchy_families(con, composites)
+    by_key = {f["key"]: f for f in families}
+
+    superglue = by_key["superglue"]
+    members = {b["key"]: b for b in superglue["benchmarks"]}
+    assert set(members) == {"superglue", "boolq"}, sorted(members)
+    assert members["superglue"]["is_overall"] is True
+    assert members["superglue"]["is_primary"] is True
+    assert members["boolq"]["is_primary"] is False
+    # The uncurated self-keyed singleton still does not become a family.
+    assert "hellaswag" not in by_key
