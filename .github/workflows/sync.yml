@@ -31,8 +31,8 @@ env:
   # canonicalise hard-fails on a manifest/pin mismatch. See
   # notes/collections-spec.md and scripts/collections/.
   EEE_REVISION: 2d9a8b23e813347a233e9585ede44b0bbb4f829f
-  # Prev pin: 7e6baf75a3c5ea825c3f712a47d5417cf63f1852
-  ENTITY_REGISTRY_REVISION: 5cde26d125ec33fce84de2015880a6dbb3e3eef2
+  # Prev pin: f4d78769042133b5afb3519f338276b24c225ad3 (seed @ 6123bb36, 2026-09-06)
+  ENTITY_REGISTRY_REVISION: 1e9e668ee1abd4ee968950f27f234ab23fdd2f8b
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
 
 jobs:
