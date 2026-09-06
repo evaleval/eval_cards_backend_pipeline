@@ -1888,7 +1888,6 @@
     "linguistic_core"
   ],
   "WNLI": [
-    "linguistic_core",
     "commonsense_reasoning"
   ],
   "CommitmentBank": [
@@ -1908,7 +1907,6 @@
     "linguistic_core"
   ],
   "WSC": [
-    "linguistic_core",
     "commonsense_reasoning"
   ],
   "ANLI": [
@@ -1932,8 +1930,8 @@
     "natural_sciences"
   ],
   "SciQ": [
-    "natural_sciences",
-    "knowledge"
+    "knowledge",
+    "natural_sciences"
   ],
   "LAMBADA": [
     "linguistic_core"
@@ -1959,7 +1957,7 @@
   ],
   "aiXamine Adversarial Robustness": [
     "robustness",
-    "security"
+    "safety"
   ],
   "aiXamine Code Security": [
     "safety",
@@ -1987,10 +1985,6 @@
     "safety"
   ],
   "lexam-open-question": [
-    "law",
-    "applied_reasoning"
-  ],
-  "lexam-mcq-4-choices": [
     "law",
     "applied_reasoning"
   ]
