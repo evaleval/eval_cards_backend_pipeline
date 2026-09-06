@@ -992,11 +992,30 @@ def stage_c_resolve_identities(con) -> None:
                     COALESCE(metric_config.evaluation_description,
                              metric_config.metric_name,
                              evaluation_name))                                    AS _metric_extracted,
-                -- When the alias fires, metric_raw records the structured id
-                -- (the value that actually resolved); otherwise the
-                -- extraction result, exactly as before.
+                -- Direct pre-step: the record's own metric_name decides the
+                -- row when it resolves to a non-catch-all metric and either
+                -- the record has no description, extraction found nothing or
+                -- a catch-all, or the name refines the extracted keyword
+                -- ("Macro Accuracy" vs "Accuracy"). A description naming a
+                -- MORE specific metric ("Task success rate" beside
+                -- metric_name "Success Rate"; "final_acc" beside "Accuracy")
+                -- keeps winning, as it did before the pre-step existed.
+                -- (udfs.metric_name_wins; catch-all hits like "Score" never
+                -- take a row.)
+                metric_name_wins(metric_config.metric_name,
+                                 metric_config.evaluation_description,
+                                 _metric_extracted, source_config)                AS _metric_name_wins,
+                -- metric_raw records the value that actually resolved: the
+                -- structured id when that pre-step fired, the record's own
+                -- metric_name when it won, else the extraction result. NOTE
+                -- resolution_hotfixes.py matches on literal metric_raw values
+                -- ('mean', 'score', 'Codegolf v2.2 benchmark'); a row whose
+                -- metric_name now resolves no longer carries the extraction
+                -- literal there.
                 CASE WHEN _metric_id_structured IS NOT NULL
                      THEN trim(metric_config.metric_id)
+                     WHEN _metric_name_wins
+                     THEN trim(metric_config.metric_name)
                      ELSE _metric_extracted
                 END                                                               AS _metric_raw,
                 {org_raw_clean}                                                   AS _org_raw,
@@ -1051,6 +1070,7 @@ def stage_c_resolve_identities(con) -> None:
                  ELSE resolve_strategy(_benchmark_raw, 'benchmark', source_config)
             END                                                          AS benchmark_resolution_strategy,
             CASE WHEN _metric_id_structured IS NOT NULL THEN 'metric_id_structured'
+                 WHEN _metric_name_wins THEN 'metric_name_direct'
                  ELSE resolve_strategy(_metric_raw, 'metric', source_config)
             END                                                          AS metric_resolution_strategy,
             resolve_strategy(_org_raw,       'org',       source_config) AS org_resolution_strategy,

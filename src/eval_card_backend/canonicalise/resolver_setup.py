@@ -23,7 +23,20 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
         resolve_structured_metric_id_py,
         resolve_structured_benchmark_id_py,
         resolve_structured_benchmark_raw_py,
+        resolve_metric_direct_py,
+        metric_name_wins_py,
     ) = udfs.make_resolver_udfs(resolver, metric_catch_all_ids)
+
+    con.create_function(
+        "resolve_metric_direct", resolve_metric_direct_py,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    con.create_function(
+        "metric_name_wins", metric_name_wins_py,
+        ["VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR"], "BOOLEAN",
+        null_handling="special",
+    )
 
     con.create_function(
         "resolve_canonical_id", resolve_canonical_id_py,

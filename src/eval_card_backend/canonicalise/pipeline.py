@@ -165,8 +165,16 @@ def _metric_catch_all_ids(registry_root: Path) -> frozenset:
 
     import pandas as pd
 
-    path = Path(registry_root) / "canonical_metrics.parquet"
-    if not path.exists():
+    root = Path(registry_root)
+    # Flat layout first, then the per-table subdirectory layout, mirroring
+    # taxonomy.load_families_from_parquet; a nested-only snapshot must not
+    # silently switch both metric pre-steps off.
+    path = next(
+        (p for p in (root / "canonical_metrics.parquet",
+                     root / "canonical_metrics" / "part-0.parquet") if p.exists()),
+        None,
+    )
+    if path is None:
         return frozenset()
     df = pd.read_parquet(path, columns=["id", "metadata"])
     ids = set()

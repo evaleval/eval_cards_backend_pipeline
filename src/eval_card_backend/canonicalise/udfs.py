@@ -9,6 +9,7 @@ All UDFs live here so `resolver_setup.py` can import-and-register cleanly.
 from __future__ import annotations
 
 import functools
+import re
 import logging
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -87,6 +88,13 @@ def reset_resolver_counters() -> None:
 
 # Module-level handle so `log_resolver_summary` can report cache hit-rate.
 _resolve_cache_info: Any = None
+
+
+def _tokens(text: str) -> list[str]:
+    """Lowercase word tokens of a metric label; separators and punctuation
+    are dropped so "Macro-Accuracy" and "macro accuracy" agree. Unicode
+    letters count, so a non-Latin label is not silently tokenless."""
+    return re.findall(r"[^\W_]+", (text or "").lower())
 
 
 def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
@@ -189,6 +197,68 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
             raw_id, source_config, catch_all_ids=metric_catch_all_ids
         )
 
+    def resolve_metric_direct_py(
+        raw_name: str | None, source_config: str | None
+    ) -> str | None:
+        """The record's own `metric_config.metric_name` tried as a metric
+        alias, before any keyword extraction. A name the registry carries
+        ("Macro Accuracy", "Median Win Rate", "Length-Controlled Win Rate")
+        is more reliable than what the keyword extractor guesses from it
+        (accuracy, win-rate, win-rate), which is how those became mis-merges.
+        Returns NULL on a miss or on a catch-all hit (a bare "Score" says
+        nothing), so Stage C falls through to extract_metric unchanged.
+
+        Fail-safe like the structured pre-step: with no catch-all flags in
+        the registry data this pre-step disables itself."""
+        if not metric_catch_all_ids:
+            return None
+        if not raw_name or not isinstance(raw_name, str) or not raw_name.strip():
+            return None
+        try:
+            result = _resolve_cached(raw_name, "metric", source_config)
+        except Exception:
+            return None
+        if result.canonical_id is None or result.canonical_id in metric_catch_all_ids:
+            return None
+        return result.canonical_id
+
+    def metric_name_wins_py(
+        metric_name: str | None,
+        description: str | None,
+        extracted: str | None,
+        source_config: str | None,
+    ) -> bool:
+        """Should the record's own metric_name decide the metric, rather than
+        what keyword extraction found in the description?
+
+        The name wins when it resolves to a non-catch-all metric AND one of:
+          - the record has no description (the name is the only signal);
+          - extraction found nothing, or only a catch-all ("Score");
+          - the name REFINES what extraction found: every token of the
+            extracted keyword appears in the name ("Macro Accuracy" refines
+            "Accuracy"), so the name is the more specific reading.
+        Otherwise the description keeps winning, which covers the case where
+        it is the more specific one ("Task success rate" beside metric_name
+        "Success Rate"; "final_acc" beside "Accuracy")."""
+        direct = resolve_metric_direct_py(metric_name, source_config)
+        if direct is None:
+            return False
+        if not description or not isinstance(description, str) or not description.strip():
+            return True
+        if not extracted or not isinstance(extracted, str) or not extracted.strip():
+            return True
+        try:
+            ext = _resolve_cached(extracted, "metric", source_config).canonical_id
+        except Exception:
+            return True
+        if ext is None or ext in metric_catch_all_ids:
+            return True
+        if ext == direct:
+            return False
+        name_tokens = set(_tokens(metric_name))
+        ext_tokens = set(_tokens(extracted))
+        return bool(ext_tokens) and ext_tokens < name_tokens
+
     def resolve_structured_metric_id_py(
         raw_id: str | None, source_config: str | None
     ) -> str | None:
@@ -250,6 +320,8 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
         resolve_structured_metric_id_py,
         resolve_structured_benchmark_id_py,
         resolve_structured_benchmark_raw_py,
+        resolve_metric_direct_py,
+        metric_name_wins_py,
     )
 
 

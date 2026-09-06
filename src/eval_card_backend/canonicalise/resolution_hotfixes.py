@@ -8,6 +8,12 @@ condition the resolver can't see (it resolves each field independently).
 
 Every function has a lifecycle annotation: what removes the need for it.
 All functions mutate `results_resolved` in place via the DuckDB connection.
+
+NOTE: several hotfixes below match on literal ``metric_raw`` values ('mean',
+'score', ...). Since the metric_name pre-step in stage C, a row whose
+``metric_config.metric_name`` resolves carries that name in ``metric_raw``
+rather than the extraction literal, so those predicates only reach rows the
+pre-step declined (no name, catch-all name, or a more specific description).
 """
 from __future__ import annotations
 
