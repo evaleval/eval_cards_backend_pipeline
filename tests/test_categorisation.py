@@ -126,3 +126,13 @@ def test_fallback_stems_match_inside_compound_names() -> None:
     # Word-level alternatives stay anchored so ordinary words do not match.
     assert evalcard_tags.resolve_benchmark_tags("Anti-Corruption Law QA", "x") == ["law"]
     assert "agentic" not in evalcard_tags.resolve_benchmark_tags("Reagents Chemistry QA", "x")
+
+
+def test_fallback_word_stems_also_match_their_derivations() -> None:
+    """faithful / factual / corrupted anchor at the word start only, so
+    Factuality, FactualBench and corrupted_visual_genome still tag."""
+    assert "hallucination" in evalcard_tags.resolve_benchmark_tags("T2I-FactualBench", "x")
+    assert "hallucination" in evalcard_tags.resolve_benchmark_tags("RewardBench 2 Factuality", "x")
+    # First matching rule wins, so pick a name no earlier rule claims.
+    assert "robustness" in evalcard_tags.resolve_benchmark_tags("Corrupted Weather Records", "corrupted_weather_records")
+    assert "safety" in evalcard_tags.resolve_benchmark_tags("civil_comments", "civil_comments")

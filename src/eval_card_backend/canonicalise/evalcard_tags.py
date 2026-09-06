@@ -31,7 +31,7 @@ VALID_TAGS: frozenset[str] = frozenset({
 # Regex fallback patterns. Maps keyword patterns to tags. Replaces the old
 # 5-bucket inferCategoryFromBenchmark with the 17-tag vocabulary.
 _FALLBACK_RULES: tuple[tuple[re.Pattern[str], list[str]], ...] = (
-    (re.compile(r"\b(?:safety|harmful|toxic|truthful|unsafe|civilcomments|jailbreak|red[\-_]?team|adversarial)\b", re.I),
+    (re.compile(r"\b(?:safety|harmful|toxic|truthful|unsafe|civilcomments|civil_comments|jailbreak|red[\-_]?team|adversarial)\b", re.I),
      ["safety"]),
     (re.compile(r"\b(?:agent|swe[\-_]?bench\b|terminal[\-_]?bench\b|tau[\-_]?bench\b|appworld\b|browsecomp\b)", re.I),
      ["agentic"]),
@@ -45,9 +45,9 @@ _FALLBACK_RULES: tuple[tuple[re.Pattern[str], list[str]], ...] = (
      ["knowledge"]),
     (re.compile(r"\b(?:multimodal|vision|vqa|mmmu|image|video|visual)\b", re.I),
      ["multimodal"]),
-    (re.compile(r"(?:hallucin|\bfaithful\b|\bfactual\b)", re.I),
+    (re.compile(r"(?:hallucin|\bfaithful|\bfactual)", re.I),
      ["hallucination"]),
-    (re.compile(r"(?:robust|\bperturbation\b|\bnoisy\b|\bcorrupted\b)", re.I),
+    (re.compile(r"(?:robust|\bperturbation|\bnoisy|\bcorrupted)", re.I),
      ["robustness"]),
     (re.compile(r"\b(?:legal|law\b|jurisprudence)\b", re.I),
      ["law"]),
