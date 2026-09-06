@@ -1858,8 +1858,14 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
             # to the benchmark's own canonical_id by
             # `_hierarchy_composite_benchmark`. Those aren't curated
             # family edges; surfacing them here creates singleton
-            # noise-families.
-            if bfid == bench.get("key"):
+            # noise-families. A CURATED family whose key is also one of
+            # its member benchmarks (mmlu -> [mmlu, mmlu-pro], superglue
+            # -> [superglue, boolq, ...]) is the opposite case: that
+            # member is the family root, and dropping it here leaves the
+            # family holding only its other members, so the suite's own
+            # row never renders and `_mark_family_primary_benchmark`
+            # falls back to the alphabetically-first member.
+            if bfid == bench.get("key") and bfid not in families_curated:
                 continue
             # Dedupe by benchmark_id: the same canonical can live
             # under multiple composites (cross-suite benchmarks like
