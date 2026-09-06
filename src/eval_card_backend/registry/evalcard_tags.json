@@ -1908,23 +1908,20 @@
     "linguistic_core"
   ],
   "WSC": [
+    "linguistic_core",
     "commonsense_reasoning"
   ],
   "ANLI": [
-    "linguistic_core",
-    "logical_reasoning"
+    "linguistic_core"
   ],
   "ANLI R1": [
-    "linguistic_core",
-    "logical_reasoning"
+    "linguistic_core"
   ],
   "ANLI R2": [
-    "linguistic_core",
-    "logical_reasoning"
+    "linguistic_core"
   ],
   "ANLI R3": [
-    "linguistic_core",
-    "logical_reasoning"
+    "linguistic_core"
   ],
   "HEAD-QA": [
     "knowledge",
@@ -1953,7 +1950,47 @@
     "law",
     "applied_reasoning"
   ],
-  "LEXam MCQ": [
+  "LEXam MCQ (4 choices)": [
+    "law",
+    "applied_reasoning"
+  ],
+  "aiXamine": [
+    "safety"
+  ],
+  "aiXamine Adversarial Robustness": [
+    "robustness",
+    "security"
+  ],
+  "aiXamine Code Security": [
+    "safety",
+    "software_engineering"
+  ],
+  "aiXamine Fairness & Bias": [
+    "safety"
+  ],
+  "aiXamine Hallucination": [
+    "hallucination"
+  ],
+  "aiXamine Jailbreak": [
+    "safety"
+  ],
+  "aiXamine Model & Data Privacy": [
+    "safety"
+  ],
+  "aiXamine Out-of-Distribution Robustness": [
+    "robustness"
+  ],
+  "aiXamine Over-Refusal": [
+    "safety"
+  ],
+  "aiXamine Safety & Alignment": [
+    "safety"
+  ],
+  "lexam-open-question": [
+    "law",
+    "applied_reasoning"
+  ],
+  "lexam-mcq-4-choices": [
     "law",
     "applied_reasoning"
   ]
