@@ -992,11 +992,30 @@ def stage_c_resolve_identities(con) -> None:
                     COALESCE(metric_config.evaluation_description,
                              metric_config.metric_name,
                              evaluation_name))                                    AS _metric_extracted,
-                -- When the alias fires, metric_raw records the structured id
-                -- (the value that actually resolved); otherwise the
-                -- extraction result, exactly as before.
+                -- Direct pre-step: the record's own metric_name decides the
+                -- row when it resolves to a non-catch-all metric and either
+                -- the record has no description, extraction found nothing or
+                -- a catch-all, or the name refines the extracted keyword
+                -- ("Macro Accuracy" vs "Accuracy"). A description naming a
+                -- MORE specific metric ("Task success rate" beside
+                -- metric_name "Success Rate"; "final_acc" beside "Accuracy")
+                -- keeps winning, as it did before the pre-step existed.
+                -- (udfs.metric_name_wins; catch-all hits like "Score" never
+                -- take a row.)
+                metric_name_wins(metric_config.metric_name,
+                                 metric_config.evaluation_description,
+                                 _metric_extracted, source_config)                AS _metric_name_wins,
+                -- metric_raw records the value that actually resolved: the
+                -- structured id when that pre-step fired, the record's own
+                -- metric_name when it won, else the extraction result. NOTE
+                -- resolution_hotfixes.py matches on literal metric_raw values
+                -- ('mean', 'score', 'Codegolf v2.2 benchmark'); a row whose
+                -- metric_name now resolves no longer carries the extraction
+                -- literal there.
                 CASE WHEN _metric_id_structured IS NOT NULL
                      THEN trim(metric_config.metric_id)
+                     WHEN _metric_name_wins
+                     THEN trim(metric_config.metric_name)
                      ELSE _metric_extracted
                 END                                                               AS _metric_raw,
                 {org_raw_clean}                                                   AS _org_raw,
@@ -1051,6 +1070,7 @@ def stage_c_resolve_identities(con) -> None:
                  ELSE resolve_strategy(_benchmark_raw, 'benchmark', source_config)
             END                                                          AS benchmark_resolution_strategy,
             CASE WHEN _metric_id_structured IS NOT NULL THEN 'metric_id_structured'
+                 WHEN _metric_name_wins THEN 'metric_name_direct'
                  ELSE resolve_strategy(_metric_raw, 'metric', source_config)
             END                                                          AS metric_resolution_strategy,
             resolve_strategy(_org_raw,       'org',       source_config) AS org_resolution_strategy,
@@ -3371,18 +3391,27 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 m.input_modalities            AS m_input_modalities,
                 m.output_modalities           AS m_output_modalities,
                 cmet.display_name             AS metric_display_name,
-                cmet.min_score                AS cmet_min_score,
-                cmet.max_score                AS cmet_max_score,
+                -- Registry bounds behind the view's min_score / max_score /
+                -- score_normalized. An infinite side (the registry's
+                -- "unbounded by definition") is folded to NULL here so
+                -- those columns read exactly as they did for a NULL bound
+                -- ([0, 1] defaults) instead of a 0/inf range that would
+                -- normalise every score to 0.
+                CASE WHEN isinf(cmet.min_score) THEN NULL ELSE cmet.min_score END AS cmet_min_score,
+                CASE WHEN isinf(cmet.max_score) THEN NULL ELSE cmet.max_score END AS cmet_max_score,
                 -- Fold-aware effective metric (same derivation as Stage C's
                 -- metric_id_effective — the fold map is deterministic on
                 -- (benchmark_key, metric_key)) + its registry bounds for
                 -- canonical-scale conversion. Unmasked on purpose: NULL
                 -- bounds must stay NULL ('no_bounds'), not become [0,1].
+                -- An INFINITE bound (the registry's "unbounded by
+                -- definition") is likewise no bound for scale placement:
+                -- a [0, inf) metric can be neither a fraction nor a percent.
                 COALESCE(bmf.to_metric_id, ta.metric_key) AS metric_key_effective,
                 bmf.scale_factor              AS eff_scale_factor,
                 cmet_eff.lower_is_better      AS eff_lower_is_better,
-                cmet_eff.min_score            AS eff_min_score,
-                cmet_eff.max_score            AS eff_max_score,
+                CASE WHEN isinf(cmet_eff.min_score) THEN NULL ELSE cmet_eff.min_score END AS eff_min_score,
+                CASE WHEN isinf(cmet_eff.max_score) THEN NULL ELSE cmet_eff.max_score END AS eff_max_score,
                 b.parent_benchmark_id         AS b_parent_benchmark_id,
                 b.composite_display_name      AS b_composite_display_name,
                 b.family_id                   AS b_family_id,
@@ -4859,6 +4888,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             pf.avg_score,
             CASE
                 WHEN cmet.min_score IS NULL OR cmet.max_score IS NULL
+                  OR isinf(cmet.min_score) OR isinf(cmet.max_score)
                   OR cmet.max_score = cmet.min_score THEN NULL
                 ELSE (pf.avg_score - cmet.min_score) / (cmet.max_score - cmet.min_score)
             END                                          AS avg_score_norm,

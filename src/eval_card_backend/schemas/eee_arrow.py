@@ -171,8 +171,11 @@ def _pad(value: Any, dtype: pa.DataType) -> Any:
         # literal for them (first seen: llm-stats metric_config.max_score).
         # Pydantic validation coerces the string, but the Arrow cast of the
         # raw record does not — and one such value fails the whole config's
-        # batch. A non-finite bound carries nothing the warehouse can use
-        # (JSON sidecars can't encode it either), so normalize to NULL.
+        # batch. At the fact level an unbounded side is no bound (the
+        # metric-meta chain folds an infinite registry bound the same way),
+        # so normalize to NULL; the registry's canonical_metrics row is the
+        # carrier of the "unbounded by definition" marker, and the sidecars
+        # write it back out as "Infinity".
         # Guarded by dtype: a STRING field whose value happens to be
         # "Infinity" is untouched.
         if isinstance(value, str) and value.strip() in ("Infinity", "-Infinity", "NaN"):

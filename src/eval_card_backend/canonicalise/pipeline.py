@@ -27,6 +27,7 @@ from pathlib import Path
 
 import duckdb
 
+from eval_card_backend.canonicalise.sidecars import _json_finite
 from eval_card_backend.canonicalise import sidecars, stages, udfs
 from eval_card_backend.canonicalise.cache import (
     STAGE_ORDER,
@@ -165,8 +166,16 @@ def _metric_catch_all_ids(registry_root: Path) -> frozenset:
 
     import pandas as pd
 
-    path = Path(registry_root) / "canonical_metrics.parquet"
-    if not path.exists():
+    root = Path(registry_root)
+    # Flat layout first, then the per-table subdirectory layout, mirroring
+    # taxonomy.load_families_from_parquet; a nested-only snapshot must not
+    # silently switch both metric pre-steps off.
+    path = next(
+        (p for p in (root / "canonical_metrics.parquet",
+                     root / "canonical_metrics" / "part-0.parquet") if p.exists()),
+        None,
+    )
+    if path is None:
         return frozenset()
     df = pd.read_parquet(path, columns=["id", "metadata"])
     ids = set()
@@ -608,7 +617,9 @@ def run(
         registry_root=registry_root,
         cards_root=cards_root,
     )
-    (out_dir / "snapshot_meta.json").write_text(json.dumps(meta, indent=2))
+    # Same non-finite wire form as every other sidecar (nothing in the meta
+    # carries a registry float today; the invariant is what matters).
+    (out_dir / "snapshot_meta.json").write_text(json.dumps(_json_finite(meta), indent=2))
 
     # View-layer JSON sidecars (manifest, headline, hierarchy). Only emitted
     # when Stage J was in the executed slice — the consumers all key off

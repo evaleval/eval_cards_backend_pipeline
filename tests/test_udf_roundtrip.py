@@ -515,3 +515,77 @@ def test_metric_catch_all_ids_reads_metadata_flags(tmp_path):
     assert _metric_catch_all_ids(tmp_path) == frozenset({"score", "overall"})
     # Missing file → empty set (which disables the pre-step).
     assert _metric_catch_all_ids(tmp_path / "nope") == frozenset()
+
+
+def test_resolve_metric_direct_prefers_the_records_own_name():
+    """metric_name tried as an alias before keyword extraction: a name the
+    registry carries wins, a catch-all hit or a miss returns NULL, and with
+    no catch-all flags the pre-step disables itself."""
+    udfs.reset_resolver_counters()
+    stub = _StubResolver({
+        ("Macro Accuracy", "metric"): ("macro-accuracy", "exact"),
+        ("Score", "metric"): ("score", "exact"),
+    })
+    c = duckdb.connect()
+    register_udfs(c, stub, frozenset({"score"}))
+    got = c.execute(
+        "SELECT resolve_metric_direct('Macro Accuracy', NULL),"
+        "       resolve_metric_direct('Score', NULL),"
+        "       resolve_metric_direct('Definitely Unknown', NULL),"
+        "       resolve_metric_direct('', NULL),"
+        "       resolve_metric_direct(NULL, NULL)"
+    ).fetchone()
+    assert got == ("macro-accuracy", None, None, None, None)
+    c.close()
+
+    c = duckdb.connect()
+    register_udfs(c, stub)  # no catch-all ids known: pre-step off
+    assert c.execute("SELECT resolve_metric_direct('Macro Accuracy', NULL)").fetchone() == (None,)
+    c.close()
+
+
+def test_metric_name_wins_compares_specificity():
+    """metric_name decides the row only when it is the more specific reading."""
+    udfs.reset_resolver_counters()
+    stub = _StubResolver({
+        ("Macro Accuracy", "metric"): ("macro-accuracy", "exact"),
+        ("Accuracy", "metric"): ("accuracy", "exact"),
+        ("Success Rate", "metric"): ("success-rate", "exact"),
+        ("Task success rate", "metric"): ("task-success-rate", "exact"),
+        ("final acc", "metric"): ("final-acc", "exact"),
+        ("Score", "metric"): ("score", "exact"),
+        ("score", "metric"): ("score", "exact"),
+    })
+    c = duckdb.connect()
+    register_udfs(c, stub, frozenset({"score"}))
+    q = "SELECT metric_name_wins(?, ?, ?, NULL)"
+    assert c.execute(q, ["Macro Accuracy", "Accuracy on X", "Accuracy"]).fetchone() == (True,)   # name refines
+    assert c.execute(q, ["Success Rate", "Task success rate", "Task success rate"]).fetchone() == (False,)  # description refines
+    assert c.execute(q, ["Accuracy", "final_acc", "final acc"]).fetchone() == (False,)  # description specific
+    assert c.execute(q, ["Accuracy", None, None]).fetchone() == (True,)                 # no description
+    assert c.execute(q, ["Accuracy", "Score on X", "score"]).fetchone() == (True,)      # extraction is catch-all
+    assert c.execute(q, ["Accuracy", "Something", "vibes"]).fetchone() == (True,)       # extraction unresolved
+    assert c.execute(q, ["Score", "Accuracy on X", "Accuracy"]).fetchone() == (False,)  # catch-all name never wins
+    assert c.execute(q, ["Accuracy", "Accuracy on X", "Accuracy"]).fetchone() == (False,)  # same answer: extraction keeps the label
+    c.close()
+
+
+def test_tokens_keep_unicode_letters():
+    assert udfs._tokens("Macro-Accuracy") == ["macro", "accuracy"]
+    assert udfs._tokens("精度 マクロ") == ["精度", "マクロ"]
+    assert udfs._tokens("Précision") == ["précision"]
+
+
+def test_metric_catch_all_ids_reads_the_nested_layout_too(tmp_path):
+    """A snapshot shipping only <table>/part-0.parquet must not silently
+    switch both metric pre-steps off."""
+    import pandas as pd
+
+    from eval_card_backend.canonicalise.pipeline import _metric_catch_all_ids
+
+    (tmp_path / "canonical_metrics").mkdir()
+    pd.DataFrame([
+        {"id": "score", "metadata": '{"catch_all": true}'},
+        {"id": "accuracy", "metadata": "{}"},
+    ]).to_parquet(tmp_path / "canonical_metrics" / "part-0.parquet")
+    assert _metric_catch_all_ids(tmp_path) == frozenset({"score"})

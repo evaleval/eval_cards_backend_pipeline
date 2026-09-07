@@ -451,3 +451,40 @@ def test_primary_key_is_unique(tmp_path, monkeypatch):
     ).fetchone()
     assert n_rows == n_unique
     assert n_rows >= 1
+
+
+# ---------------------------------------------------------------------------
+# Registry bounds
+# ---------------------------------------------------------------------------
+
+
+def test_infinite_registry_bound_reads_like_null(tmp_path, monkeypatch):
+    """The registry spells "unbounded by definition" as an infinite float.
+    The view's min_score / max_score / score_normalized must read exactly
+    as they do for a NULL bound (the [0, 1] defaults), never a 0/inf range
+    that normalises every score to 0, and no infinite value may reach the
+    parquet the frontend reads."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+
+    def _null_bounds(con):
+        con.execute("UPDATE canonical_metrics SET min_score = NULL, max_score = NULL")
+
+    def _infinite_bounds(con):
+        con.execute(
+            "UPDATE canonical_metrics SET min_score = '-infinity'::DOUBLE, "
+            "max_score = 'infinity'::DOUBLE"
+        )
+
+    query = (
+        "SELECT metric_summary_id, model_route_id, min_score, max_score, "
+        "score_normalized FROM eval_results_view ORDER BY 1, 2"
+    )
+    baseline = _materialise_view(out, mutate=_null_bounds).execute(query).fetchall()
+    infinite = _materialise_view(out, mutate=_infinite_bounds).execute(query).fetchall()
+
+    assert baseline, "no view rows produced"
+    assert infinite == baseline
+    for _, _, lo, hi, norm in infinite:
+        assert (lo, hi) == (0.0, 1.0)
+        assert norm is not None and 0.0 <= norm <= 1.0

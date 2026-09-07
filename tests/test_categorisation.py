@@ -93,3 +93,46 @@ def test_paren_suffix_stripping() -> None:
     )
     assert len(tags) > 0
     assert tags != ["general"], "Should resolve via paren-stripping, not fall to default"
+
+
+def test_curated_table_uses_only_the_tag_vocabulary() -> None:
+    """Every tag list in registry/evalcard_tags.json draws from VALID_TAGS.
+    A stray spelling ("security") is silently dropped by the headline
+    aggregation and rendered as an unknown pill by the frontend."""
+    import json
+
+    table = json.loads(evalcard_tags.TAGS_PATH.read_text())
+    bad = {name: sorted(set(tags) - evalcard_tags.VALID_TAGS)
+           for name, tags in table.items() if set(tags) - evalcard_tags.VALID_TAGS}
+    assert bad == {}, f"tags outside the vocabulary: {bad}"
+    empty = [name for name, tags in table.items() if not tags]
+    assert empty == [], f"entries with no tags: {empty}"
+
+
+def test_fallback_stems_match_inside_compound_names() -> None:
+    """The stems must match the forms benchmarks actually use, including
+    suffix position inside a compound name; a stray word boundary after or
+    before a stem made these fall to `general` for a long time."""
+    cases = {
+        "WildHallucinations": "hallucination",
+        "aiXamine Hallucination": "hallucination",
+        "MMRobustness": "robustness",
+        "Out-of-Distribution Robustness": "robustness",
+        "Agentic Foo": "agentic",
+        "AgentDojo": "agentic",
+    }
+    for name, tag in cases.items():
+        assert tag in evalcard_tags.resolve_benchmark_tags(name, name.lower()), name
+    # Word-level alternatives stay anchored so ordinary words do not match.
+    assert evalcard_tags.resolve_benchmark_tags("Anti-Corruption Law QA", "x") == ["law"]
+    assert "agentic" not in evalcard_tags.resolve_benchmark_tags("Reagents Chemistry QA", "x")
+
+
+def test_fallback_word_stems_also_match_their_derivations() -> None:
+    """faithful / factual / corrupted anchor at the word start only, so
+    Factuality, FactualBench and corrupted_visual_genome still tag."""
+    assert "hallucination" in evalcard_tags.resolve_benchmark_tags("T2I-FactualBench", "x")
+    assert "hallucination" in evalcard_tags.resolve_benchmark_tags("RewardBench 2 Factuality", "x")
+    # First matching rule wins, so pick a name no earlier rule claims.
+    assert "robustness" in evalcard_tags.resolve_benchmark_tags("Corrupted Weather Records", "corrupted_weather_records")
+    assert "safety" in evalcard_tags.resolve_benchmark_tags("civil_comments", "civil_comments")

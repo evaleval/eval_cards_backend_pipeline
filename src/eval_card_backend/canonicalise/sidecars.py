@@ -26,6 +26,7 @@ cheap to re-derive from the cached canonical + view parquets.
 from __future__ import annotations
 
 import json
+import math
 import logging
 import re
 from collections import defaultdict
@@ -117,7 +118,7 @@ def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
         },
     }
     path = out_dir / "manifest.json"
-    path.write_text(json.dumps(payload, indent=2))
+    path.write_text(json.dumps(_json_finite(payload), indent=2))
     return path
 
 
@@ -582,7 +583,7 @@ def write_headline(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "tags":            _tags_list(con),
     }
     path = out_dir / "headline.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, default=_json_default))
     return path
 
 
@@ -652,7 +653,7 @@ def write_organizations(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "orgs": orgs,
     }
     path = out_dir / "organizations.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, default=_json_default))
     return path
 
 
@@ -701,7 +702,7 @@ def write_collections(con, out_dir: Path, snapshot_meta: dict) -> Path:
 
     path = out_dir / "collections.json"
     path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, default=_json_default)
+        json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default)
     )
     return path
 
@@ -814,7 +815,7 @@ def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | 
         return None
     path = out_dir / "collection_context.json"
     path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, default=_json_default)
+        json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default)
     )
     return path
 
@@ -1561,7 +1562,7 @@ def write_hierarchy(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "benchmark_index": benchmark_index,
     }
     path = out_dir / "hierarchy.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, default=_json_default))
     return path
 
 
@@ -1666,14 +1667,17 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
     from collections import defaultdict
 
     # --- Pull family / composite curation from registry tables ---
+    # `_load_dim` materialises the full _DIM_SCHEMAS shape, so the column is
+    # always present (NULL-padded on a registry snapshot that predates it).
     fam_rows = con.execute(
         "SELECT id, display_name, category, tags, "
-        "       benchmark_ids, composite_keys, folder_aliases "
+        "       benchmark_ids, composite_keys, folder_aliases, "
+        "       primary_benchmark_key "
         "  FROM canonical_families"
     ).fetchall() if _table_exists(con, "canonical_families") else []
     families_curated: dict[str, dict] = {}
     for r in fam_rows:
-        fid, display, cat, tags, bench_ids, comp_keys, folder_aliases = r
+        fid, display, cat, tags, bench_ids, comp_keys, folder_aliases, primary = r
         families_curated[fid] = {
             "display_name":    display or fid,
             "category":        (cat or "other"),
@@ -1681,6 +1685,10 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
             "benchmark_ids":   _decode_json_list(bench_ids),
             "composite_keys":  _decode_json_list(comp_keys),
             "folder_aliases":  _decode_json_list(folder_aliases),
+            # The registry's curated headline benchmark (families.yaml
+            # `primary_benchmark_key`); consulted by
+            # `_mark_family_primary_benchmark` ahead of the local override map.
+            "primary_benchmark_key": primary or None,
         }
 
     comp_rows = con.execute(
@@ -1806,16 +1814,27 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
         # Mark the headline benchmark within this family. Sets
         # is_primary on each benchmark row across whatever layout the
         # family ends up using.
-        _mark_family_primary_benchmark(fid, all_benchmarks)
+        _mark_family_primary_benchmark(
+            fid, all_benchmarks,
+            preferred=(curated or {}).get("primary_benchmark_key"),
+        )
 
+        # The primary composite is the one holding the family's curated
+        # headline benchmark when the registry names one (apex -> apex-v1),
+        # else the first by key; the same choice serves a forced layout.
+        preferred_key = (curated or {}).get("primary_benchmark_key")
+        primary_comp = next(
+            (c for c in sorted(family_composites, key=lambda c: c["key"])
+             if preferred_key and any(
+                 b.get("key") == preferred_key for b in c.get("benchmarks", []))),
+            None,
+        ) or sorted(family_composites, key=lambda c: c["key"])[0]
         force = _FORCE_LAYOUT.get(fid)
         if force == "composites" and family_composites:
-            primary_comp = sorted(family_composites, key=lambda c: c["key"])[0]
             for comp in family_composites:
                 comp["is_primary"] = (comp["key"] == primary_comp["key"])
             family_record["composites"] = family_composites
         elif len(family_composites) >= 2:
-            primary_comp = sorted(family_composites, key=lambda c: c["key"])[0]
             for comp in family_composites:
                 comp["is_primary"] = (comp["key"] == primary_comp["key"])
             family_record["composites"] = family_composites
@@ -1858,7 +1877,9 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
             # to the benchmark's own canonical_id by
             # `_hierarchy_composite_benchmark`. Those aren't curated
             # family edges; surfacing them here creates singleton
-            # noise-families.
+            # noise-families. (A curated family's ROOT also hits this
+            # branch — mmlu in [mmlu, mmlu-pro] — and is pulled back in
+            # by the curation-driven pass below.)
             if bfid == bench.get("key"):
                 continue
             # Dedupe by benchmark_id: the same canonical can live
@@ -1869,12 +1890,17 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
 
     # Registry-curation-driven families: a `canonical_families` entry can
     # list `benchmark_ids` directly (e.g. cyse2 → [cyse2_interpreter_abuse,
-    # cyse2_prompt_injection, cyse2_vulnerability_exploit]). When the
-    # member benchmarks don't carry an explicit `family_id` (so the
-    # walk above missed them), pull them in by ID match against
-    # everything we've already rendered.
+    # cyse2_prompt_injection, cyse2_vulnerability_exploit]). Pull every
+    # listed member in by ID match against everything already rendered.
+    # This must run even when the walk above already seeded the group:
+    # the walk skips a benchmark whose family_id equals its own key, which
+    # is exactly a curated family's root (mmlu -> [mmlu, mmlu-pro],
+    # superglue -> [superglue, boolq, ...]). Without this pass the root
+    # never renders in its own family and `_mark_family_primary_benchmark`
+    # falls back to the alphabetically-first member. `setdefault` keeps
+    # the walk's entries and dedupes.
     for fid, curated in families_curated.items():
-        if fid in composite_driven_keys or fid in benchmark_family_groups:
+        if fid in composite_driven_keys:
             continue
         member_ids = set(curated.get("benchmark_ids") or [])
         if not member_ids:
@@ -1922,7 +1948,9 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
         family_record["reproducibility_summary"] = _aggregate_reproducibility(benches)
         family_record["provenance_summary"]      = _aggregate_provenance(benches)
         family_record["comparability_summary"]   = _aggregate_comparability(benches)
-        _mark_family_primary_benchmark(bfid, benches)
+        _mark_family_primary_benchmark(
+            bfid, benches, preferred=(curated or {}).get("primary_benchmark_key"),
+        )
         if len(benches) == 1:
             family_record["standalone_benchmarks"] = benches
         else:
@@ -2338,7 +2366,7 @@ _FAMILY_PRIMARY_OVERRIDE: dict[str, str] = {
 
 
 def _mark_family_primary_benchmark(
-    family_key: str, benchmarks: list[dict]
+    family_key: str, benchmarks: list[dict], preferred: str | None = None
 ) -> None:
     """Mutate `benchmarks` in place: set `is_overall` (this row IS the
     family root) and `is_primary` (this row is the family's headline
@@ -2349,9 +2377,11 @@ def _mark_family_primary_benchmark(
     with no `bfcl` benchmark) has no overall row — all False.
 
     `is_primary` selection:
-      1. _FAMILY_PRIMARY_OVERRIDE explicit map (curator-supplied).
-      2. The benchmark with `is_overall=True` (the family-root row).
-      3. The first benchmark by ascending key (stable tie-break).
+      1. _FAMILY_PRIMARY_OVERRIDE explicit map (producer-local hotfix).
+      2. `preferred`, the registry's curated `primary_benchmark_key`, when
+         it names one of these benchmarks.
+      3. The benchmark with `is_overall=True` (the family-root row).
+      4. The first benchmark by ascending key (stable tie-break).
     """
     if not benchmarks:
         return
@@ -2359,8 +2389,11 @@ def _mark_family_primary_benchmark(
         b["is_overall"] = (b["key"] == family_key)
 
     override = _FAMILY_PRIMARY_OVERRIDE.get(family_key)
-    if override:
+    keys = {b["key"] for b in benchmarks}
+    if override in keys:
         primary_key = override
+    elif preferred in keys:
+        primary_key = preferred
     else:
         overall = next((b for b in benchmarks if b["is_overall"]), None)
         primary_key = (overall or sorted(benchmarks, key=lambda x: x["key"])[0])["key"]
@@ -3342,7 +3375,7 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
     # sort_keys: evals/by_model insertion order follows DuckDB scan order,
     # which is run-to-run unstable — key order is meaningless to JSON
     # consumers, so sort for byte-deterministic builds.
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default))
     return path
 
 
@@ -3468,7 +3501,7 @@ def write_benchmark_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "benchmarks":      benchmarks,
     }
     path = out_dir / "benchmark_index.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, default=_json_default))
     return path
 
 
@@ -3530,13 +3563,33 @@ def write_peer_ranks(con, out_dir: Path, snapshot_meta: dict) -> Path:
     }
     path = out_dir / "peer-ranks.json"
     # sort_keys: by-eval dict order follows scan order (run-unstable).
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default))
+    path.write_text(json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default))
     return path
 
 
 # ---------------------------------------------------------------------------
 # JSON helpers
 # ---------------------------------------------------------------------------
+
+
+def _json_finite(value):
+    """Wire form for non-finite floats: the registry marks a metric bound
+    that is unbounded by definition with an infinite float, which JSON
+    cannot carry; it is emitted as the string "Infinity" / "-Infinity", the
+    form every_eval_ever's schema uses, and NaN as null. Applied to every
+    sidecar payload before json.dumps (which would otherwise write the
+    invalid literal `Infinity`, unreadable by JSON.parse)."""
+    if isinstance(value, float):
+        if math.isinf(value):
+            return "Infinity" if value > 0 else "-Infinity"
+        if math.isnan(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {k: _json_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_finite(v) for v in value]
+    return value
 
 
 def _json_default(obj):

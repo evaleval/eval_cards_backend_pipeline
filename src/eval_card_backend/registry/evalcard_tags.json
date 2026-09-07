@@ -1858,5 +1858,134 @@
   ],
   "ZebraLogic": [
     "logical_reasoning"
+  ],
+  "GLUE": [
+    "linguistic_core",
+    "general"
+  ],
+  "CoLA": [
+    "linguistic_core"
+  ],
+  "MNLI": [
+    "linguistic_core"
+  ],
+  "MRPC": [
+    "linguistic_core"
+  ],
+  "QNLI": [
+    "linguistic_core"
+  ],
+  "QQP": [
+    "linguistic_core"
+  ],
+  "RTE": [
+    "linguistic_core"
+  ],
+  "SST-2": [
+    "linguistic_core"
+  ],
+  "STS-B": [
+    "linguistic_core"
+  ],
+  "WNLI": [
+    "commonsense_reasoning"
+  ],
+  "CommitmentBank": [
+    "linguistic_core"
+  ],
+  "COPA": [
+    "commonsense_reasoning"
+  ],
+  "MultiRC": [
+    "linguistic_core"
+  ],
+  "ReCoRD": [
+    "linguistic_core",
+    "commonsense_reasoning"
+  ],
+  "WiC": [
+    "linguistic_core"
+  ],
+  "WSC": [
+    "commonsense_reasoning"
+  ],
+  "ANLI": [
+    "linguistic_core"
+  ],
+  "ANLI R1": [
+    "linguistic_core"
+  ],
+  "ANLI R2": [
+    "linguistic_core"
+  ],
+  "ANLI R3": [
+    "linguistic_core"
+  ],
+  "HEAD-QA": [
+    "knowledge",
+    "natural_sciences"
+  ],
+  "MedMCQA": [
+    "knowledge",
+    "natural_sciences"
+  ],
+  "SciQ": [
+    "knowledge",
+    "natural_sciences"
+  ],
+  "LAMBADA": [
+    "linguistic_core"
+  ],
+  "AlpacaEval 1.0": [
+    "applied_reasoning",
+    "general"
+  ],
+  "LEXam": [
+    "law",
+    "applied_reasoning"
+  ],
+  "LEXam Open Questions": [
+    "law",
+    "applied_reasoning"
+  ],
+  "LEXam MCQ (4 choices)": [
+    "law",
+    "applied_reasoning"
+  ],
+  "aiXamine": [
+    "safety"
+  ],
+  "aiXamine Adversarial Robustness": [
+    "robustness",
+    "safety"
+  ],
+  "aiXamine Code Security": [
+    "safety",
+    "software_engineering"
+  ],
+  "aiXamine Fairness & Bias": [
+    "safety"
+  ],
+  "aiXamine Hallucination": [
+    "hallucination"
+  ],
+  "aiXamine Jailbreak": [
+    "safety"
+  ],
+  "aiXamine Model & Data Privacy": [
+    "safety"
+  ],
+  "aiXamine Out-of-Distribution Robustness": [
+    "robustness"
+  ],
+  "aiXamine Over-Refusal": [
+    "safety"
+  ],
+  "aiXamine Safety & Alignment": [
+    "safety"
+  ],
+  "lexam-open-question": [
+    "law",
+    "applied_reasoning"
   ]
 }

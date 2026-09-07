@@ -913,3 +913,110 @@ def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
     assert snap["row_counts"]["fact_results"] == 1
     assert snap["row_counts"]["dropped_rows_dedup"] == 1
     assert snap["row_counts"]["dropped_rows_no_score"] == 0
+
+
+def test_metric_name_pre_step_end_to_end(tmp_path, monkeypatch):
+    """Stage C tries a record's own metric_name as a registry alias before
+    keyword extraction, but only when the description has nothing more
+    specific to say. Four records cover the four cases; the registry fixture
+    flags `score` as catch-all so the pre-step is armed (without that flag
+    both metric pre-steps disable themselves)."""
+    pytest.importorskip("duckdb")
+    import pandas as pd
+
+    eee_root = tmp_path / "eee"
+    reg_root = tmp_path / "reg"
+    cards_root = tmp_path / "cards"
+    warehouse = tmp_path / "warehouse"
+    seed_root = tmp_path / "seed"
+    _write_registry_fixture(reg_root)
+    _write_minimal_seed_fixture(seed_root)
+    _write_cards_fixture(cards_root)
+
+    def metric(mid, name, catch_all=False):
+        return {"id": mid, "display_name": name, "score_type": "continuous",
+                "lower_is_better": False, "min_score": 0.0, "max_score": 1.0,
+                "metadata": '{"catch_all": true}' if catch_all else "{}",
+                "review_status": "reviewed", "created_at": "", "updated_at": ""}
+
+    def alias(i, raw, cid):
+        return {"id": str(i), "raw_value": raw, "entity_type": "metric",
+                "canonical_id": cid, "source_config": None, "source_field": None,
+                "status": "active", "strategy": "exact", "confidence": 1.0,
+                "notes": None, "created_at": "", "updated_at": ""}
+
+    pd.DataFrame([
+        metric("accuracy", "Accuracy"), metric("macro-accuracy", "Macro Accuracy"),
+        metric("task-success-rate", "Task Success Rate"), metric("success-rate", "Success Rate"),
+        metric("score", "Score", catch_all=True),
+    ]).to_parquet(reg_root / "canonical_metrics" / "part-0.parquet")
+    aliases = pd.read_parquet(reg_root / "aliases" / "part-0.parquet")
+    aliases = pd.concat([aliases, pd.DataFrame([
+        alias(10, "Macro Accuracy", "macro-accuracy"),
+        alias(11, "Task success rate", "task-success-rate"),
+        alias(12, "Success Rate", "success-rate"),
+        alias(13, "Score", "score"),
+    ])], ignore_index=True)
+    aliases.to_parquet(reg_root / "aliases" / "part-0.parquet")
+
+    def result(metric_id, metric_name, description, score):
+        cfg = {"metric_id": metric_id, "metric_name": metric_name, "lower_is_better": False}
+        if description is not None:
+            cfg["evaluation_description"] = description
+        return {
+            "evaluation_name": "minibench",
+            "source_data": {"dataset_name": "minibench", "source_type": "other"},
+            "metric_config": cfg,
+            "score_details": {"score": score},
+            "generation_config": {"generation_args": {"temperature": 0.0}},
+        }
+
+    record = {
+        "evaluation_id": "ev_metric_name",
+        "schema_version": "0.2.2",
+        "retrieved_timestamp": "2026-04-30T00:00:00Z",
+        "model_info": {"developer": "openai", "name": "GPT-4o", "id": "openai/gpt-4o",
+                       "inference_platform": "openai-api"},
+        "source_metadata": {"source_name": "OpenAI", "source_type": "documentation",
+                            "source_organization_name": "OpenAI",
+                            "evaluator_relationship": "first_party"},
+        "eval_library": {"name": "minibench", "version": "1.0"},
+        "evaluation_results": [
+            # 1. the name is a registry alias the extractor would reduce to accuracy
+            result("minibench.macro_acc", "Macro Accuracy", "Accuracy on minibench", 0.81),
+            # 2. the description names a MORE specific metric: it keeps winning
+            result("minibench.sr", "Success Rate", "Task success rate", 0.62),
+            # 3. no description at all: the name is the best signal
+            result("minibench.acc2", "Accuracy", None, 0.43),
+            # 4. a catch-all name never outranks the description
+            result("minibench.score", "Score", "Accuracy on minibench", 0.24),
+        ],
+    }
+    target = eee_root / "data" / "fixtures_metric_name" / "openai" / "gpt-4o"
+    target.mkdir(parents=True)
+    (target / "01-metric-name.json").write_text(json.dumps(record))
+
+    monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
+    monkeypatch.setenv("BENCHMARK_METADATA_LOCAL_DIR", str(cards_root))
+    monkeypatch.delenv("EEE_REFRESH_SNAPSHOT", raising=False)
+    monkeypatch.delenv("BENCHMARK_METADATA_REFRESH", raising=False)
+
+    from eval_card_backend.canonicalise import pipeline
+    from eval_card_backend.config import Settings
+
+    out_dir = pipeline.run(
+        Settings.from_env(), snapshot_id="2026-04-30T00:00:00Z",
+        warehouse_dir=str(warehouse), registry_local_dir=str(reg_root),
+        taxonomy_seed_dir=str(seed_root), cache_root=str(tmp_path / "cache"),
+    )
+    import duckdb
+
+    rows = duckdb.connect().execute(
+        f"SELECT score, metric_id FROM read_parquet('{out_dir / 'fact_results.parquet'}') ORDER BY score"
+    ).fetchall()
+    assert rows == [
+        (0.24, "accuracy"),          # catch-all name deferred to the description
+        (0.43, "accuracy"),          # no description: direct name hit
+        (0.62, "task-success-rate"), # specific description beat the generic name
+        (0.81, "macro-accuracy"),    # direct name hit beat the lossy extraction
+    ]
