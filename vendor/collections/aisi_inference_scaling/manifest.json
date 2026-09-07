@@ -2,8 +2,8 @@
   "collection_id": "uk-aisi-inference-scaling",
   "study_slug": "how-inference-compute-shapes-frontier-llm-evaluation",
   "extractor": "scripts/collections/aisi_inference_scaling.py",
-  "eee_revision": "e5097a6756bb79233b22b61c633408dd2df9cd39",
-  "eee_revision_note": "Pin moved from 2d9a8b23 to e5097a67 on 2026-09-07 without re-extraction: the 160 datastore commits between them are converter cron runs and none of the 733 member records changed (per-file last-commit check over all 30 member directories). The extract below is the 2026-08-25 run at 2d9a8b23.",
+  "eee_revision": "abe4b262c054b8348f6d1253bfb2cd34becccacb",
+  "eee_revision_note": "Pin moved from e5097a67 to abe4b262 on 2026-09-07 without re-extraction: the 8 intervening datastore commits affect only artificial_analysis, exgentic, global_mmlu_lite, swe_bench_verified, and vals_ai; none of the 733 member records in terminalbench, hle, swebenchpro, healthbench, or frontiermath changed. The extract below is the 2026-08-25 run at 2d9a8b23.",
   "generated_at": "2026-08-25T15:35:10.368394+00:00",
   "expected_drop_count": 561,
   "score_semantics": {

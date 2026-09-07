@@ -24,13 +24,13 @@ env:
   # these SHAs are bumped deliberately. Pinned to snapshot last validated
   # on: 2026-08-13. To accept new upstream data, bump the SHA (or remove
   # the var to track latest HEAD).
-  # Prev pin: 2d9a8b23e813347a233e9585ede44b0bbb4f829f (2026-08-20)
+  # Prev pin: e5097a6756bb79233b22b61c633408dd2df9cd39 (2026-09-06)
   # RUNBOOK: an EEE pin bump that includes collection data changes (e.g.
   # the AISI inference-scaling batch) must carry the collection-extractor
   # re-run and the regenerated vendor/collections/** in the SAME PR —
   # canonicalise hard-fails on a manifest/pin mismatch. See
   # notes/collections-spec.md and scripts/collections/.
-  EEE_REVISION: e5097a6756bb79233b22b61c633408dd2df9cd39
+  EEE_REVISION: abe4b262c054b8348f6d1253bfb2cd34becccacb
   # Prev pin: e6fc375888adf0d085594ced5af20e15fd357f35 (seed @ 1f945ffa, 2026-09-07)
   ENTITY_REGISTRY_REVISION: 82e9182978aa2fa54a55850d98c0df6c44dd2e7b
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
