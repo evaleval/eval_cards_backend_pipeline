@@ -32,7 +32,7 @@ env:
   # notes/collections-spec.md and scripts/collections/.
   EEE_REVISION: abe4b262c054b8348f6d1253bfb2cd34becccacb
   # Prev pin: e6fc375888adf0d085594ced5af20e15fd357f35 (seed @ 1f945ffa, 2026-09-07)
-  ENTITY_REGISTRY_REVISION: 82e9182978aa2fa54a55850d98c0df6c44dd2e7b
+  ENTITY_REGISTRY_REVISION: 900b9070dd47b545f3cd666d28586460a4f742d5
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
 
 jobs:
