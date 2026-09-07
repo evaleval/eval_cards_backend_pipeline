@@ -33,15 +33,14 @@ import shutil
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
-
-log = logging.getLogger(__name__)
-
 from eval_card_backend.config import ENTITY_REGISTRY_DATASET_REPO
 from eval_card_backend.sources._revision_cache import (
     cache_revision_ok as _cache_revision_ok,
     cached_revision,  # re-exported: the revision this cache actually holds
     write_cache_revision as _write_cache_revision,
 )
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "ALIASES_TABLE",
@@ -54,6 +53,8 @@ __all__ = [
     "cached_revision",
     "ensure_snapshot",
     "load_alias_store",
+    "load_canonical_store",
+    "load_resolver",
     "open_dim_paths",
     "read_parquet_arg",
 ]
@@ -95,6 +96,16 @@ DIM_TABLES: tuple[str, ...] = (
 
 ALIASES_TABLE = "aliases"
 ALL_TABLES: tuple[str, ...] = DIM_TABLES + (ALIASES_TABLE,)
+
+_CANONICAL_STORE_KWARGS: dict[str, str] = {
+    "canonical_models": "models_df",
+    "canonical_benchmarks": "benchmarks_df",
+    "canonical_families": "families_df",
+    "canonical_composites": "composites_df",
+    "canonical_metrics": "metrics_df",
+    "eval_harnesses": "harnesses_df",
+    "canonical_orgs": "orgs_df",
+}
 
 
 def _has_registry_data(target: Path) -> bool:
@@ -288,3 +299,63 @@ def load_alias_store(root: Path):
         "returning empty alias store", root,
     )
     return AliasStore.from_parquet(root, read_only=True)
+
+
+def load_canonical_store(root: Path):
+    """Build a ``CanonicalStore`` from either supported snapshot layout.
+
+    ``CanonicalStore.from_parquet`` consumes the registry's flat fixture
+    layout, whereas production snapshots use ``<table>/part-*.parquet``.
+    Resolve both shapes here so the pipeline always gets the enrichment data
+    needed for leaf ids, lineage, release dates, and organization folding.
+    """
+    import pandas as pd
+    from eval_entity_resolver import CanonicalStore
+
+    kwargs = {}
+    for table, kwarg in _CANONICAL_STORE_KWARGS.items():
+        path = _resolve_table_path(root, table)
+        if path is None:
+            if table == "canonical_models":
+                raise FileNotFoundError(
+                    f"required registry table {table!r} is missing under {root}"
+                )
+            continue
+        try:
+            kwargs[kwarg] = pd.read_parquet(path)
+        except (OSError, ValueError) as exc:
+            if table == "canonical_models":
+                raise RuntimeError(
+                    f"required registry table {table!r} is unreadable at {path}: {exc}"
+                ) from exc
+            log.warning(
+                "registry.load_canonical_store: failed to read %s (%s: %s); "
+                "using an empty %s table",
+                path,
+                type(exc).__name__,
+                exc,
+                table,
+            )
+    if kwargs["models_df"].empty:
+        raise RuntimeError(
+            f"required registry table 'canonical_models' is empty under {root}"
+        )
+    return CanonicalStore(**kwargs)
+
+
+def load_resolver(root: Path):
+    """Build the metadata-enriching resolver used by canonicalisation.
+
+    The producer intentionally does not inject the registry service's HF-id
+    checker here.  That checker is allowed to override a disagreeing exact
+    alias, which is useful for live registry attestation but unsafe for a
+    warehouse build: an HF-true id absent from ``canonical_models`` would
+    replace a curated id and then lose all metadata in Stage G.  A future
+    producer integration must be miss-only and carry an output-delta gate.
+    """
+    from eval_entity_resolver import Resolver
+
+    return Resolver(
+        load_alias_store(root),
+        canonical_store=load_canonical_store(root),
+    )

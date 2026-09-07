@@ -17,7 +17,7 @@ env:
   HF_TARGET_DATASET: evaleval/card_backend
   # Pin the registry resolver source for reproducible CI builds. Bump
   # when registry semantics change and we want CI to pick them up.
-  RESOLVER_REF: main
+  RESOLVER_REF: d80c7e3131d92cd0349a626c022a4e86a2cd21c4
   # Pin upstream HF dataset revisions (commit SHAs) so CI runs the
   # pipeline against a KNOWN upstream state. This isolates pipeline code
   # changes from upstream data changes — new data won't flow in until
@@ -31,8 +31,8 @@ env:
   # canonicalise hard-fails on a manifest/pin mismatch. See
   # notes/collections-spec.md and scripts/collections/.
   EEE_REVISION: e5097a6756bb79233b22b61c633408dd2df9cd39
-  # Prev pin: 1e9e668ee1abd4ee968950f27f234ab23fdd2f8b (seed @ 3e1468aa, 2026-09-07)
-  ENTITY_REGISTRY_REVISION: e6fc375888adf0d085594ced5af20e15fd357f35
+  # Prev pin: e6fc375888adf0d085594ced5af20e15fd357f35 (seed @ 1f945ffa, 2026-09-07)
+  ENTITY_REGISTRY_REVISION: 82e9182978aa2fa54a55850d98c0df6c44dd2e7b
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
 
 jobs:
