@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 
 import duckdb
+import pandas as pd
 import pytest
 
 
@@ -88,6 +90,87 @@ def test_fixture_01_clean_resolution(tmp_path, monkeypatch):
     assert row01["benchmark_card_id"] == "mmlu"
     # Non-agentic
     assert bool(row01["is_agentic"]) is False
+
+
+def test_pipeline_wires_canonical_store_through_leaf_and_models_view(
+    tmp_path, monkeypatch
+):
+    """Guard the production wiring that ``load_resolver`` supplies.
+
+    A direct resolver unit test is insufficient: the original regression lived
+    in ``pipeline.run`` constructing ``Resolver(alias_store)`` and silently
+    dropping canonical metadata.  Exercise the real pipeline with an alias to
+    a dated leaf and assert that both the fact and Stage-G model view retain it.
+    """
+    reg_root = tmp_path / "entity_registry"
+    shutil.copytree(FIXTURES / "entity_registry", reg_root)
+
+    aliases_path = reg_root / "aliases.parquet"
+    aliases = pd.read_parquet(aliases_path)
+    aliases.loc[
+        (aliases["entity_type"] == "model")
+        & (aliases["raw_value"] == "openai/gpt-4o"),
+        "canonical_id",
+    ] = "openai/gpt-4o-2024-05-13"
+    aliases.to_parquet(aliases_path, index=False)
+
+    models_path = reg_root / "canonical_models.parquet"
+    models = pd.read_parquet(models_path)
+    leaf = models.loc[models["id"] == "openai/gpt-4o"].iloc[0].copy()
+    leaf["id"] = "openai/gpt-4o-2024-05-13"
+    leaf["display_name"] = "GPT-4o (2024-05-13)"
+    leaf["parents"] = json.dumps(
+        [
+            {
+                "id": "openai/gpt-4o",
+                "relationship": "variant",
+                "axis": "version",
+            }
+        ]
+    )
+    leaf["model_group_id"] = "openai/gpt-4o"
+    leaf["release_date"] = "2024-05-13"
+    pd.concat([models, leaf.to_frame().T], ignore_index=True).to_parquet(
+        models_path, index=False
+    )
+
+    monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(FIXTURES / "eee"))
+    monkeypatch.setenv(
+        "BENCHMARK_METADATA_LOCAL_DIR", str(FIXTURES / "auto_benchmarkcards")
+    )
+    monkeypatch.delenv("EEE_REFRESH_SNAPSHOT", raising=False)
+    monkeypatch.delenv("BENCHMARK_METADATA_REFRESH", raising=False)
+
+    from eval_card_backend.canonicalise import pipeline
+    from eval_card_backend.config import Settings
+
+    out = pipeline.run(
+        Settings.from_env(),
+        configs=["fixtures_clean"],
+        snapshot_id="2026-04-30T00:00:00Z",
+        warehouse_dir=str(tmp_path / "warehouse"),
+        registry_local_dir=str(reg_root),
+        cache_root=str(tmp_path / "cache"),
+    )
+
+    con = duckdb.connect()
+    fact = con.execute(
+        f"SELECT model_id, model_leaf_id FROM read_parquet('{out}/fact_results.parquet') "
+        "WHERE evaluation_id = 'ev_01'"
+    ).fetchone()
+    model = con.execute(
+        f"SELECT model_id, resolved_leaf_ids, release_date "
+        f"FROM read_parquet('{out}/models.parquet') "
+        "WHERE model_key = 'openai/gpt-4o'"
+    ).fetchone()
+
+    assert fact == (
+        "openai/gpt-4o-2024-05-13",
+        "openai/gpt-4o-2024-05-13",
+    )
+    assert model[0] == "openai/gpt-4o"
+    assert model[1] == ["openai/gpt-4o-2024-05-13"]
+    assert model[2] == "2024-05-13"
 
 
 # ---------------------------------------------------------------------------

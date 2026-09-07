@@ -341,10 +341,11 @@ def run(
     reset_purpose_shape_counter()
     eee.reset_drop_counter()
 
-    alias_store = registry_src.load_alias_store(registry_root)
-    from eval_entity_resolver import Resolver
-
-    resolver = Resolver(alias_store)
+    # Load aliases and canonical metadata as one bundle. Constructing
+    # Resolver(alias_store) alone silently disables leaf/lineage enrichment.
+    # HF index attestation remains deliberately excluded here because the
+    # service policy may override curated aliases with unregistered HF ids.
+    resolver = registry_src.load_resolver(registry_root)
     metric_catch_all_ids = _metric_catch_all_ids(registry_root)
     if not metric_catch_all_ids:
         log.warning(
