@@ -13,6 +13,20 @@ on:
       - "uv.lock"
       - ".github/workflows/sync.yml"
 
+# The job reads this repo and a public registry checkout, then writes only to
+# HuggingFace with HF_TOKEN; the workflow token needs nothing beyond read.
+permissions:
+  contents: read
+
+# One publisher at a time: schedule, push and manual runs all end by moving
+# warehouse/latest, and two overlapping runs would leave whichever finished
+# last on top regardless of which had the newer inputs. The running job is
+# never cancelled; at most one run waits, and a newer arrival replaces it
+# (the default queue policy), so the next publisher is always the freshest.
+concurrency:
+  group: sync-pipeline
+  cancel-in-progress: false
+
 env:
   HF_TARGET_DATASET: evaleval/card_backend
   # Pin the registry resolver source for reproducible CI builds. Bump
