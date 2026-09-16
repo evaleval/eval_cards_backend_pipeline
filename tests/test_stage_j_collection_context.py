@@ -152,9 +152,21 @@ def _build_con(
         "benchmark_key VARCHAR, metric_key VARCHAR, metric_key_effective VARCHAR, "
         "metric_kind VARCHAR, "
         "model_aggregation_key VARCHAR, model_raw VARCHAR, score DOUBLE, "
-        "score_se DOUBLE, retrieved_timestamp VARCHAR, "
+        "score_canonical DOUBLE, "
+        "score_se DOUBLE, score_se_canonical DOUBLE, retrieved_timestamp VARCHAR, "
         "evaluation_timestamp VARCHAR, agent_scaffold_raw VARCHAR, "
-        "org_id VARCHAR, protocol_condition VARCHAR)"
+        "org_id VARCHAR, protocol_condition VARCHAR, "
+        # The context builder reads external points through the Stage J
+        # headline map; every synthetic row here is a headline row.
+        "fact_id VARCHAR AS (COALESCE(composite_slug, '') || '|' "
+        "|| COALESCE(model_raw, '') || '|' "
+        "|| COALESCE(agent_scaffold_raw, '') || '|' "
+        "|| COALESCE(protocol_condition, '') || '|' "
+        "|| COALESCE(CAST(score AS VARCHAR), '')))"
+    )
+    con.execute(
+        "CREATE VIEW fact_headline AS "
+        "SELECT fact_id, TRUE AS is_headline FROM fact_results"
     )
     overrides = score_overrides or {}
     for model_raw, condition, *_ in conditions:
@@ -163,28 +175,28 @@ def _build_con(
         )
         con.execute(
             "INSERT INTO fact_results VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [COLLECTION, COLLECTION, CONFIG, BENCHMARK, METRIC, METRIC,
-             "accuracy", AGG_KEY[model_raw], model_raw, score, 0.04, "3000.0",
-             "2026-03-01", None, "study-org", condition],
+             "accuracy", AGG_KEY[model_raw], model_raw, score, score, 0.04,
+             0.04, "3000.0", "2026-03-01", None, "study-org", condition],
         )
     for model_key, scaffold, score, harvest in external:
         con.execute(
             "INSERT INTO fact_results VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [None, "board", "board", BENCHMARK, METRIC, METRIC, "accuracy",
-             model_key, model_key, score, 2.5, harvest, "2026-02-01",
-             scaffold, maintainer_org, None],
+             model_key, model_key, score, score / 100.0, 2.5, 0.025, harvest,
+             "2026-02-01", scaffold, maintainer_org, None],
         )
     # An aggregator reporting a raw metric that folds into the canonical one,
     # with no scaffold provenance: matched on metric_key_effective.
     for model_key, score, harvest in aggregated:
         con.execute(
             "INSERT INTO fact_results VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [None, "aggregator", "aggregator", BENCHMARK, "raw-score", METRIC,
-             "accuracy", model_key, model_key, score, None, harvest,
-             None, None, aggregator_org, None],
+             "accuracy", model_key, model_key, score, score / 100.0, None,
+             None, harvest, None, None, aggregator_org, None],
         )
 
     # eval_results_view: one row per protocol point the sidecar has to find
@@ -194,34 +206,44 @@ def _build_con(
         "composite_slug VARCHAR, benchmark_id VARCHAR, metric_id VARCHAR, "
         "metric_id_effective VARCHAR, "
         "model_key VARCHAR, protocol_condition VARCHAR, "
-        "scale_conversion VARCHAR)"
+        "scale_conversion VARCHAR, is_headline BOOLEAN)"
     )
     for model_raw, condition, *_ in conditions:
         con.execute(
-            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?,?)",
             [COLLECTION, BENCHMARK, METRIC, METRIC, AGG_KEY[model_raw],
-             condition, "none"],
+             condition, "none", True],
         )
     for model_key in sorted({e[0] for e in external}):
         con.execute(
-            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?)",
-            ["board", BENCHMARK, METRIC, METRIC, model_key, None, "div100"],
+            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?,?)",
+            ["board", BENCHMARK, METRIC, METRIC, model_key, None, "div100",
+             True],
         )
     # The aggregator keeps its raw id in the view and folds to the canonical
     # one, exactly as llm-stats does in the warehouse.
     for model_key in sorted({a[0] for a in aggregated}):
         con.execute(
-            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?,?)",
             ["aggregator", BENCHMARK, "raw-score", METRIC, model_key, None,
-             "div100"],
+             "div100", True],
         )
     # A second metric on the board, carrying a DIFFERENT scale conversion.
     # Scale resolution must stay scoped to the metric under test.
     for model_key in sorted({e[0] for e in external}):
         con.execute(
-            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?,?)",
             ["board", BENCHMARK, "calibration-error", "calibration-error",
-             model_key, None, "none"],
+             model_key, None, "none", True],
+        )
+    # A LOSING condition on the board's metric under test: a non-headline row
+    # whose conversion class differs from the headline rows'. The scale gate
+    # must ignore it — the points it guards are headline-only.
+    for model_key in sorted({e[0] for e in external}):
+        con.execute(
+            "INSERT INTO eval_results_view VALUES (?,?,?,?,?,?,?,?)",
+            ["board", BENCHMARK, METRIC, METRIC, model_key, None, "none",
+             False],
         )
 
     if registry_metadata is None:
@@ -284,6 +306,50 @@ def _entry(path: Path) -> dict:
 # ---------------------------------------------------------------------------
 # happy path
 # ---------------------------------------------------------------------------
+
+
+def test_a_losing_condition_with_another_class_does_not_drop_the_source(
+    tmp_path, monkeypatch
+):
+    """The board publishes its metric under two conditions with different
+    conversion classes; only one is headline. The gate reads headline rows
+    only, so the board's points still reach the payload — gathering every
+    view row would read as inconsistent and delete the whole source."""
+    _write_curated(tmp_path, monkeypatch)
+    con = _build_con()
+    classes = con.execute(
+        """
+        SELECT DISTINCT scale_conversion, is_headline
+        FROM eval_results_view
+        WHERE composite_slug = 'board' AND metric_id_effective = ?
+        ORDER BY 1
+        """,
+        [METRIC],
+    ).fetchall()
+    assert classes == [("div100", True), ("none", False)]
+
+    entry = _entry(_write(con, tmp_path)[0])
+    assert {s["id"] for s in entry["context_sources"]} == {"aggregator", "board"}
+    assert any(p["source"] == "The Board"
+               for p in entry["models"][MODEL_A_KEY]["external"])
+
+
+def test_external_se_comes_from_the_row_not_a_source_multiplier(
+    tmp_path, monkeypatch
+):
+    """Canonical uncertainty is a per-row Stage D output. The sidecar reports
+    `score_se_canonical` verbatim rather than re-deriving it from one
+    source-wide factor, which would misconvert a mixed-class source."""
+    _write_curated(tmp_path, monkeypatch)
+    con = _build_con()
+    con.execute(
+        "UPDATE fact_results SET score_se_canonical = 0.0123 "
+        "WHERE composite_slug = 'board' AND agent_scaffold_raw = 'Beta'"
+    )
+    entry = _entry(_write(con, tmp_path)[0])
+    beta = next(p for p in entry["models"][MODEL_A_KEY]["external"]
+                if p["scaffold"] == "Beta")
+    assert beta["score_se"] == 0.0123
 
 
 def test_context_sidecar_shape(tmp_path, monkeypatch):
@@ -674,10 +740,10 @@ def test_quality_holdout_survives_a_composite_that_spans_orgs(
     _write_curated(tmp_path, monkeypatch)
     con = _build_con()
     con.execute(
-        "INSERT INTO fact_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO fact_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [None, "aggregator", "aggregator", BENCHMARK, "raw-score", METRIC,
-         "accuracy", MODEL_B_KEY, MODEL_B_KEY, 99.0, None, CURRENT_HARVEST,
-         None, None, EXCLUDED_ORG, None],
+         "accuracy", MODEL_B_KEY, MODEL_B_KEY, 99.0, 0.99, None, None,
+         CURRENT_HARVEST, None, None, EXCLUDED_ORG, None],
     )
     path, _ = _write(con, tmp_path)
     entry = _entry(path)
@@ -738,10 +804,10 @@ def test_unparseable_stamp_never_displaces_a_parseable_one(
     # a second Gamma row: unparseable stamp, different score. The parseable
     # row must still win its key, and the pair must not read as ambiguous.
     con.execute(
-        "INSERT INTO fact_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO fact_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [None, "board", "board", BENCHMARK, METRIC, METRIC, "accuracy",
-         MODEL_A_KEY, MODEL_A_KEY, 88.0, 2.5, "not-a-timestamp", "2026-02-01",
-         "Gamma", MAINTAINER_ORG, None],
+         MODEL_A_KEY, MODEL_A_KEY, 88.0, 0.88, 2.5, 0.025, "not-a-timestamp",
+         "2026-02-01", "Gamma", MAINTAINER_ORG, None],
     )
     path, _ = _write(con, tmp_path)
     entry = _entry(path)

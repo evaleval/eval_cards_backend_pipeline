@@ -198,21 +198,31 @@ def resolve_canonical_strict(
     surface form scoped to different canonicals in different EEE folders
     (e.g. "Investment Banking" → apex-agents under the apex-agents folder
     but apex-v1 under the apex-v1 folder).
+
+    The scoped probe runs FIRST, before the plain `s in canonical_set`
+    identity: a slice spelling can itself be a canonical id somewhere else
+    in the registry ("Math" slugs to the global `math` benchmark) while the
+    folder that emitted it scopes that same spelling to a different
+    canonical (RewardBench's `Math` category → `rewardbench-2-math`). The
+    scoped statement is the more specific evidence, so a global canonical
+    of the same spelling must not short-circuit it.
     """
     if not raw:
         return None
     s = slugify(raw)
     if not s or s in _GENERIC_WORDS:
         return None
-    if s in canonical_set:
-        return s
     keys = (raw, raw.lower(), s)
-    # Config-scoped first (matches AliasStore.lookup precedence).
+    # Config-scoped first (matches AliasStore.lookup precedence), ahead of
+    # the global-canonical identity so a scoped alias is never shadowed by a
+    # canonical that happens to share its spelling.
     if source_config and scoped_alias_to_canonical:
         for k in keys:
             scoped = scoped_alias_to_canonical.get((source_config, k))
             if scoped is not None:
                 return scoped
+    if s in canonical_set:
+        return s
     # Global / unscoped fallback.
     if alias_to_canonical:
         for k in keys:

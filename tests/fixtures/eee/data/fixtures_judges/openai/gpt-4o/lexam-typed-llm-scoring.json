@@ -1,0 +1,56 @@
+{
+  "evaluation_id": "ev_lexam",
+  "schema_version": "0.2.2",
+  "retrieved_timestamp": "2026-04-30T00:00:00Z",
+  "evaluation_timestamp": "2026-04-29T00:00:00Z",
+  "model_info": {
+    "developer": "openai",
+    "name": "gpt-4o",
+    "id": "openai/gpt-4o"
+  },
+  "source_metadata": {
+    "source_name": "OpenEval",
+    "source_type": "evaluation_run",
+    "source_organization_name": "OpenEval",
+    "evaluator_relationship": "third_party"
+  },
+  "eval_library": {
+    "name": "openeval",
+    "version": "1.0"
+  },
+  "evaluation_results": [
+    {
+      "evaluation_name": "lexam",
+      "source_data": {
+        "dataset_name": "lexam",
+        "source_type": "other"
+      },
+      "metric_config": {
+        "metric_id": "fixtures_judges.lexam.score",
+        "metric_name": "Score",
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 1.0,
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "judge_score",
+          "metric_models_json": "[\"anthropic/claude-3-5-sonnet-20241022\"]"
+        },
+        "llm_scoring": {
+          "judges": [
+            {
+              "model_info": {
+                "name": "gpt-4o-2024-05-13",
+                "id": "openai/gpt-4o-2024-05-13"
+              }
+            }
+          ],
+          "input_prompt": "Rate the response."
+        }
+      },
+      "score_details": {
+        "score": 0.58
+      }
+    }
+  ]
+}

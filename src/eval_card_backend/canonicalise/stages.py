@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import tempfile
 from pathlib import Path
 from typing import NamedTuple
@@ -35,6 +36,38 @@ from eval_card_backend.sources import collections as collections_src
 from eval_card_backend.sources.registry import read_parquet_arg
 
 
+# DuckDB's duplicate-column suffix: `a` selected twice becomes `a`, `a_1`.
+_AUTO_RENAME_RE = re.compile(r"(.+)_\d+")
+
+
+def explicit_projection_sql(con, relation: str, alias: str | None = None) -> str:
+    """Comma-separated column list of `relation` (a table name or a
+    parenthesised subquery), in declared order and with every name quoted.
+
+    `SELECT *` hides a whole class of projection defect: `SELECT t.*, t.*`
+    binds without complaint, DuckDB auto-renames the second copy (`a` → `a_1`)
+    and the materialised payload silently doubles. Enumerating the columns
+    makes the emitted schema an explicit, order-stable statement, and the
+    duplicate check below turns that defect into a hard failure instead of a
+    memory bill. Binding-only (`DESCRIBE`), so it costs a parse, not a scan.
+    """
+    cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()]
+    auto_renamed = sorted(
+        c for c in cols
+        if _AUTO_RENAME_RE.fullmatch(c)
+        and _AUTO_RENAME_RE.fullmatch(c).group(1) in cols
+    )
+    if auto_renamed:
+        raise RuntimeError(
+            f"duplicate projection in {relation}: DuckDB auto-renamed "
+            f"{auto_renamed}. A column is being selected twice (a repeated "
+            f"`alias.*` is the usual cause); drop the duplicate rather than "
+            f"letting the wide payload materialise twice."
+        )
+    prefix = f"{alias}." if alias else ""
+    return ", ".join(f'{prefix}"{c}"' for c in cols)
+
+
 def protocol_exclusion_sql(col: str = "protocol_condition") -> str:
     """Answer-feedback exclusion predicate, NULL-safe canonical form.
 
@@ -47,6 +80,16 @@ def protocol_exclusion_sql(col: str = "protocol_condition") -> str:
         f"COALESCE(json_extract_string({col}, '$.feedback'), 'none') "
         f"<> 'answer_feedback'"
     )
+
+
+def json_array_guard_sql(expr: str) -> str:
+    """Predicate: `expr` holds a JSON array.
+
+    `json_valid(x) AND json_type(x) = 'ARRAY'` is NOT safe — DuckDB evaluates
+    both sides of the AND and `json_type` raises on a malformed string. Feeding
+    `json_type` a NULL instead keeps the validity guard inside one expression.
+    """
+    return f"json_type(CASE WHEN json_valid({expr}) THEN {expr} END) = 'ARRAY'"
 
 
 def _build_repro_missing_fields_sql() -> str:
@@ -172,6 +215,67 @@ class StageEStats(NamedTuple):
     post: int                   # final fact_results_signaled count
 
 log = logging.getLogger(__name__)
+
+
+# What a cell made only of PART observations is worth, when the registry does
+# not say what the benchmark consists of.
+#
+# A source that publishes only per-subject rows (35 HELM MMLU subjects, 315
+# AIR-Bench categories) never stated a benchmark total. Two answers:
+#
+#   "pooled_parts" — (current) pool the parts exactly as the pipeline always
+#                    pooled them, and label the value so the page says it is a
+#                    pooling of parts rather than something the source
+#                    published. No page that had a number loses it.
+#   "none"         — show nothing at all.
+#
+# Neither is the same as inventing a total: whole observations always win when
+# the cell has any, so a source's own figure is never diluted by the rows
+# underneath it, and a complete registry task set still produces a mean
+# (`_materialise_slice_parent_rows`) rather than a pool.
+AGGREGATE_LESS_CELL_LEVEL = "pooled_parts"
+
+
+def _cell_level_tail_sql() -> str:
+    """The `value_level` branches below `whole`, in precedence order.
+
+    `single` — a cell holding exactly one row, whose value is that row's own
+    number and a pooling of nothing — is a statement about ARITHMETIC, so it
+    outranks the parts-only label: calling one row a pooling of parts
+    describes an average that never happened. It must not outrank the
+    parts-only SWITCH when that switch is set to blank, though; one part is
+    no more a benchmark total than five are. So the order flips with the
+    switch, and `AGGREGATE_LESS_CELL_LEVEL = "none"` keeps blanking every
+    parts-only cell including the one-row ones.
+    """
+    parts_only = (
+        "WHEN NOT BOOL_OR(NOT is_part AND score IS NOT NULL) "
+        f"THEN '{AGGREGATE_LESS_CELL_LEVEL}'"
+    )
+    single = "WHEN COUNT(*) = 1 THEN 'single'"
+    order = (
+        [parts_only, single]
+        if AGGREGATE_LESS_CELL_LEVEL == "none"
+        else [single, parts_only]
+    )
+    return "\n                       ".join([*order, "ELSE 'pooled'"])
+
+
+# How a shown number was computed from its inputs, published on
+# `eval_results_view.value_aggregation`:
+#
+#   NULL            the value is one row's own number, or there is none
+#   'median'        several SUBMITTED readings of one quantity at one level —
+#                   MMLU's three answer-extraction totals, MATH's two lm-eval
+#                   tasks. Repeated measurements of the same thing, so the
+#                   middle one represents them.
+#   'mean' /        the pipeline combined the PARTS of a benchmark into a
+#   'weighted_mean' whole. An average, not a middle: a suite score is the
+#                   average of its tasks, weighted by how many samples each
+#                   task covers when every one of them says.
+AGG_MEDIAN = "median"
+AGG_MEAN = "mean"
+AGG_WEIGHTED_MEAN = "weighted_mean"
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +619,12 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         # Registry-declared merged-view default metric (registry.3.2+);
         # NULL-padded on older snapshots.
         ("preferred_metric_id", "VARCHAR"),
+        # Registry-declared "the benchmark's PREFERRED metric is produced by
+        # an LLM judge" (registry.3.3+). Gates the judge-condition fallback
+        # extraction in Stage D, together with `preferred_metric_id` — the
+        # flag says nothing about a benchmark's other channels, which may be
+        # keyword detectors or encoder models. NULL-padded on older snapshots.
+        ("preferred_metric_llm_judged", "BOOLEAN"),
         ("tags", "VARCHAR"),
         ("metadata", "VARCHAR"),
         ("review_status", "VARCHAR"),
@@ -530,6 +640,15 @@ _DIM_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         # Curated published-scale -> registry-scale multiplier (0.1 =
         # raw 1-10 onto a [0,1] metric). NULL = detection-based only.
         ("scale_factor", "DOUBLE"),
+        # Additive term of the same conversion (registry.3.3+):
+        # canonical = published * scale_factor + scale_offset. NULL = 0.
+        ("scale_offset", "DOUBLE"),
+        # Scope of the row (registry.3.3+). NULL = the benchmark-wide NAMING
+        # rule (from -> to). A CONVERSION is only ever valid for the one
+        # source whose published scale it describes, so factor/offset live on
+        # source-scoped rows; sources without one keep the rename and fall
+        # through to the scale classifier.
+        ("source_config", "VARCHAR"),
         ("note", "VARCHAR"),
     ],
     # canonical_metrics — registry has score_type/lower_is_better/min/max
@@ -988,6 +1107,19 @@ def stage_c_resolve_identities(con) -> None:
                 -- ambiguity return NULL, so those rows fall through to the
                 -- extract_metric path unchanged.
                 resolve_structured_metric_id(metric_config.metric_id, source_config) AS _metric_id_structured,
+                -- The tail of that same match: the scoring variant spelled
+                -- after the segment that named the metric
+                -- (`gpqa.accuracy.diamond`, `squadv2.f1.has_ans`). Aggregate
+                -- markers and numeric segments are not tails, so
+                -- `lmarena.elo.overall` reports none. Stage D appends it to
+                -- the observation key so variants a source publishes side by
+                -- side stay separate readings instead of pooling into one
+                -- median. NULL for every other resolution path.
+                CASE WHEN _metric_id_structured IS NOT NULL
+                     THEN resolve_structured_metric_qualifier(
+                              metric_config.metric_id, source_config)
+                     ELSE NULL
+                END                                                               AS _metric_qualifier,
                 extract_metric_udf(
                     COALESCE(metric_config.evaluation_description,
                              metric_config.metric_name,
@@ -1040,6 +1172,7 @@ def stage_c_resolve_identities(con) -> None:
             _model_raw      AS model_raw,
             _benchmark_raw  AS benchmark_raw,
             _metric_raw     AS metric_raw,
+            _metric_qualifier AS metric_qualifier,
             _org_raw        AS org_raw,
             NULLIF(_harness_raw, '') AS harness_raw,
 
@@ -1126,9 +1259,20 @@ def _apply_metric_folds(con) -> None:
     """Apply the registry's curated per-benchmark metric naming folds.
 
     `metric_id_effective` = fold target when (benchmark_id, metric_id)
-    matches a `benchmark_metric_folds` row, else `metric_id` unchanged.
-    Raw `metric_id` is never overwritten — the merged view groups on the
-    effective id; per-source views keep reporting the source's own label.
+    matches the benchmark-wide NAMING row in `benchmark_metric_folds`, else
+    `metric_id` unchanged. Source-scoped rows carry a scale conversion for one
+    publisher, not a different name, so the rename ignores them. Raw
+    `metric_id` is never overwritten — it is what the rename rule and the
+    resolution hotfixes key on.
+
+    A registry slice child is the same benchmark's data, so a naming fold
+    defined for the benchmark applies to its slices: a row on a child with no
+    naming row of its own for that metric inherits the PARENT's. Global-MMLU-
+    Lite's 18 language rows resolve to `global-mmlu-lite-<lang>`; without
+    this they kept `score` while the totals folded to `accuracy`, and the
+    page forked into two metrics. A child's own fold wins; scoped
+    (scale-conversion) rows are never inherited; one level only, which is
+    all the registry has.
     """
     con.execute(
         "ALTER TABLE results_resolved ADD COLUMN metric_id_effective VARCHAR"
@@ -1141,6 +1285,34 @@ def _apply_metric_folds(con) -> None:
         FROM benchmark_metric_folds f
         WHERE r.benchmark_id = f.benchmark_id
           AND r.metric_id = f.from_metric_id
+          AND f.source_config IS NULL
+        """
+    )
+    inherited = con.execute(
+        f"""
+        SELECT cb.parent_benchmark_id, f.from_metric_id, f.to_metric_id,
+               COUNT(*) AS n, COUNT(DISTINCT r.benchmark_id) AS n_children
+        FROM results_resolved r
+        JOIN canonical_benchmarks cb ON cb.id = r.benchmark_id
+        JOIN benchmark_metric_folds f
+          ON f.benchmark_id = cb.parent_benchmark_id
+         AND f.from_metric_id = r.metric_id
+         AND f.source_config IS NULL
+        WHERE {_INHERITED_FOLD_PREDICATE}
+        GROUP BY 1, 2, 3
+        ORDER BY n DESC, 1, 2
+        """
+    ).fetchall()
+    con.execute(
+        f"""
+        UPDATE results_resolved AS r
+        SET metric_id_effective = f.to_metric_id
+        FROM canonical_benchmarks cb, benchmark_metric_folds f
+        WHERE cb.id = r.benchmark_id
+          AND f.benchmark_id = cb.parent_benchmark_id
+          AND f.from_metric_id = r.metric_id
+          AND f.source_config IS NULL
+          AND {_INHERITED_FOLD_PREDICATE}
         """
     )
     n = con.execute(
@@ -1148,6 +1320,77 @@ def _apply_metric_folds(con) -> None:
         "WHERE metric_id_effective IS DISTINCT FROM metric_id"
     ).fetchone()[0]
     log.info("stage C: metric folds re-keyed %d row(s)", n)
+    for parent, from_id, to_id, n_rows, n_children in inherited:
+        log.info(
+            "stage C: fold %s %s→%s inherited by %d row(s) on %d slice "
+            "child(ren)", parent, from_id, to_id, n_rows, n_children,
+        )
+    _log_metric_fold_source_labels(con)
+
+
+# A row inherits its parent's naming fold only when it is on a real slice child
+# (a parent edge that is not the row itself) that is the parent's own data,
+# and the child has no naming row of its own for that metric name. A child
+# the registry marks `metadata.role = "diagnostic"` measures a DIFFERENT
+# quantity under the parent's name (BFCL's format-sensitivity standard
+# deviation is not an accuracy), so the parent's rename of its catch-all
+# `score` does not describe it; an `aggregate` child is the same quantity
+# rolled up and does inherit. Shared by the count and the UPDATE so the log
+# describes exactly the rows that moved.
+_INHERITED_FOLD_PREDICATE = """
+              cb.parent_benchmark_id IS NOT NULL
+          AND cb.parent_benchmark_id <> cb.id
+          AND COALESCE(json_extract_string(cb.metadata, '$.role'), '')
+              <> 'diagnostic'
+          AND NOT EXISTS (
+              SELECT 1 FROM benchmark_metric_folds own
+              WHERE own.benchmark_id = r.benchmark_id
+                AND own.from_metric_id = r.metric_id
+                AND own.source_config IS NULL
+          )"""
+
+
+def _log_metric_fold_source_labels(con) -> None:
+    """One INFO line per rename rule that fired, listing the source labels it
+    swept up and their row counts.
+
+    A rule keyed on the catch-all `score` fires for ANY source channel whose
+    own metric name failed to resolve, including channels that land later via
+    cron. The 2026-09-13 corpus already renames OpenEval's `haiku-llm-judge`
+    (an attack-success-rate judge, inversely correlated with the refusal score)
+    and `refusal-strings` (a keyword detector) onto harmbench-refusal-score
+    through the harmbench rule. The log is what makes a new label visible
+    before it silently joins someone else's page.
+    """
+    rows = con.execute(
+        """
+        SELECT benchmark_id, metric_id, metric_id_effective,
+               -- the full metric_source_label chain: a channel that only
+               -- names itself in metric_id or metric_raw must not be
+               -- reported as unlabelled.
+               COALESCE(
+                   metric_config.additional_details['raw_metric_name'],
+                   metric_config.metric_name,
+                   metric_config.metric_id,
+                   metric_raw,
+                   '(unlabelled)'
+               )        AS source_label,
+               COUNT(*) AS n
+        FROM results_resolved
+        WHERE metric_id_effective IS DISTINCT FROM metric_id
+        GROUP BY 1, 2, 3, 4
+        ORDER BY 1, 2, 3, n DESC, source_label ASC
+        """
+    ).fetchall()
+    by_rule: dict[tuple[str, str, str], list[tuple[str, int]]] = {}
+    for benchmark_id, from_id, to_id, label, n in rows:
+        by_rule.setdefault((benchmark_id, from_id, to_id), []).append((label, n))
+    for (benchmark_id, from_id, to_id), labels in by_rule.items():
+        log.info(
+            "stage C: rename %s %s\u2192%s renamed %d row(s); source labels: %s",
+            benchmark_id, from_id, to_id, sum(n for _, n in labels),
+            ", ".join(f"{label}={n}" for label, n in labels),
+        )
 
 
 def _apply_slice_key(con) -> None:
@@ -1250,9 +1493,8 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
         "rr0.source_config",
     )
     config_slug = taxonomy.config_slug_sql("rr.source_config")
-    con.execute(
-        f"""
-        CREATE TABLE fact_results_staging AS
+    _MODELS_JSON = "j.metric_config.additional_details['metric_models_json']"
+    staging_body = f"""(
         WITH rr_tok AS (
             -- Composite-partition inputs: org_token is the
             -- partition key; _curated_source_slug is what a curated
@@ -1282,6 +1524,23 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             SELECT
                 rr.*,
                 cb.parent_benchmark_id                                 AS _cb_parent_benchmark_id,
+                cb.preferred_metric_llm_judged                         AS _cb_preferred_metric_llm_judged,
+                cb.preferred_metric_id                                 AS _cb_preferred_metric_id,
+                -- Registry bounds of the EFFECTIVE metric, unmasked (NULL
+                -- stays NULL = 'no_bounds'), for the scale classifier below.
+                -- An INFINITE bound is no bound for scale placement: a
+                -- [0, inf) metric can be neither a fraction nor a percent.
+                CASE WHEN isinf(cmet.min_score) THEN NULL ELSE cmet.min_score END AS _eff_min_score,
+                CASE WHEN isinf(cmet.max_score) THEN NULL ELSE cmet.max_score END AS _eff_max_score,
+                -- Curated published-scale conversion from the registry's
+                -- rename rule, joined on the PRE-rename metric id (the rule's
+                -- own key) AND the row's source. canonical = published *
+                -- factor + offset. A source with no scoped rule gets no
+                -- conversion and falls through to the classifier below —
+                -- two publishers of one metric rarely share a scale
+                -- (OpenEval's WildBench is 1-10, BenchPress's is 33-68).
+                bmf.scale_factor                                       AS _scale_factor,
+                bmf.scale_offset                                       AS _scale_offset,
                 cm_model.parent_model_id                               AS _cm_parent_model_id,
                 -- Model-resolution-rework: `model_group_id` is the
                 -- always-present GROUP key. Stage A's `_derive_model_root_id`
@@ -1332,7 +1591,20 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
                 derive_metric_meta_udf(
                     to_json(rr.metric_config),
                     cmet.metric_kind, cmet.metric_unit,
-                    cmet.min_score,   cmet.max_score, cmet.lower_is_better,
+                    cmet.min_score,   cmet.max_score,
+                    -- Direction: the registry wins, EXCEPT when the row
+                    -- landed on a catch-all bucket (`score`, `mean-score`,
+                    -- `overall` — registry rows flagged `catch_all`). Those
+                    -- carry a nominal higher-is-better that says nothing
+                    -- about the measurement, and it was overriding submitters
+                    -- who declared their own metric lower-is-better: a
+                    -- toxicity rate read as if more toxicity were better. A
+                    -- catch-all direction, like a NULL one, falls through to
+                    -- the row's declaration.
+                    CASE WHEN COALESCE(
+                             CAST(json_extract(cmet.metadata, '$.catch_all')
+                                  AS BOOLEAN), FALSE)
+                         THEN NULL ELSE cmet.lower_is_better END,
                     rr.metric_config.metric_name,
                     cmet.score_type
                 )                                                      AS _meta,
@@ -1346,7 +1618,14 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             FROM rr_tok rr
             LEFT JOIN canonical_benchmarks cb       ON cb.id = rr.benchmark_id
             LEFT JOIN canonical_models     cm_model ON cm_model.id = rr.model_id
-            LEFT JOIN canonical_metrics    cmet     ON cmet.id = rr.metric_id
+            -- Registry metric metadata comes from the RENAMED metric
+            -- (rename-at-resolution): bounds, direction and score_type all
+            -- describe the measurement the row actually reports.
+            LEFT JOIN canonical_metrics    cmet     ON cmet.id = COALESCE(rr.metric_id_effective, rr.metric_id)
+            LEFT JOIN benchmark_metric_folds bmf
+                   ON bmf.benchmark_id   = rr.benchmark_id
+                  AND bmf.from_metric_id = rr.metric_id
+                  AND bmf.source_config  = rr.source_config
             LEFT JOIN canonical_orgs       co_org   ON co_org.id = rr.org_id
             LEFT JOIN cards_raw            c        ON c.benchmark_id = rr.benchmark_id
             LEFT JOIN composite_config_map ccm
@@ -1361,7 +1640,57 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
                   AND ccm3.specificity = 3
                   AND ccm3.org_token = rr.org_token
                   AND ccm3.source_slug = rr._curated_source_slug
-        )
+        ),
+        judge_typed AS (
+            -- Judge condition, source 1 (D9): the typed `llm_scoring` struct.
+            -- `model_info.id` is required by the vendored EEE schema, so a
+            -- judge that reaches Stage D always has an id — no name fallback.
+            -- Resolve first, THEN dedupe and sort, so two raw spellings of one
+            -- judge collapse to a single canonical entry.
+            SELECT
+                j.fact_id,
+                list_sort(list_distinct(list_transform(
+                    list_filter(
+                        list_transform(j.metric_config.llm_scoring.judges,
+                                       jc -> jc.model_info.id),
+                        x -> x IS NOT NULL AND trim(x) <> ''
+                    ),
+                    x -> COALESCE(resolve_canonical_id(x, 'judge_model', j.source_config), x)
+                ))) AS judges
+            FROM joined j
+            WHERE j.metric_config.llm_scoring IS NOT NULL
+        ),
+        judge_fallback AS (
+            -- Judge condition, source 2 (D9): OpenEval's stringified
+            -- `metric_models_json`. The registry flag is about the
+            -- benchmark's PREFERRED metric only, so the gate is the row's
+            -- effective metric being that metric AND the flag being TRUE.
+            -- Anything else — an encoder backbone (CNN/DailyMail's DeBERTa),
+            -- a keyword detector published beside a judged channel — never
+            -- reaches the model resolver and never pollutes its miss
+            -- counters. Malformed JSON yields no condition and is counted
+            -- (see the diagnostic below), never fatal; `[]` is no judges.
+            SELECT
+                j.fact_id,
+                CASE
+                    WHEN {json_array_guard_sql(_MODELS_JSON)}
+                    THEN list_sort(list_distinct(list_transform(
+                        list_filter(
+                            json_extract_string({_MODELS_JSON}, '$[*]'),
+                            x -> x IS NOT NULL AND trim(x) <> ''
+                        ),
+                        x -> COALESCE(resolve_canonical_id(x, 'judge_model', j.source_config), x)
+                    )))
+                    ELSE NULL
+                END AS judges
+            FROM joined j
+            WHERE {_judge_gate_sql(
+                       "j._cb_preferred_metric_llm_judged",
+                       "j._cb_preferred_metric_id",
+                       "j.metric_id_effective", "j.metric_id")}
+              AND {_MODELS_JSON} IS NOT NULL
+        ),
+        flat AS (
         SELECT
             j.fact_id,
             j.evaluation_id, j.result_idx, j.evaluation_result_id,
@@ -1402,6 +1731,79 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             j.resolution_granularity,
             j.benchmark_raw, j.benchmark_id,
             j.slice_key,     j.slice_name,
+            -- Aggregation level of the submitted number, read off the raw
+            -- `evaluation_name`'s last dotted segment. Sources mark their own
+            -- rollups: `…overall` is the benchmark-level figure the publisher
+            -- stands behind, `…<group>_overall` a group rollup inside it
+            -- (global_mmlu's `fr_overall`), anything else one leaf task.
+            -- Stage J picks the coarsest level a cell actually has instead of
+            -- taking a median over whatever rows happen to be there, so a
+            -- page shows the publisher's own aggregate rather than a number
+            -- nobody reported. Resolution is untouched by this.
+            CASE
+                WHEN lower(trim(split_part(
+                         COALESCE(j.evaluation_name, ''), '.', -1))) = 'overall'
+                    THEN 'root'
+                WHEN ends_with(lower(trim(split_part(
+                         COALESCE(j.evaluation_name, ''), '.', -1))), '_overall')
+                    THEN 'subgroup'
+                ELSE 'leaf'
+            END                                                                          AS aggregate_level,
+            -- WHAT the row measured, relative to the benchmark it resolved
+            -- to: the WHOLE benchmark, or one PART inside it.
+            --
+            -- This comes from RESOLUTION, never from `slice_key`. `slice_key`
+            -- is a display axis minted whenever a benchmark sees more than
+            -- one raw spelling, so it lands on the total as readily as on the
+            -- parts: all 186 Apertus MMLU rows carry one, the three
+            -- extraction totals included. Classifying on it would leave MMLU,
+            -- MATH, INCLUDE and ACPBench with no whole observation at all.
+            --
+            -- The structured resolver already reports the subset it found,
+            -- and whether that subset is a real part or just a longer way of
+            -- spelling the benchmark (an exact curated alias — RealToxicity's
+            -- `.small` IS the benchmark; MMLU's `anatomy` is one subject).
+            -- A row with no real subset measured the whole thing.
+            --
+            -- There is no second clause for "resolved to a slice child": a
+            -- fact that resolves to a child is IN the child's cell, where it
+            -- is that child's own whole observation. Whole-vs-part is a
+            -- relation between a fact and its cell's benchmark, not a
+            -- property of the fact alone — which is what lets
+            -- `bfcl-v3-single-turn` be a whole of its own page and a part of
+            -- BFCL-v3.
+            resolve_structured_benchmark_subset(
+                j.evaluation_name, j.source_config)                                      AS benchmark_subset,
+            (resolve_structured_benchmark_subset(
+                j.evaluation_name, j.source_config) IS NOT NULL)                         AS is_part,
+            -- The same question with the third answer kept: `whole`, `part`,
+            -- or `unknown`. `is_part` is the two-way split (`part` vs the
+            -- rest) that decides which rows enter a value; this column
+            -- records whether resolution actually CHECKED, and is what the
+            -- cell's `value_level` label is built from.
+            --
+            -- `unknown` is every name neither path could verify. The
+            -- structured path declines anything flat or spaced, which is
+            -- most of HELM; those rows resolve through the plain alias
+            -- index, and only its byte-exact answer is a verification: the
+            -- registry spelling `MMLU All Subjects` as `mmlu`, as written,
+            -- makes the row a whole of `mmlu`, while `Anatomy` scoped to
+            -- HELM lands on the slice child `mmlu-anatomy` and is the whole
+            -- of THAT cell. A normalized or fuzzy hit says two spellings
+            -- probably mean one benchmark and nothing about what the row
+            -- measured, so a cell made of those is labelled a pooling. The
+            -- exact hit must name the benchmark the row was resolved to
+            -- (hotfixes and slice promotion can move a row afterwards).
+            resolve_benchmark_observation_role(
+                j.evaluation_name, j.source_config, j.benchmark_id)                      AS observation_role,
+            -- Which split of the dataset the run scored, as the row states
+            -- it. The `flat_split` CTE below fills in a total's split from
+            -- its record's part rows (the split is a property of the RUN,
+            -- and sources state it on the parts and leave the total bare);
+            -- what leaves this stage joins the comparability key (Stage F)
+            -- and the cell grain (Stage J), so a run on `test` and a run on
+            -- `train` are never compared or pooled as one.
+            json_extract_string(j.source_data, '$.hf_split')                             AS split,
             j.metric_raw,    j.metric_id,
             j.org_raw,       j.org_id,
             -- De-aliased eval-provider name. When the registry has a
@@ -1429,10 +1831,41 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             -- unchanged.
             COALESCE(j._cm_model_group_id, j.model_id, j.model_raw)                      AS model_aggregation_key,
             COALESCE(j.benchmark_id, j.benchmark_raw)                                    AS benchmark_key,
-            COALESCE(j.metric_id, j.metric_raw)                                          AS metric_key,
-            -- Fold-aware twin of metric_key: registry naming folds applied
-            -- (Stage C metric_id_effective); the merged view groups on this.
-            COALESCE(j.metric_id_effective, j.metric_raw)                                AS metric_key_effective,
+            -- Rename-at-resolution: the registry's per-benchmark rename rule
+            -- is already applied (Stage C `metric_id_effective`), so the
+            -- grouping/ranking/link key is the renamed metric. Fact-level
+            -- `metric_id` above stays PRE-rename — the rename lookup and the
+            -- resolution hotfixes key on it.
+            -- When the structured match reported a scoring-variant tail, it
+            -- joins the key: `gpqa.accuracy.diamond` and
+            -- `gpqa.accuracy.extended` are two readings of one metric, and
+            -- pooling them would median two different question sets into a
+            -- number neither run produced. The un-qualified identity stays
+            -- available as `metric_base_key` below, which is what every
+            -- registry lookup (bounds, direction, display name, the
+            -- benchmark's preferred metric) reads.
+            COALESCE(j.metric_id_effective, j.metric_raw)
+                || COALESCE('::' || j.metric_qualifier, '')                              AS metric_key,
+            -- Retained alias of metric_key so downstream SQL that binds the
+            -- fold-aware name keeps working; the two are the same identity.
+            COALESCE(j.metric_id_effective, j.metric_raw)
+                || COALESCE('::' || j.metric_qualifier, '')                              AS metric_key_effective,
+            -- The metric identity without the variant tail: the registry id
+            -- to look bounds, direction, display name and the benchmark's
+            -- preferred metric up by. Equal to `metric_key` for every row
+            -- that carries no qualifier, which is all but the structured ids
+            -- that spell one.
+            COALESCE(j.metric_id_effective, j.metric_raw)                                AS metric_base_key,
+            j.metric_qualifier                                                           AS metric_qualifier,
+            -- The source's own label for this published number. Display and
+            -- provenance only: never a join key, never aggregated at page
+            -- grain (one renamed metric can carry several source labels).
+            COALESCE(
+                j.metric_config.additional_details['raw_metric_name'],
+                j.metric_config.metric_name,
+                j.metric_config.metric_id,
+                j.metric_raw
+            )                                                                            AS metric_source_label,
 
             j._cb_parent_benchmark_id                                                   AS parent_benchmark_id,
             j._cm_parent_model_id                                                       AS parent_model_id,
@@ -1464,25 +1897,34 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             -- DuckDB when the parent struct is NULL).
             j.score_details.score                                                       AS score,
             j.score_details.uncertainty.standard_error.value                            AS score_se,
+            j.score_details.uncertainty.standard_deviation                              AS score_sd,
             j.score_details.uncertainty.confidence_interval.lower                       AS score_ci_lower,
             j.score_details.uncertainty.confidence_interval.upper                       AS score_ci_upper,
             j.score_details.uncertainty.confidence_interval.confidence_level            AS score_ci_level,
             CAST(j.score_details.uncertainty.num_samples AS INTEGER)                    AS n_samples,
 
             -- source / provenance
-            -- TEMPORARY upstream-data-quality fix (ported from the legacy
-            -- pipeline's PARTY_OVERRIDE_LLM_STATS_FIX): EEE's llm-stats config
-            -- carries `evaluator_relationship` from the aggregator's
-            -- perspective, but the underlying rows are model-maker self-reports
-            -- (raw_verified='false') vs aggregator-verified rescores
-            -- (raw_verified='true'). Reclassify on the row, not in the
-            -- frontend, so every consumer agrees. Remove once upstream EEE
-            -- emits the right value directly.
+            -- The submitter's own declaration is the answer. Every EEE record
+            -- carries `source_metadata.evaluator_relationship`, and a lab that
+            -- submits its own evaluation says `first_party`; overriding that
+            -- relabelled every submitter in the corpus as a third party.
+            --
+            -- ONE exception, scoped to the config that needs it (ported from
+            -- the legacy pipeline's PARTY_OVERRIDE_LLM_STATS_FIX): EEE's
+            -- llm-stats config carries the field from the aggregator's
+            -- perspective, but the underlying rows are model-maker
+            -- self-reports (raw_verified='false') vs aggregator-verified
+            -- rescores (raw_verified='true'). Reclassify those on the row, not
+            -- in the frontend, so every consumer agrees. Remove once upstream
+            -- EEE emits the right value for that config directly.
             CASE
                 WHEN j.source_config = 'llm-stats'
-                     AND j.metric_config.additional_details['raw_verified'] = 'false'
-                THEN 'first_party'
-                ELSE 'third_party'
+                THEN CASE
+                        WHEN j.metric_config.additional_details['raw_verified'] = 'false'
+                        THEN 'first_party'
+                        ELSE 'third_party'
+                     END
+                ELSE NULLIF(TRIM(j.source_metadata.evaluator_relationship), '')
             END                                                                          AS evaluator_relationship,
             -- Curated provenance flag: was this evaluation submitted by the org
             -- that ran it (vs re-hosted from another leaderboard). Joined from the
@@ -1555,17 +1997,416 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             -- collection-adapter synthetic rows, NULL for ordinary rows.
             cpm.protocol_condition                                                       AS protocol_condition,
 
-            j._card_payload AS card_payload
+            -- LLM-judge identity for this published number (D2): canonical
+            -- JSON with a fixed key order and the judge list sorted and
+            -- de-duplicated. NULL means "undisclosed", never "no judge".
+            -- Source 1 (typed llm_scoring) outranks source 2
+            -- (metric_models_json). Orthogonal to protocol_condition.
+            CASE
+                WHEN len(COALESCE(jt.judges, jf.judges)) > 0
+                THEN CAST(to_json({{
+                    'judges': COALESCE(jt.judges, jf.judges),
+                    'label':  metric_source_label
+                }}) AS VARCHAR)
+                ELSE NULL
+            END                                                                          AS judge_condition,
+
+            j._card_payload AS card_payload,
+
+            -- Scale-classifier inputs; dropped from the emitted table below.
+            j._eff_min_score,
+            j._eff_max_score,
+            j._scale_factor,
+            j._scale_offset
         FROM joined j
         LEFT JOIN is_verified_evaluator ev ON ev.evaluation_id = j.evaluation_id
         LEFT JOIN collection_merge_map cmm ON cmm.raw_key = j._collection_raw_key
         LEFT JOIN collection_protocol_map cpm
                ON cpm.evaluation_id = j.evaluation_id
               AND cpm.result_idx    = j.result_idx
-        """
+        LEFT JOIN judge_typed    jt ON jt.fact_id = j.fact_id
+        LEFT JOIN judge_fallback jf ON jf.fact_id = j.fact_id
+        ),
+        part_splits AS (
+            -- The split a record's rows state for one benchmark: the
+            -- record's own evidence about which split the run scored. The
+            -- split is a property of the RUN, and one record on one
+            -- benchmark is one run: Apertus stamps all 171 MMLU subject rows
+            -- `validation` and leaves the three extraction totals and the
+            -- twelve category rollups bare, and the same run produced all of
+            -- them. Rows that resolved to a registry slice child count as
+            -- parts of the parent (`_split_evidence_sql`), so a suite total
+            -- beside its children's rows reads their split as well.
+            {_part_splits_sql("flat")}
+        ),
+        flat_split AS (
+            -- A row that states no split inherits the one split its record's
+            -- rows on that benchmark agree on — the bare total from its
+            -- parts, a bare group rollup from its siblings. Rows that
+            -- disagree, or rows that state nothing, leave it unspecified
+            -- (NULL); the disagreeing records are named in the log
+            -- (`_log_split_inheritance`). A stated split is never
+            -- overridden. `split_source` records which happened.
+            SELECT f.* REPLACE (
+                CASE WHEN f.split IS NULL AND ps._n_part_splits = 1
+                     THEN ps._part_split
+                     ELSE f.split
+                END AS split
+            ),
+            CASE WHEN f.split IS NOT NULL THEN 'stated'
+                 WHEN ps._n_part_splits = 1 THEN 'inherited'
+            END AS split_source
+            FROM flat f
+            LEFT JOIN part_splits ps
+              ON ps.evaluation_id      IS NOT DISTINCT FROM f.evaluation_id
+             AND ps.source_record_path IS NOT DISTINCT FROM f.source_record_path
+             AND ps.benchmark_key      IS NOT DISTINCT FROM f.benchmark_key
+        ),
+        scale_grp AS (
+            -- Scale-suspect detection is per (source, benchmark, renamed
+            -- metric) GROUP; the group max is what tells a percent-scaled
+            -- publication apart from genuine fractions. Answer-feedback rows
+            -- are excluded from the max so an assisted run can't flip scale
+            -- detection for the pool.
+            --
+            -- On the BASE metric, not the variant-qualified key: a publisher
+            -- reports every variant of one metric on one scale, and splitting
+            -- the group by variant hides the evidence. SQuAD's no-answer arms
+            -- are genuinely 0.0, and alone in a group of their own they read
+            -- as fractions while the answerable arms at 44-64 read as
+            -- percents.
+            SELECT *,
+                MAX(score) FILTER (
+                    WHERE {protocol_exclusion_sql("protocol_condition")}
+                ) OVER (
+                    PARTITION BY composite_slug, benchmark_key, metric_base_key
+                ) AS _grp_max
+            FROM flat_split
+        ),
+        scale_class AS (
+            -- Canonical-scale classification, on facts so every later stage
+            -- (comparability grouping included) reads one already-canonical
+            -- number. Group-suspect, then per-row-only-where-unambiguous:
+            -- mixed groups (Vals.ai AIME: 99.583 percents next to genuine
+            -- 0.833 fractions) convert row-by-row; the 1-1.5 band under [0,1]
+            -- bounds is ambiguous and flagged, never guessed.
+            SELECT *,
+                CASE
+                    WHEN score IS NULL THEN NULL
+                    -- curated affine conversion from the registry's rename
+                    -- rule: a known fact, never detected, and range-checked on
+                    -- the affine RESULT rather than the multiplied score. The
+                    -- registry contract allows either half alone, so a rule
+                    -- with an offset and no factor is an identity-factor shift.
+                    WHEN _scale_factor IS NOT NULL OR _scale_offset IS NOT NULL THEN
+                        CASE
+                            WHEN _eff_min_score IS NULL OR _eff_max_score IS NULL
+                                THEN 'curated'
+                            WHEN score * COALESCE(_scale_factor, 1)
+                                 + COALESCE(_scale_offset, 0)
+                                 BETWEEN _eff_min_score AND _eff_max_score
+                                THEN 'curated'
+                            ELSE 'flagged'
+                        END
+                    WHEN _eff_min_score IS NULL OR _eff_max_score IS NULL
+                        THEN 'no_bounds'
+                    -- fraction-bounded metric, percent-looking group
+                    WHEN _eff_max_score <= 1.5 AND _grp_max > 1.5 THEN
+                        CASE
+                            WHEN score > 1.5
+                             AND score / 100.0
+                                 BETWEEN _eff_min_score AND _eff_max_score
+                                THEN 'div100'
+                            WHEN score
+                                 BETWEEN _eff_min_score AND _eff_max_score
+                                THEN 'none'
+                            ELSE 'flagged'
+                        END
+                    -- percent-bounded metric, whole group reported as fractions
+                    WHEN _eff_min_score = 0 AND _eff_max_score = 100
+                     AND _grp_max <= 1.0 THEN
+                        CASE
+                            WHEN score BETWEEN 0 AND 1.0 THEN 'mul100'
+                            ELSE 'flagged'
+                        END
+                    -- percent-bounded group topping out in (1, 1.5]:
+                    -- ambiguous fractions-vs-tiny-percents — never guess
+                    WHEN _eff_min_score = 0 AND _eff_max_score = 100
+                     AND _grp_max <= 1.5 THEN 'flagged'
+                    WHEN score BETWEEN _eff_min_score AND _eff_max_score
+                        THEN 'none'
+                    ELSE 'flagged'
+                END AS scale_conversion
+            FROM scale_grp
+        ),
+        scale_applied AS (
+            -- One affine pair per row drives score AND uncertainty:
+            -- score/CI endpoints take factor+offset, SE and SD take the
+            -- magnitude of the factor only, sample size is untouched.
+            -- 'flagged' gets no pair, so every canonical value is NULL.
+            SELECT *,
+                CASE scale_conversion
+                    WHEN 'div100'    THEN 0.01
+                    WHEN 'mul100'    THEN 100.0
+                    WHEN 'curated'   THEN COALESCE(_scale_factor, 1.0)
+                    WHEN 'none'      THEN 1.0
+                    WHEN 'no_bounds' THEN 1.0
+                    ELSE NULL
+                END AS _scale_mult,
+                CASE scale_conversion
+                    WHEN 'curated' THEN COALESCE(_scale_offset, 0)
+                    WHEN 'div100'  THEN 0.0
+                    WHEN 'mul100'  THEN 0.0
+                    WHEN 'none'    THEN 0.0
+                    WHEN 'no_bounds' THEN 0.0
+                    ELSE NULL
+                END AS _scale_off
+            FROM scale_class
+        )
+        SELECT * EXCLUDE (
+            _eff_min_score, _eff_max_score, _scale_factor, _scale_offset,
+            _grp_max, _scale_mult, _scale_off
+        ),
+            score          * _scale_mult + _scale_off AS score_canonical,
+            score_se       * abs(_scale_mult)         AS score_se_canonical,
+            score_sd       * abs(_scale_mult)         AS score_sd_canonical,
+            score_ci_lower * _scale_mult + _scale_off AS score_ci_lower_canonical,
+            score_ci_upper * _scale_mult + _scale_off AS score_ci_upper_canonical
+        FROM scale_applied
+    )"""
+    con.execute(
+        f"CREATE TABLE fact_results_staging AS "
+        f"SELECT {explicit_projection_sql(con, staging_body)} FROM {staging_body}"
     )
 
+    _log_malformed_metric_models(con)
+    _log_split_inheritance(con)
+    _log_flat_exact_wholes(con)
+
     _build_collection_keys(con, collection_raw_key, strict_collections)
+
+
+def _log_flat_exact_wholes(con, top_n: int = 20) -> None:
+    """Account for the flat-name rule in `resolve_benchmark_observation_role`:
+    how many facts per source are `whole` on the strength of a byte-exact
+    alias rather than a structured match, and — the guard — every (source,
+    benchmark) whose cells hold two or more DISTINCT such spellings. Two exact
+    spellings of the whole benchmark inside one (model, metric) cell are
+    either a real re-spelling of the total or a category alias the registry
+    still points at the parent instead of a child; the line exists so a
+    reader can tell which."""
+    rows = con.execute(
+        """
+        SELECT source_config, COUNT(*) AS n_facts,
+               COUNT(DISTINCT benchmark_key) AS n_benchmarks
+        FROM fact_results_staging
+        WHERE observation_role = 'whole'
+          AND benchmark_resolution_strategy = 'exact'
+        GROUP BY 1 ORDER BY n_facts DESC, 1
+        """
+    ).fetchall()
+    if not rows:
+        return
+    log.info(
+        "stage D: %d flat-name fact(s) across %d source(s) are whole on a "
+        "byte-exact alias of their benchmark",
+        sum(r[1] for r in rows), len(rows),
+    )
+    for source_config, n_facts, n_benchmarks in rows[:top_n]:
+        log.info("  flat exact whole: %s — %d fact(s), %d benchmark(s)",
+                 source_config, n_facts, n_benchmarks)
+    if len(rows) > top_n:
+        log.info("  ... and %d more source(s)", len(rows) - top_n)
+    multi = con.execute(
+        """
+        SELECT source_config, benchmark_key,
+               COUNT(*) AS n_cells,
+               MAX(n_spellings) AS max_spellings,
+               arg_max(spellings, n_spellings) AS example
+        FROM (
+            SELECT source_config, benchmark_key, model_aggregation_key,
+                   metric_key, protocol_condition, judge_condition, split,
+                   COUNT(DISTINCT benchmark_raw) AS n_spellings,
+                   list_sort(list_distinct(list(benchmark_raw))) AS spellings
+            FROM fact_results_staging
+            WHERE observation_role = 'whole'
+              AND benchmark_resolution_strategy = 'exact'
+            GROUP BY ALL
+        )
+        WHERE n_spellings > 1
+        GROUP BY 1, 2
+        ORDER BY n_cells DESC, 1, 2
+        """
+    ).fetchall()
+    if not multi:
+        return
+    log.warning(
+        "stage D: %d (source, benchmark) group(s) have cells holding 2+ "
+        "distinct flat exact-alias spellings classified whole — a leftover "
+        "category alias on the parent looks exactly like this",
+        len(multi),
+    )
+    for source_config, benchmark_key, n_cells, max_spellings, example in multi[:top_n]:
+        log.warning(
+            "  multi-spelling whole: %s / %s — %d cell(s), up to %d "
+            "spellings, e.g. %s",
+            source_config, benchmark_key, n_cells, max_spellings,
+            list(example)[:6],
+        )
+    if len(multi) > top_n:
+        log.warning("  ... and %d more group(s)", len(multi) - top_n)
+
+
+def _split_evidence_sql(src: str) -> str:
+    """The rows of `src` that observed a benchmark or a part of it, keyed by
+    that benchmark: every row keyed by its own benchmark (the total, the
+    subject rows, the group rollups of one run), and rows that resolved to a
+    registry slice child keyed a second time by the child's parent (a fact in
+    a child's cell is a part of the parent, which is how TruthfulQA-
+    multilingual's 31 language rows relate to its total). `split` is carried
+    as stated, NULLs included, so a caller can tell "rows that disagree" from
+    "rows that say nothing"."""
+    return f"""
+            SELECT evaluation_id, source_record_path,
+                   benchmark_key AS total_benchmark_key, split, is_part
+            FROM {src}
+            UNION ALL
+            SELECT evaluation_id, source_record_path,
+                   parent_benchmark_id AS total_benchmark_key, split, TRUE
+            FROM {src}
+            WHERE parent_benchmark_id IS NOT NULL
+              AND parent_benchmark_id <> benchmark_key"""
+
+
+def _part_splits_sql(src: str) -> str:
+    """Per (record, benchmark): how many distinct splits the record's rows on
+    that benchmark state, and the one split when they agree. The `flat_split`
+    CTE in Stage D reads `_n_part_splits = 1` as "a bare row inherits
+    `_part_split`". `_n_parts` counts the rows that are parts, so a caller
+    can tell a record with parts that say nothing from one with no parts."""
+    return f"""
+            SELECT evaluation_id, source_record_path,
+                   total_benchmark_key AS benchmark_key,
+                   CAST(COUNT(DISTINCT split) FILTER (WHERE split IS NOT NULL)
+                        AS INTEGER)                                AS _n_part_splits,
+                   CAST(COUNT(*) FILTER (WHERE is_part) AS INTEGER) AS _n_parts,
+                   MAX(split)                                       AS _part_split
+            FROM ({_split_evidence_sql(src)})
+            GROUP BY 1, 2, 3"""
+
+
+def _log_split_inheritance(con, top_n: int = 50) -> None:
+    """Account for the split-inheritance rule in `flat_split`.
+
+    One INFO line for how many rows took their split from the rest of their
+    record; one INFO line per record whose rows DISAGREE about the split (its
+    bare rows stay unspecified, and a reader should know which record to
+    look at); one summary line for records whose bare rows sit beside part
+    rows that state no split at all, which is the corpus norm and not worth
+    a line each."""
+    n_inherited, n_records = con.execute(
+        """
+        SELECT COUNT(*),
+               COUNT(DISTINCT struct_pack(e := evaluation_id,
+                                          p := source_record_path,
+                                          b := benchmark_key))
+        FROM fact_results_staging
+        WHERE split_source = 'inherited'
+        """
+    ).fetchone()
+    if n_inherited:
+        log.info(
+            "stage D: %d row(s) across %d record(s) inherited the split the "
+            "rest of their record states for the benchmark",
+            n_inherited, n_records,
+        )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _split_bare_totals AS
+        SELECT t.evaluation_id, t.benchmark_key, t.n_bare,
+               ps._n_part_splits, ps._n_parts,
+               list_sort(list_distinct(ev.splits)) AS part_splits
+        FROM (
+            SELECT evaluation_id, source_record_path, benchmark_key,
+                   CAST(COUNT(*) AS INTEGER) AS n_bare
+            FROM fact_results_staging
+            WHERE split IS NULL
+            GROUP BY 1, 2, 3
+        ) t
+        JOIN ({_part_splits_sql("fact_results_staging")}) ps
+          ON ps.evaluation_id      IS NOT DISTINCT FROM t.evaluation_id
+         AND ps.source_record_path IS NOT DISTINCT FROM t.source_record_path
+         AND ps.benchmark_key      IS NOT DISTINCT FROM t.benchmark_key
+        JOIN (
+            SELECT evaluation_id, source_record_path, total_benchmark_key,
+                   list(split) FILTER (WHERE split IS NOT NULL) AS splits
+            FROM ({_split_evidence_sql("fact_results_staging")})
+            GROUP BY 1, 2, 3
+        ) ev
+          ON ev.evaluation_id       IS NOT DISTINCT FROM t.evaluation_id
+         AND ev.source_record_path  IS NOT DISTINCT FROM t.source_record_path
+         AND ev.total_benchmark_key IS NOT DISTINCT FROM t.benchmark_key
+        """
+    )
+    disagree = con.execute(
+        "SELECT evaluation_id, benchmark_key, part_splits, n_bare "
+        "FROM _split_bare_totals WHERE _n_part_splits > 1 ORDER BY 1, 2"
+    ).fetchall()
+    for evaluation_id, benchmark_key, part_splits, n_bare in disagree[:top_n]:
+        log.info(
+            "stage D: record %s / %s: rows disagree on the split %s; "
+            "%d row(s) left with split unspecified",
+            evaluation_id, benchmark_key, list(part_splits), n_bare,
+        )
+    if len(disagree) > top_n:
+        log.info("stage D: ... and %d more record(s) with disagreeing "
+                 "splits", len(disagree) - top_n)
+    n_no_evidence = con.execute(
+        "SELECT COUNT(*) FROM _split_bare_totals "
+        "WHERE _n_part_splits = 0 AND _n_parts > 0"
+    ).fetchone()[0]
+    if n_no_evidence:
+        log.info(
+            "stage D: %d record(s) have bare rows beside part rows that "
+            "state no split; those rows stay unspecified", n_no_evidence,
+        )
+    con.execute("DROP TABLE _split_bare_totals")
+
+
+def _judge_gate_sql(flag: str, preferred_metric: str,
+                    metric_effective: str, metric_id: str) -> str:
+    """The source-2 judge gate: a row is eligible only when its effective
+    metric IS the benchmark's preferred metric and the registry marks that
+    metric LLM-judged. Shared by the extraction CTE and the malformed-JSON
+    diagnostic so the count always describes the rows extraction looked at."""
+    return (f"({flag} IS TRUE AND "
+            f"COALESCE({metric_effective}, {metric_id}) = {preferred_metric})")
+
+
+def _log_malformed_metric_models(con) -> None:
+    """Count the judge-condition fallback rows whose `metric_models_json`
+    isn't a JSON array. Those rows get a NULL judge condition rather than
+    aborting the run, so the count is the only signal an upstream source has
+    started emitting a shape we can't read."""
+    models_json = "rr.metric_config.additional_details['metric_models_json']"
+    n = con.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM results_resolved rr
+        JOIN canonical_benchmarks cb ON cb.id = rr.benchmark_id
+        WHERE {_judge_gate_sql("cb.preferred_metric_llm_judged",
+                               "cb.preferred_metric_id",
+                               "rr.metric_id_effective", "rr.metric_id")}
+          AND {models_json} IS NOT NULL
+          AND NOT COALESCE({json_array_guard_sql(models_json)}, FALSE)
+        """
+    ).fetchone()[0]
+    if n:
+        log.warning(
+            "stage D: %d row(s) carry a malformed metric_models_json on a "
+            "judged preferred metric; judge_condition left NULL for those "
+            "rows", n,
+        )
 
 
 def _build_collection_keys(
@@ -2050,6 +2891,22 @@ def _apply_composite_partitions(con, *, strict: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _divergence_rollup_sql(column: str) -> str:
+    """Roll a comparability-group divergence boolean up to a coarser grain.
+
+    Plain `BOOL_OR` ignores NULLs, so a group that could not be assessed
+    sitting next to one that agreed would surface as FALSE — a claim nobody
+    checked. A real divergence still wins; otherwise any contributing group
+    that is not `ok` collapses the rollup to NULL.
+    """
+    return (
+        f"CASE WHEN BOOL_OR({column}) THEN TRUE "
+        f"WHEN BOOL_OR(comparability_status IS NOT NULL "
+        f"AND comparability_status <> 'ok') THEN CAST(NULL AS BOOLEAN) "
+        f"ELSE BOOL_OR({column}) END"
+    )
+
+
 def stage_f_group_signals(con, snapshot_id: str) -> int:
     """Group-level signal pass. Two distinct groupings:
 
@@ -2118,32 +2975,41 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
         """
     )
 
-    # F.2 — comparability, per (model, benchmark, slice, metric).
+    # F.2 — comparability, per (model, benchmark, slice, metric,
+    # protocol, judge).
     #
-    # Per-group metric_config used by the divergence threshold MUST be
-    # deterministic across re-runs and consistent across all rows in the
-    # group. MAX FILTER picks the same value every time (vs `any_value`
-    # which is order-dependent). When the registry is sparse, the hotfix
-    # may produce different metric_unit values across rows in the same
-    # canonical metric — `n_metric_unit_distinct` surfaces those groups
-    # so the operator can target a registry-alias backfill at the right
-    # canonical metric.
+    # The group's scores are `score_canonical` — every row already placed
+    # on the renamed metric's scale in Stage D — and a row that could not
+    # be placed (NULL canonical) is not assessable and never reaches the
+    # UDFs.
+    #
+    # The bounds the threshold is computed against are the group's, not a
+    # per-field MAX across disagreeing rows: the renamed metric's registry
+    # bounds when it has a finite ordered pair, else the one record-declared
+    # pair the assessable rows agree on. Disagreement (`mixed_scale`) or no
+    # pair at all (`no_bounds`) means the group is NOT assessable — the UDFs
+    # are not called and every divergence field stays NULL, which is how a
+    # consumer tells "we could not compare" from "we compared and they
+    # agree".
     #
     # `slice_key` IS NOT DISTINCT FROM in the JOIN treats NULL slice_key
     # (single-raw benchmarks) as equal — a plain `=` would drop those
     # rows since SQL NULL = NULL is unknown. GROUP BY collapses NULL
-    # slice_keys to one group automatically, so the JOIN must mirror that.
+    # slice_keys to one group automatically, so the JOIN must mirror that;
+    # protocol_condition and judge_condition follow the same rule.
     con.execute(
         """
         CREATE TABLE fact_results_grouped_annotated AS
         WITH group_payloads AS (
-            -- protocol_condition joins the comparability key:
-            -- differing protocol points are distinct variants, displayed
-            -- unfolded, never averaged into one divergence pool. NULL
-            -- (ordinary rows) groups as one, exactly as slice_key does.
+            -- protocol_condition, judge_condition and split join the
+            -- comparability key: a different protocol point, a different LLM
+            -- judge or a different dataset split is a different measurement,
+            -- displayed unfolded, never averaged into one divergence pool.
+            -- NULL (ordinary rows / undisclosed judge / unstated split)
+            -- groups as one, exactly as slice_key does.
             SELECT
                 model_aggregation_key, benchmark_key, slice_key, metric_key,
-                protocol_condition,
+                protocol_condition, judge_condition, split,
                 -- ORDER BY fact_id is load-bearing for determinism: the
                 -- comparability UDFs that consume group_rows record
                 -- `differing_setup_fields` in first-seen order and build
@@ -2155,27 +3021,125 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
                 array_agg(struct_pack(
                     fact_id                  := fact_id,
                     evaluation_id            := evaluation_id,
-                    score                    := score,
+                    score                    := score_canonical,
                     generation_args          := generation_args_json,
                     evaluator_relationship   := evaluator_relationship,
                     source_organization_name := org_raw
-                ) ORDER BY fact_id) AS group_rows,
-                struct_pack(
-                    metric_kind := MAX(metric_kind) FILTER (WHERE metric_kind IS NOT NULL),
-                    metric_unit := MAX(metric_unit) FILTER (WHERE metric_unit IS NOT NULL),
-                    min_score   := MAX(min_score)   FILTER (WHERE min_score   IS NOT NULL),
-                    max_score   := MAX(max_score)   FILTER (WHERE max_score   IS NOT NULL)
-                ) AS metric_config
+                ) ORDER BY fact_id)
+                  FILTER (WHERE score_canonical IS NOT NULL) AS group_rows,
+                MAX(metric_kind) FILTER (WHERE metric_kind IS NOT NULL)
+                  AS _metric_kind,
+                -- Guard for the registry-bounds join below: an unresolved
+                -- metric's `metric_key` is its raw string, which must not
+                -- match a canonical id by coincidence.
+                BOOL_OR(metric_id IS NOT NULL) AS _metric_resolved,
+                -- The registry id behind the key, which a scoring-variant
+                -- qualifier would otherwise hide from the bounds join. It is
+                -- functionally determined by `metric_key`, so MAX picks the
+                -- one value the group has.
+                MAX(metric_base_key) AS _metric_base_key,
+                -- Record-declared bounds over the ASSESSABLE rows only. A
+                -- usable pair is present, finite and ordered; the COALESCE is
+                -- load-bearing, because `isfinite(NULL)` is NULL and an
+                -- unguarded `NOT (...)` would leave a bare row counted as
+                -- neither usable nor missing. `_n_bounds_missing` counts the
+                -- assessable rows that have no usable pair, so one shared pair
+                -- plus a bare row still reads as partial. The status tree
+                -- states its own finiteness requirement rather than trusting
+                -- Stage D's sanitisation or the registry loader's validation.
+                COUNT(DISTINCT struct_pack(lo := min_score, hi := max_score))
+                  FILTER (WHERE score_canonical IS NOT NULL
+                            AND COALESCE(isfinite(min_score), FALSE)
+                            AND COALESCE(isfinite(max_score), FALSE)
+                            AND max_score > min_score)     AS _n_record_bounds,
+                COUNT(*) FILTER (WHERE score_canonical IS NOT NULL
+                             AND NOT (COALESCE(isfinite(min_score), FALSE)
+                                      AND COALESCE(isfinite(max_score), FALSE)
+                                      AND max_score > min_score)) AS _n_bounds_missing,
+                MAX(min_score) FILTER (WHERE score_canonical IS NOT NULL
+                            AND COALESCE(isfinite(min_score), FALSE)
+                            AND COALESCE(isfinite(max_score), FALSE)
+                            AND max_score > min_score)     AS _record_min,
+                MAX(max_score) FILTER (WHERE score_canonical IS NOT NULL
+                            AND COALESCE(isfinite(min_score), FALSE)
+                            AND COALESCE(isfinite(max_score), FALSE)
+                            AND max_score > min_score)     AS _record_max
             FROM fact_results_grouped
-            GROUP BY 1, 2, 3, 4, 5
+            GROUP BY 1, 2, 3, 4, 5, 6, 7
+        ),
+        group_status AS (
+            -- Registry bounds of the renamed metric win outright;
+            -- otherwise the assessable rows must agree
+            -- on one record-declared pair. `min_score`/`max_score` on a fact
+            -- row is registry-then-record, so once the registry contributes
+            -- no usable bound the row's pair IS the record's own.
+            SELECT p.*,
+                CASE
+                    WHEN _reg_min IS NOT NULL AND _reg_max IS NOT NULL
+                        THEN 'ok'
+                    WHEN _n_record_bounds = 1 AND _n_bounds_missing = 0
+                        THEN 'ok'
+                    WHEN _n_record_bounds >= 1 THEN 'mixed_scale'
+                    ELSE 'no_bounds'
+                END AS comparability_status,
+                CASE WHEN _reg_min IS NOT NULL AND _reg_max IS NOT NULL
+                     THEN _reg_min
+                     WHEN _n_record_bounds = 1 AND _n_bounds_missing = 0
+                     THEN _record_min
+                END AS _bound_min,
+                CASE WHEN _reg_min IS NOT NULL AND _reg_max IS NOT NULL
+                     THEN _reg_max
+                     WHEN _n_record_bounds = 1 AND _n_bounds_missing = 0
+                     THEN _record_max
+                END AS _bound_max,
+                -- Threshold config, built from the CHOSEN bounds alone:
+                -- [0,1] is a proportion and [0,100] a percentage by
+                -- construction, so thresholds.py takes its two unit-keyed
+                -- bases from the interval itself. The record's own
+                -- `metric_unit` label is neither read nor rewritten.
+                struct_pack(
+                    metric_kind := _metric_kind,
+                    metric_unit := CASE
+                        WHEN _bound_min = 0 AND _bound_max = 1   THEN 'proportion'
+                        WHEN _bound_min = 0 AND _bound_max = 100 THEN 'percent'
+                    END,
+                    min_score   := _bound_min,
+                    max_score   := _bound_max
+                ) AS metric_config
+            FROM (
+                SELECT gp.*,
+                    -- The renamed metric's registry bounds: `metric_key` IS
+                    -- the effective metric id, so this is the same row Stage
+                    -- D read when it placed `score_canonical` on scale. A
+                    -- missing, non-finite (NaN or infinite) or inverted
+                    -- bound is no bound — a cached dimension table never
+                    -- validated by the current loader can still carry one.
+                    CASE WHEN COALESCE(isfinite(cmet.min_score), FALSE)
+                              AND COALESCE(isfinite(cmet.max_score), FALSE)
+                              AND cmet.max_score > cmet.min_score
+                         THEN cmet.min_score END AS _reg_min,
+                    CASE WHEN COALESCE(isfinite(cmet.min_score), FALSE)
+                              AND COALESCE(isfinite(cmet.max_score), FALSE)
+                              AND cmet.max_score > cmet.min_score
+                         THEN cmet.max_score END AS _reg_max
+                FROM group_payloads gp
+                LEFT JOIN canonical_metrics cmet
+                       ON cmet.id = gp._metric_base_key AND gp._metric_resolved
+            ) p
         ),
         group_annotations AS (
+            -- Only an `ok` group is compared; the rest keep NULL flags,
+            -- magnitudes and thresholds.
             SELECT
                 model_aggregation_key, benchmark_key, slice_key, metric_key,
-                protocol_condition,
-                compute_variant_divergence_udf(group_rows, metric_config)      AS variant,
-                compute_cross_party_divergence_udf(group_rows, metric_config)  AS cross_party
-            FROM group_payloads
+                protocol_condition, judge_condition, split, comparability_status,
+                CASE WHEN comparability_status = 'ok' THEN
+                    compute_variant_divergence_udf(group_rows, metric_config)
+                END AS variant,
+                CASE WHEN comparability_status = 'ok' THEN
+                    compute_cross_party_divergence_udf(group_rows, metric_config)
+                END AS cross_party
+            FROM group_status
         )
         SELECT
             fr.*,
@@ -2187,8 +3151,11 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
                 || md5(fr.benchmark_key)
                 || md5(COALESCE(fr.slice_key, ''))
                 || md5(fr.metric_key)
-                || md5(COALESCE(fr.protocol_condition, '')))
+                || md5(COALESCE(fr.protocol_condition, ''))
+                || md5(COALESCE(fr.judge_condition, ''))
+                || md5(COALESCE(fr.split, '')))
               AS comparability_group_id,
+            ga.comparability_status                 AS comparability_status,
             ga.variant.has_variant_divergence       AS has_variant_divergence,
             ga.variant.divergence_magnitude         AS variant_divergence_magnitude,
             ga.variant.threshold_used               AS variant_divergence_threshold,
@@ -2209,6 +3176,8 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
          AND ga.slice_key             IS NOT DISTINCT FROM fr.slice_key
          AND ga.metric_key            = fr.metric_key
          AND ga.protocol_condition    IS NOT DISTINCT FROM fr.protocol_condition
+         AND ga.judge_condition       IS NOT DISTINCT FROM fr.judge_condition
+         AND ga.split                 IS NOT DISTINCT FROM fr.split
         """
     )
 
@@ -2226,9 +3195,7 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
     # metric_key all NULL) — rare, since Stage C always extracts the
     # raw strings when the source carries them. Group signals are NULL
     # on these rows because there is no identity to pool against.
-    con.execute(
-        f"""
-        CREATE TABLE fact_results AS
+    fact_body = f"""(
         SELECT
             TIMESTAMP '{snapshot_id_to_sql(snapshot_id)}' AS snapshot_id,
             * EXCLUDE (card_payload, org_normalized_key, generation_args_json,
@@ -2246,6 +3213,7 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
             CAST(NULL AS VARCHAR)                              AS comparability_group_id,
             CAST(NULL AS BOOLEAN)                              AS is_multi_source,
             CAST(NULL AS BOOLEAN)                              AS first_party_only,
+            CAST(NULL AS VARCHAR)                              AS comparability_status,
             CAST(NULL AS BOOLEAN)                              AS has_variant_divergence,
             CAST(NULL AS DOUBLE)                               AS variant_divergence_magnitude,
             CAST(NULL AS DOUBLE)                               AS variant_divergence_threshold,
@@ -2262,7 +3230,10 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
         WHERE fr.model_aggregation_key IS NULL
            OR fr.benchmark_key         IS NULL
            OR fr.metric_key            IS NULL
-        """
+    )"""
+    con.execute(
+        f"CREATE TABLE fact_results AS "
+        f"SELECT {explicit_projection_sql(con, fact_body)} FROM {fact_body}"
     )
 
     # Defensive sanity check: the two UNION BY NAME arms above MUST have
@@ -2295,17 +3266,19 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
             f"UNION ALL BY NAME would otherwise silently NULL these out."
         )
 
-    # Operator-visible counter: which root-collapsed (model, benchmark,
-    # metric) groups had rows reporting more than one distinct
-    # metric_unit. Each such group's variant_threshold_basis was
-    # computed against the deterministic-but-not-row-matching unit
-    # picked by the F.2 MAX FILTER aggregation.
+    _log_comparability_status(con)
+
+    # Operator-visible counter, at the real comparability grain: groups whose
+    # rows disagree about metric_unit. The label no longer feeds the
+    # threshold (that comes from the group's chosen bounds), but a group that
+    # cannot agree on its own unit is a registry-backfill signal.
     n_unit_inconsistent = con.execute(
         """
         SELECT COUNT(*) FROM (
-            SELECT model_aggregation_key, benchmark_key, metric_key
+            SELECT model_aggregation_key, benchmark_key, slice_key, metric_key,
+                   protocol_condition, judge_condition, split
             FROM fact_results_grouped
-            GROUP BY 1, 2, 3
+            GROUP BY 1, 2, 3, 4, 5, 6, 7
             HAVING COUNT(DISTINCT metric_unit)
                    FILTER (WHERE metric_unit IS NOT NULL) > 1
         )
@@ -2314,12 +3287,61 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
     if n_unit_inconsistent:
         log.warning(
             "Stage F: %d comparability group(s) had >1 distinct metric_unit "
-            "across rows; the per-group threshold basis label may not match "
-            "every row's own unit. Backfill the registry's metric_unit for "
-            "the offending canonical metric to silence.",
+            "across rows. Backfill the registry's metric_unit for the "
+            "offending canonical metric to silence.",
             n_unit_inconsistent,
         )
     return n_unit_inconsistent
+
+
+def _log_comparability_status(con) -> None:
+    """Report the groups the divergence pass could not assess, and why.
+
+    `mixed_scale` means the assessable rows declared more than one bounds
+    pair (or only some of them declared one) on a metric the registry does
+    not bound; `no_bounds` means nobody declared one. Both leave every
+    divergence field NULL. The examples name a stable group id and the
+    distinct bounds pairs the operator has to reconcile — usually by giving
+    the renamed metric registry bounds. The example names the full grouping
+    grain (model, benchmark, slice, metric, protocol, judge), not just the
+    benchmark/metric pair the count is taken over.
+    """
+    rows = con.execute(
+        """
+        SELECT comparability_status,
+               COUNT(DISTINCT comparability_group_id)                AS n_groups,
+               COUNT(*)                                              AS n_rows,
+               MIN(comparability_group_id)                           AS example_group,
+               arg_min(model_aggregation_key
+                       || ' on ' || benchmark_key
+                       || '/' || COALESCE(slice_key, '-')
+                       || '/' || metric_key
+                       || ' protocol=' || COALESCE(protocol_condition, '-')
+                       || ' judge=' || COALESCE(judge_condition, '-')
+                       || ' split=' || COALESCE(split, '-'),
+                       comparability_group_id)                       AS example_pair
+        FROM fact_results_grouped_annotated
+        WHERE comparability_status IN ('mixed_scale', 'no_bounds')
+        GROUP BY 1
+        ORDER BY 1
+        """
+    ).fetchall()
+    for status, n_groups, n_rows, example_group, example_pair in rows:
+        bounds = con.execute(
+            """
+            SELECT DISTINCT min_score, max_score
+            FROM fact_results_grouped_annotated
+            WHERE comparability_group_id = ?
+            ORDER BY 1 NULLS FIRST, 2 NULLS FIRST
+            """,
+            [example_group],
+        ).fetchall()
+        log.warning(
+            "Stage F: %d comparability group(s) (%d row(s)) are not "
+            "assessable — %s. Example %s on %s, declared bounds: %s.",
+            n_groups, n_rows, status, example_group, example_pair,
+            ", ".join(f"[{lo}, {hi}]" for lo, hi in bounds),
+        )
 
 
 def snapshot_id_to_sql(snapshot_id: str) -> str:
@@ -3023,14 +4045,118 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+# fact_id makes the sort total — the five-column prefix ties for
+# multi-slice/multi-record triples and left row order (and thus the emitted
+# bytes) run-to-run unstable. Clustered on the EFFECTIVE metric identity
+# (metric_key), which is what every consumer groups and filters by. Shared
+# with Stage J's re-emit so the two writes agree on physical order.
+FACT_RESULTS_SORT_KEY = (
+    "(composite_slug, model_key, benchmark_id, metric_key, slice_key, fact_id)"
+)
+
+
+def _diagnostic_role_sql(metadata_expr: str) -> str:
+    """1 when the registry marks this metric's role `diagnostic`, else 0.
+
+    A diagnostic metric describes how a run went — cost, latency, response
+    length, degeneration, invalid-rate, rank, uncertainty — rather than how
+    well the model did the task. Ordering on this demotes them when a page's
+    headline metric is chosen automatically."""
+    return (
+        "CASE WHEN json_extract_string("
+        f"{metadata_expr}, '$.role') = 'diagnostic' THEN 1 ELSE 0 END"
+    )
+
+
+def _pooled_value_aggregates_sql(col: str, prefix: str) -> str:
+    """Every pooled statistic for one score column, over a cell's value rows.
+
+    Median AND mean are computed for both layers — the first-party value rows
+    and all of them — because which one the cell publishes depends on its
+    aggregation level and on whether any first-party row scored, and an
+    aggregate cannot branch on its own results. The outer SELECT picks.
+
+    `*_wmean_ok` is the weighting precondition: every value row carries an
+    `n_samples`, and they sum to something. A suite score weighted by sample
+    count is only meaningful when no part is missing its count — one absent
+    weight and the average silently becomes a different quantity.
+    """
+    parts: list[str] = []
+    for tag, flt in (
+        (
+            "fp",
+            f"_is_value_row AND evaluator_relationship = 'first_party' "
+            f"AND {col} IS NOT NULL",
+        ),
+        ("all", f"_is_value_row AND {col} IS NOT NULL"),
+    ):
+        parts += [
+            f"MEDIAN({col}) FILTER (WHERE {flt}) AS {prefix}_median_{tag}",
+            f"AVG({col}) FILTER (WHERE {flt}) AS {prefix}_mean_{tag}",
+            f"(SUM({col} * n_samples) FILTER (WHERE {flt} AND n_samples IS NOT NULL)"
+            f" / NULLIF(SUM(n_samples) FILTER (WHERE {flt} AND n_samples IS NOT NULL), 0))"
+            f" AS {prefix}_wmean_{tag}",
+            f"(COUNT(*) FILTER (WHERE {flt}) > 0"
+            f" AND COUNT(*) FILTER (WHERE {flt})"
+            f"   = COUNT(*) FILTER (WHERE {flt} AND n_samples IS NOT NULL)"
+            f" AND COALESCE(SUM(n_samples) FILTER (WHERE {flt}), 0) > 0)"
+            f" AS {prefix}_wmean_ok_{tag}",
+        ]
+    return ",\n                ".join(parts)
+
+
+def _pooled_value_pick_sql(prefix: str, alias: str = "ta") -> str:
+    """The number a cell publishes, out of `_pooled_value_aggregates_sql`.
+
+    A `derived` cell is the pipeline combining parts into a whole and takes
+    the mean; every other level is several submitted readings of one quantity
+    and takes the median. The first-party layer is preferred at both, by
+    falling through when it produced nothing.
+    """
+    fp_mean = (
+        f"CASE WHEN {alias}.{prefix}_wmean_ok_fp THEN {alias}.{prefix}_wmean_fp "
+        f"ELSE {alias}.{prefix}_mean_fp END"
+    )
+    all_mean = (
+        f"CASE WHEN {alias}.{prefix}_wmean_ok_all THEN {alias}.{prefix}_wmean_all "
+        f"ELSE {alias}.{prefix}_mean_all END"
+    )
+    return (
+        f"CASE WHEN {alias}._value_level = 'derived' "
+        f"     THEN COALESCE({fp_mean}, {all_mean}) "
+        f"     ELSE COALESCE({alias}.{prefix}_median_fp, {alias}.{prefix}_median_all) "
+        f"END"
+    )
+
+
+def _pooled_aggregation_pick_sql(prefix: str, alias: str = "ta") -> str:
+    """How that number was computed, for `value_aggregation`. NULL when only
+    one row went in — nothing was aggregated."""
+    use_fp = f"{alias}.{prefix}_mean_fp IS NOT NULL"
+    weighted = (
+        f"CASE WHEN {use_fp} THEN {alias}.{prefix}_wmean_ok_fp "
+        f"ELSE {alias}.{prefix}_wmean_ok_all END"
+    )
+    return (
+        f"CASE WHEN {alias}._n_value_rows <= 1 THEN NULL "
+        f"     WHEN {alias}._value_level = 'derived' "
+        f"     THEN CASE WHEN {weighted} THEN '{AGG_WEIGHTED_MEAN}' "
+        f"               ELSE '{AGG_MEAN}' END "
+        f"     ELSE '{AGG_MEDIAN}' END"
+    )
+
+
+def _qualify_sort_key(sort_key: str, alias: str) -> str:
+    """Prefix every bare column in a sort key with a table alias, for the
+    emit that joins fact_results to the headline map."""
+    return re.sub(r"(?<![\w.])(\w+)", rf"{alias}.\1", sort_key)
+
+
 def stage_i_emit_warehouse_parquets(con, out_dir: Path, snapshot_id: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     sid = snapshot_id_to_sql(snapshot_id)
     for table, sort_key in [
-        # fact_id makes the sort total — the four-column prefix ties for
-        # multi-slice/multi-record triples and left row order (and thus
-        # the emitted bytes) run-to-run unstable.
-        ("fact_results", "(composite_slug, model_key, benchmark_id, metric_id, slice_key, fact_id)"),
+        ("fact_results", FACT_RESULTS_SORT_KEY),
         ("benchmarks", "(composite_slug, benchmark_id)"),
         ("composites", "(composite_slug)"),
         ("families", "(family_id)"),
@@ -3039,7 +4165,8 @@ def stage_i_emit_warehouse_parquets(con, out_dir: Path, snapshot_id: str) -> Non
         path = out_dir / f"{table}.parquet"
         con.execute(
             f"""
-            COPY (SELECT * FROM {table} ORDER BY {sort_key} NULLS LAST)
+            COPY (SELECT {explicit_projection_sql(con, table)} FROM {table}
+                  ORDER BY {sort_key} NULLS LAST)
             TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)
             """
         )
@@ -3068,6 +4195,15 @@ def stage_i_emit_warehouse_parquets(con, out_dir: Path, snapshot_id: str) -> Non
     ).fetchone()[0]
     if n_traj:
         path = out_dir / "collection_trajectories.parquet"
+        # Tie-break digest over the row's own columns, in declared order and
+        # NULL-safe. `CAST(t AS VARCHAR)` would digest DuckDB's struct
+        # serialisation, an implementation detail that can respell between
+        # versions and silently reorder the file for identical data.
+        traj_digest = "md5(" + " || ".join(
+            f'md5(COALESCE(CAST(t."{c}" AS VARCHAR), \'\'))'
+            for c in (r[0] for r in con.execute(
+                "DESCRIBE SELECT * FROM collection_trajectories_raw").fetchall())
+        ) + ")"
         con.execute(
             f"""
             COPY (
@@ -3101,9 +4237,15 @@ def stage_i_emit_warehouse_parquets(con, out_dir: Path, snapshot_id: str) -> Non
                   ON ids.collection_id = t.collection_id
                  AND ids.model_raw     = t.model_raw
                  AND ids.source_config = t.benchmark_raw
+                -- Total order: the natural key is not unique (a task can
+                -- carry several unstitched pieces under one trajectory_idx,
+                -- and idx is NULL for some extractors), so the whole row is
+                -- the final tie-break. Without it two identical runs emit
+                -- the same rows in a different order.
                 ORDER BY t.collection_id, t.benchmark_raw, t.model_raw,
-                         t.protocol_condition, t.task_id, t.trajectory_idx
-                         NULLS LAST
+                         t.protocol_condition, t.task_id,
+                         t.trajectory_idx NULLS LAST,
+                         t.source_record_uuids, {traj_digest}
             )
             TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)
             """
@@ -3129,8 +4271,9 @@ def _ensure_merged_view_inputs(con) -> None:
 
 
 def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = None) -> None:
-    """Materialise `eval_results_view` — one row per (benchmark, metric, model)
-    triple. Foundation view: models_view + evals_view fan out from this.
+    """Materialise `eval_results_view` — one row per (composite, benchmark,
+    metric, model, protocol condition, judge condition, split). Foundation
+    view: models_view + evals_view fan out from this.
 
     The view is denormalised so the frontend's `ModelResultForBenchmark`
     cast is a no-op spread. JOINs onto `models`, `benchmarks`, and
@@ -3146,9 +4289,16 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
       evaluation_id ASC)`.
 
     **Position / total / percentile** — per `(benchmark_id, metric_id)`
-    partition, rows are ranked honouring `lower_is_better`. NULL-score
-    rows survive in the view (for coverage purposes) but are excluded
-    from `position` / `total`. `percentile` = `1 - (position-1) / (total-1)`.
+    partition, HEADLINE rows are ranked honouring `lower_is_better`.
+    Non-headline rows (extra judge conditions, extra protocol arms) and
+    NULL-score rows survive in the view for coverage purposes but are
+    excluded from `position` / `total`. `percentile` =
+    `1 - (position-1) / (total-1)`.
+
+    **Headline** — `fact_headline` (materialised here) maps every fact row
+    to the one condition row that represents its (composite, benchmark,
+    metric, model) cell. Every page-level rollup, here and in the sidecars,
+    filters on it.
     """
     sid = snapshot_id_to_sql(snapshot_id)
     _ensure_merged_view_inputs(con)
@@ -3173,13 +4323,19 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
         "  evaluator_relationship VARCHAR,"
         "  organization_name VARCHAR"
         "),"
+        # `comparability_status` is the group-level verdict behind both
+        # divergence blocks; `has_divergence` is NULL whenever it is not
+        # `ok`, and NULL there means "not assessable", never "no divergence".
+        "comparability_status VARCHAR,"
         "variant_divergence STRUCT("
+        "  has_divergence BOOLEAN,"
         "  magnitude DOUBLE,"
         "  threshold DOUBLE,"
         "  basis VARCHAR,"
         '  differing_fields STRUCT(field VARCHAR, "values" JSON)[]'
         "),"
         "cross_party_divergence STRUCT("
+        "  has_divergence BOOLEAN,"
         "  magnitude DOUBLE,"
         "  threshold DOUBLE,"
         "  basis VARCHAR,"
@@ -3204,15 +4360,69 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
         ")[]"
     )
 
+    # D6 scale-copy dedupe. A source that publishes one measurement twice —
+    # its own scale and an already-rescaled copy — leaves two fact rows that
+    # are one number. They collapse only when every other thing about the
+    # measurement matches (same source record, identity, slice, protocol,
+    # judge set, response count) and the converted copy lands on the
+    # unconverted one within 1e-6; the row that needed no conversion is the
+    # survivor. Anything looser would delete independent runs that merely
+    # agree (1023-vs-1024 responses, 509-vs-1024).
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE _erv_scale_copies AS
+        WITH cand AS (
+            SELECT fact_id, source_record_path, composite_slug, benchmark_key,
+                   metric_key, model_aggregation_key, slice_key,
+                   protocol_condition, split, scale_conversion, score_canonical,
+                   -- the judge SET, not the condition: the two copies carry
+                   -- the source's two labels for the same judged run
+                   CAST(json_extract(judge_condition, '$.judges') AS VARCHAR)
+                       AS _judges,
+                   json_extract_string(metric_additional_details,
+                                       '$.response_count') AS _responses
+            FROM fact_results
+            WHERE source_record_path IS NOT NULL
+              AND score_canonical IS NOT NULL
+              AND scale_conversion IN ('curated', 'none')
+        )
+        SELECT DISTINCT c.fact_id
+        FROM cand c
+        JOIN cand k
+          ON k.source_record_path    = c.source_record_path
+         AND k.composite_slug        = c.composite_slug
+         AND k.benchmark_key         = c.benchmark_key
+         AND k.metric_key            = c.metric_key
+         AND k.model_aggregation_key = c.model_aggregation_key
+         AND k.slice_key             IS NOT DISTINCT FROM c.slice_key
+         AND k.protocol_condition    IS NOT DISTINCT FROM c.protocol_condition
+         AND k.split                 IS NOT DISTINCT FROM c.split
+         AND k._judges               IS NOT DISTINCT FROM c._judges
+         -- both absent = one measurement reported twice; exactly one
+         -- absent = we cannot tell the runs apart, so keep both
+         AND k._responses            IS NOT DISTINCT FROM c._responses
+         AND k.scale_conversion = 'none'
+         AND c.scale_conversion = 'curated'
+         AND abs(k.score_canonical - c.score_canonical) <= 1e-6
+        """
+    )
+    n_scale_copies = con.execute(
+        "SELECT count(*) FROM _erv_scale_copies"
+    ).fetchone()[0]
+    if n_scale_copies:
+        log.info(
+            "stage J: dedupe dropped %d converted scale-copy fact row(s) in "
+            "favour of the source's own canonical-scale row", n_scale_copies,
+        )
+
+    # Condition-grain rows — one per (composite, model, benchmark, metric,
+    # protocol condition, judge condition, split), with the representative fact
+    # row attached. Its own table so the headline mapping below and the
+    # view itself read exactly the same rows.
     con.execute(
         f"""
-        CREATE TABLE eval_results_view AS
-        WITH benchmark_tags AS (
-            SELECT
-                composite_slug, benchmark_id,
-                resolve_benchmark_tags_udf(display_name, benchmark_id) AS derived_tags
-            FROM benchmarks
-        ),
+        CREATE OR REPLACE TEMP TABLE _erv_tri AS
+        WITH
         tris AS (
             -- Triples are at root grain: keyed on
             -- (composite_slug, model_aggregation_key, benchmark_key,
@@ -3224,28 +4434,203 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             -- raw otherwise — see Stage D's `joined` CTE).
             SELECT *
             FROM fact_results
-            WHERE model_aggregation_key IS NOT NULL
+            WHERE fact_id NOT IN (SELECT fact_id FROM _erv_scale_copies)
+              AND model_aggregation_key IS NOT NULL
               AND benchmark_key         IS NOT NULL
               AND metric_key            IS NOT NULL
               AND composite_slug        IS NOT NULL
         ),
+        cell_level AS (
+            -- Which submitted aggregation level speaks for this cell.
+            --
+            -- A page shows one number per (model, benchmark, metric,
+            -- conditions), and until now that number was a median over every
+            -- fact in the cell. Where a source publishes its own benchmark
+            -- total alongside the per-subject rows it was computed from, that
+            -- median is a number nobody reported: MMLU's three answer-
+            -- extraction totals plus 183 subject rows medianed to 0.750 where
+            -- the publisher reported 0.704.
+            --
+            -- The cell takes its WHOLE observations if it has any: rows that
+            -- measured the benchmark itself rather than a part of it. Several
+            -- of them are repeated measurements of one quantity — reruns,
+            -- repeated leaderboard records, MMLU's three answer-extraction
+            -- filters, MATH's two lm-eval tasks, GPQA's few-shot and
+            -- zero-shot arms — and pool by median.
+            --
+            -- Parts NEVER enter a whole's value. That is the defect this rule
+            -- exists for: MMLU's 183 subject rows used to median in with its
+            -- three totals and publish 0.750 where the source reported 0.704.
+            --
+            -- With no whole at all, the parts can still make one, but only
+            -- when the registry says what the benchmark consists of and every
+            -- one of those atomic children has a value here — then the suite
+            -- value is their mean (`_materialise_slice_parent_rows`).
+            -- Otherwise the rows pool as the pipeline always pooled them,
+            -- labelled `pooled_parts` so the page says the number is a
+            -- pooling of parts rather than anything the source published, and
+            -- the cell is named in the log.
+            --
+            -- `whole` is the LABEL, and it is claimed only where resolution
+            -- verified one: `observation_role = 'whole'`, not merely
+            -- `NOT is_part`. Most of HELM is neither — a flat or spaced name
+            -- the structured path declines to read resolves through the plain
+            -- alias index, which says nothing about what the row measured.
+            -- Those cells pool exactly as they always have and are labelled
+            -- `pooled` (or `single`, for a cell holding one row), so the page
+            -- stops asserting that 34 subjects are 34 readings of the whole.
+            --
+            -- `split` is part of the cell: a run on `test` and a run on
+            -- `validation` are two measurements, so they never pool. Stage D
+            -- has already given a bare total the split its own parts state,
+            -- so a source's total and the parts it was computed from land in
+            -- one cell; NULL (unstated) groups as one value like the other
+            -- condition columns.
+            SELECT composite_slug, model_aggregation_key, benchmark_key,
+                   metric_key, protocol_condition, judge_condition, split,
+                   CASE
+                       WHEN BOOL_OR(observation_role = 'whole'
+                                    AND score IS NOT NULL)
+                            THEN 'whole'
+                       {_cell_level_tail_sql()}
+                   END AS _value_level
+            FROM tris
+            GROUP BY 1, 2, 3, 4, 5, 6, 7
+        ),
+        tris_levelled AS (
+            SELECT t.*, cl._value_level,
+                   CASE cl._value_level
+                       -- the whole observations speak; the parts stay out
+                       WHEN 'whole'        THEN NOT t.is_part
+                       -- one row, which is its own value
+                       WHEN 'single'       THEN TRUE
+                       -- Nothing verified, so nothing is preferred: the
+                       -- unread rows pool as they always did. Parts stay out
+                       -- for the same reason they stay out of a whole — a
+                       -- subject row is known to be narrower than the rows
+                       -- beside it even when those rows are unread.
+                       WHEN 'pooled'       THEN NOT t.is_part
+                       -- no whole: every row pools, or none does
+                       WHEN 'pooled_parts' THEN TRUE
+                       ELSE FALSE
+                   END AS _is_value_row
+            FROM tris t
+            JOIN cell_level cl
+              ON cl.composite_slug        = t.composite_slug
+             AND cl.model_aggregation_key = t.model_aggregation_key
+             AND cl.benchmark_key         = t.benchmark_key
+             AND cl.metric_key            = t.metric_key
+             AND cl.protocol_condition    IS NOT DISTINCT FROM t.protocol_condition
+             AND cl.judge_condition       IS NOT DISTINCT FROM t.judge_condition
+             AND cl.split                 IS NOT DISTINCT FROM t.split
+        ),
         tri_agg AS (
-            -- protocol_condition joins the grouping key: one view
-            -- row per protocol point. NULL-condition rows (all ordinary
+            -- protocol_condition, judge_condition and split join the
+            -- grouping key: one view row per (protocol point, judge
+            -- condition, dataset split). NULL-condition rows (all ordinary
             -- sources) group exactly as before — DuckDB GROUP BY treats
-            -- NULLs as one group.
+            -- NULLs as one group. Reruns carrying the identical condition
+            -- still pool (median below).
             SELECT
                 composite_slug, model_aggregation_key, benchmark_key, metric_key,
-                protocol_condition,
-                CAST(COUNT(*) AS INTEGER) AS fact_row_count,
-                -- Median rule: prefer first-party scores; fall back to all rows.
-                COALESCE(
-                    MEDIAN(score) FILTER (
-                        WHERE evaluator_relationship = 'first_party'
+                protocol_condition, judge_condition, split,
+                -- Functionally determined by metric_key; carried so every
+                -- registry lookup downstream (bounds, display name, the
+                -- benchmark's preferred metric) reads the un-qualified id.
+                MAX(metric_base_key) AS metric_base_key,
+                MAX(metric_qualifier) AS metric_qualifier,
+                -- How many facts are in the cell at all, kept for the
+                -- diagnostic log; the view publishes the number of facts the
+                -- VALUE came from (see `_value_input_count`), which is what
+                -- `aggregate_components` lists.
+                CAST(COUNT(*) AS INTEGER) AS cell_fact_count,
+                _value_level,
+                -- How many facts the shown value was computed from, and
+                -- whether it is one fact's own number. Per-fact context
+                -- (uncertainty, generation config, record pointer) is only
+                -- true of the cell when it is: a median over several runs has
+                -- no single standard error or temperature.
+                CAST(COALESCE(
+                    COUNT(*) FILTER (
+                        WHERE _is_value_row
+                          AND evaluator_relationship = 'first_party'
                           AND score IS NOT NULL
                     ),
-                    MEDIAN(score) FILTER (WHERE score IS NOT NULL)
-                ) AS rep_score,
+                    0
+                ) AS INTEGER) AS _n_value_first_party,
+                CAST(COUNT(*) FILTER (
+                    WHERE _is_value_row AND score IS NOT NULL
+                ) AS INTEGER) AS _n_value_rows,
+                -- Pooled statistics over the value rows, on the PUBLISHED
+                -- scale. Only meaningful when every value row is on the same
+                -- scale — see `_n_value_scale_classes` below and the
+                -- `rep_score` that the outer SELECT derives from the two.
+                {_pooled_value_aggregates_sql("score", "_pub")},
+                -- How many conversion classes the value rows span. A win rate
+                -- published as 1 by one source and as 100 by another is one
+                -- measurement on two scales: their published median (50.5) is
+                -- a number on no scale at all. More than one class here means
+                -- the cell has no single published scale, and the canonical
+                -- one is the only scale its rows share.
+                -- Counted over the same rows the value came from, so the
+                -- first-party preference below applies to the scale question
+                -- too: 0 first-party rows means the fallback set decides.
+                COALESCE(
+                    NULLIF(CAST(COUNT(DISTINCT scale_conversion) FILTER (
+                        WHERE _is_value_row
+                          AND evaluator_relationship = 'first_party'
+                          AND score IS NOT NULL
+                    ) AS INTEGER), 0),
+                    CAST(COUNT(DISTINCT scale_conversion) FILTER (
+                        WHERE _is_value_row AND score IS NOT NULL
+                    ) AS INTEGER)
+                ) AS _n_value_scale_classes,
+                -- Canonical-scale twin, pooled the same way. Stage D already
+                -- placed every row on the renamed metric's registry scale, so
+                -- this view never re-derives a conversion.
+                {_pooled_value_aggregates_sql("score_canonical", "_can")},
+                -- The source's own label for the shown number, and how many
+                -- distinct labels went into it. A median over rows the source
+                -- named differently has no one label, so the view shows none.
+                arg_min(metric_source_label, fact_id)
+                    FILTER (WHERE _is_value_row AND metric_source_label IS NOT NULL)
+                                                         AS _value_metric_source_label,
+                CAST(COUNT(DISTINCT metric_source_label) FILTER (
+                    WHERE _is_value_row AND metric_source_label IS NOT NULL
+                ) AS INTEGER)                            AS _n_value_metric_source_labels,
+                -- The facts behind a derived value, for the row's
+                -- `aggregate_components`. Ordered by fact_id so the emitted
+                -- parquet is byte-stable.
+                ARRAY_AGG(struct_pack(
+                    evaluation_id          := evaluation_id,
+                    composite_slug         := composite_slug,
+                    composite_display_name := composite_display_name,
+                    score                  := score,
+                    normalized_score       := CAST(NULL AS DOUBLE),
+                    evaluation_timestamp   := {ts_cast_sql("evaluation_timestamp")},
+                    source_name            := org_display,
+                    source_type            := source_type,
+                    source_organization_name := org_raw,
+                    evaluator_relationship := evaluator_relationship
+                ) ORDER BY fact_id)
+                    FILTER (WHERE _is_value_row AND score IS NOT NULL)
+                                                         AS _value_components,
+                -- The triple's conversion class: the class the value rows
+                -- actually converted under, preferring a converted row over a
+                -- flagged one; arg_min on fact_id keeps the pick stable. The
+                -- first-party layer comes first for the same reason the value
+                -- prefers it — the label has to describe the number shown.
+                COALESCE(
+                    arg_min(scale_conversion, fact_id) FILTER (
+                        WHERE _is_value_row
+                          AND evaluator_relationship = 'first_party'
+                          AND score_canonical IS NOT NULL),
+                    arg_min(scale_conversion, fact_id)
+                        FILTER (WHERE _is_value_row AND score_canonical IS NOT NULL),
+                    arg_min(scale_conversion, fact_id)
+                        FILTER (WHERE _is_value_row AND score IS NOT NULL),
+                    arg_min(scale_conversion, fact_id)
+                ) AS _scale_conversion_rep,
                 BOOL_OR(evaluator_relationship = 'first_party') AS has_first_party,
                 BOOL_OR(evaluator_relationship = 'third_party') AS has_third_party,
                 -- ORDER BY the distinct expr so the array element order is
@@ -3280,8 +4665,24 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                                                          AS scores_by_organization,
                 MAX(is_multi_source)                     AS is_multi_source,
                 MAX(first_party_only)                    AS first_party_only,
-                BOOL_OR(has_variant_divergence)          AS has_variant_divergence,
-                BOOL_OR(has_cross_party_divergence)      AS has_cross_party_divergence,
+                -- A triple can span several comparability groups (slices,
+                -- which are not part of this grain).
+                -- Precedence mixed_scale > no_bounds > ok: the triple is
+                -- only as comparable as its least comparable group.
+                CASE
+                    WHEN BOOL_OR(comparability_status = 'mixed_scale') THEN 'mixed_scale'
+                    WHEN BOOL_OR(comparability_status = 'no_bounds')   THEN 'no_bounds'
+                    WHEN BOOL_OR(comparability_status = 'ok')          THEN 'ok'
+                END                                      AS comparability_status,
+                -- BOOL_OR alone drops NULLs, so a group that could not be
+                -- assessed next to one that agreed would read FALSE — "we
+                -- compared and they agree" about rows nobody compared. A
+                -- real divergence still wins; otherwise any non-`ok`
+                -- contributor collapses the rollup to NULL.
+                {_divergence_rollup_sql("has_variant_divergence")}
+                                                         AS has_variant_divergence,
+                {_divergence_rollup_sql("has_cross_party_divergence")}
+                                                         AS has_cross_party_divergence,
                 MAX(variant_divergence_magnitude)        AS variant_divergence_magnitude,
                 MAX(variant_divergence_threshold)        AS variant_divergence_threshold,
                 MAX(variant_threshold_basis)             AS variant_threshold_basis,
@@ -3297,9 +4698,10 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 MAX(cross_party_org_count)                  AS cross_party_org_count,
                 BOOL_OR(has_reproducibility_gap)         AS triple_has_repro_gap,
                 ROUND(AVG(completeness_score), 12)       AS triple_avg_completeness
-            FROM tris
+            FROM tris_levelled
             GROUP BY composite_slug, model_aggregation_key, benchmark_key,
-                     metric_key, protocol_condition
+                     metric_key, protocol_condition, judge_condition, split,
+                     _value_level
         ),
         tri_rep_ranked AS (
             -- Pick one representative fact row per triple.
@@ -3314,21 +4716,52 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             SELECT *,
                 ROW_NUMBER() OVER (
                     PARTITION BY composite_slug, model_aggregation_key,
-                                 benchmark_key, metric_key, protocol_condition
+                                 benchmark_key, metric_key, protocol_condition,
+                                 judge_condition, split
                     ORDER BY
+                        -- A row that did not contribute to the shown value
+                        -- cannot represent it; a cell with no value at all
+                        -- still keeps a representative for coverage.
+                        CASE WHEN _is_value_row THEN 0 ELSE 1 END ASC,
                         CASE WHEN score IS NULL THEN 1 ELSE 0 END ASC,
                         CASE WHEN evaluator_relationship = 'first_party' THEN 0 ELSE 1 END ASC,
                         evaluation_id ASC,
                         fact_id ASC
                 ) AS _rep_rank
-            FROM tris
+            FROM tris_levelled
         ),
         tri_rep AS (
             SELECT * FROM tri_rep_ranked WHERE _rep_rank = 1
-        ),
-        joined AS (
-            SELECT
+        )
+        SELECT
                 ta.*,
+                {_pooled_value_pick_sql("_can")} AS _score_canonical,
+                {_pooled_aggregation_pick_sql("_pub")} AS _value_aggregation,
+                -- The shown number and the scale it is on, decided together.
+                -- With one conversion class the cell publishes the source's
+                -- own number, as it always has. With several, no published
+                -- scale is shared by the rows, so the cell publishes the
+                -- canonical-scale value and says `mixed`; `score_published`
+                -- goes NULL further down, because no single number was ever
+                -- published for this cell.
+                CASE WHEN ta._n_value_scale_classes > 1
+                     THEN {_pooled_value_pick_sql("_can")}
+                     ELSE {_pooled_value_pick_sql("_pub")}
+                END                           AS rep_score,
+                CASE WHEN ta._n_value_scale_classes > 1
+                     THEN 'mixed'
+                     ELSE ta._scale_conversion_rep
+                END                           AS scale_conversion,
+                -- How many facts the shown value came from, after the
+                -- first-party preference inside the winning level.
+                CASE WHEN ta._n_value_first_party > 0
+                     THEN ta._n_value_first_party
+                     ELSE ta._n_value_rows
+                END                           AS fact_row_count,
+                (CASE WHEN ta._n_value_first_party > 0
+                      THEN ta._n_value_first_party
+                      ELSE ta._n_value_rows
+                 END) = 1                     AS _value_single_fact,
                 tr.collection_id              AS rep_collection_id,
                 tr.evaluation_id              AS rep_evaluation_id,
                 tr.fact_id                    AS rep_fact_id,
@@ -3349,9 +4782,20 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 tr.eval_library_name          AS rep_eval_library_name,
                 tr.eval_library_version       AS rep_eval_library_version,
                 tr.score_se                   AS rep_score_se,
+                tr.score_sd                   AS rep_score_sd,
                 tr.score_ci_lower             AS rep_ci_lower,
                 tr.score_ci_upper             AS rep_ci_upper,
                 tr.score_ci_level             AS rep_ci_level,
+                -- Uncertainty on the canonical scale (Stage D): CI endpoints
+                -- take the affine conversion, SE and SD its magnitude.
+                tr.score_se_canonical         AS rep_score_se_canonical,
+                tr.score_sd_canonical         AS rep_score_sd_canonical,
+                tr.score_ci_lower_canonical   AS rep_ci_lower_canonical,
+                tr.score_ci_upper_canonical   AS rep_ci_upper_canonical,
+                -- Source label of the representative published number. Kept
+                -- at row grain on purpose: one renamed metric can carry
+                -- several source labels, and there is no page-level answer.
+                tr.metric_source_label        AS rep_metric_source_label,
                 tr.n_samples                  AS rep_n_samples,
                 tr.lower_is_better            AS rep_lower_is_better,
                 tr.metric_unit                AS rep_metric_unit,
@@ -3379,7 +4823,173 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 tr.max_tokens                 AS rep_max_tokens,
                 tr.prompt_template            AS rep_prompt_template,
                 tr.reasoning                  AS rep_reasoning,
-                tr.generation_additional_details AS rep_generation_additional_details,
+                tr.generation_additional_details AS rep_generation_additional_details
+            FROM tri_agg ta
+            -- Explicit ON (not USING): protocol_condition is NULL for all
+            -- ordinary rows and USING-equality would drop them; IS NOT
+            -- DISTINCT FROM matches NULLs.
+            JOIN tri_rep tr
+              ON tr.composite_slug        = ta.composite_slug
+             AND tr.model_aggregation_key = ta.model_aggregation_key
+             AND tr.benchmark_key         = ta.benchmark_key
+             AND tr.metric_key            = ta.metric_key
+             AND tr.protocol_condition    IS NOT DISTINCT FROM ta.protocol_condition
+             AND tr.judge_condition       IS NOT DISTINCT FROM ta.judge_condition
+             AND tr.split                 IS NOT DISTINCT FROM ta.split
+        """
+    )
+
+    _log_cells_without_aggregate(con)
+
+    # Headline mapping: exactly one row per (composite, benchmark,
+    # metric_key, model) is the page's summary reading, chosen across BOTH
+    # condition axes and materialised at fact grain so every direct-fact
+    # consumer (subtasks, hierarchy slices, collection context, benchmark
+    # dominant conversion, peer ranks) reads the same pick instead of
+    # re-deriving it. Computed after condition-grain aggregation and before
+    # ranking; non-headline rows stay in the view, unranked.
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE fact_headline AS
+        WITH eligible AS (
+            -- Answer-feedback protocol arms are never headline (the
+            -- exclusion the ranking pool has always applied). Unscored rows
+            -- stay in: a cell whose only rows are unscored still needs one
+            -- representative row so coverage counts keep seeing it. Scored
+            -- rows outrank unscored ones in the pick below, so the choice
+            -- among scored rows is unaffected.
+            SELECT
+                composite_slug, benchmark_key, metric_key,
+                model_aggregation_key, protocol_condition, judge_condition,
+                split,
+                rep_score, rep_lower_is_better, scale_conversion, rep_fact_id,
+                -- The arm contest below is decided by comparing scores, so
+                -- it is decided on the canonical scale. `rep_score` keeps its
+                -- job of saying WHETHER an arm was scored at all — a row
+                -- whose scale could not be placed (`flagged`) still counts as
+                -- read, it just cannot be ranked.
+                _score_canonical,
+                -- 0 for an undisclosed judge. Only the panel/non-panel
+                -- split is ordered on (see the pick below); a single
+                -- disclosed judge and an undisclosed row tie here.
+                COALESCE(json_array_length(
+                    json_extract(judge_condition, '$.judges')), 0) AS _judge_n,
+                -- The judges alone, without the source's label for them. Two
+                -- labels over one judge set are one judge's coverage of the
+                -- page, not two; counting the label with it lets a raw
+                -- channel outvote the source's own rescaled copy of itself.
+                CAST(json_extract(judge_condition, '$.judges') AS VARCHAR)
+                    AS _judge_set
+            FROM _erv_tri
+            WHERE {protocol_exclusion_sql("protocol_condition")}
+        ),
+        coverage AS (
+            -- How many distinct models each judge SET has a score for on
+            -- this page.
+            SELECT composite_slug, benchmark_key, metric_key, _judge_set,
+                   CAST(COUNT(DISTINCT model_aggregation_key) AS INTEGER)
+                       AS _judge_models
+            FROM eligible
+            WHERE rep_score IS NOT NULL
+            GROUP BY 1, 2, 3, 4
+        ),
+        armed AS (
+            SELECT e.*, c._judge_models,
+                -- The protocol axis is settled per ARM, not per row: the
+                -- existing representative rule ranks a model's protocol
+                -- points by score, and the judge rules then choose inside
+                -- the winning arm. Comparing raw rows would let the
+                -- highest-scoring judge silently win the protocol contest.
+                MAX(CASE WHEN COALESCE(e.rep_lower_is_better, FALSE)
+                         THEN -e._score_canonical ELSE e._score_canonical END) OVER (
+                    PARTITION BY e.composite_slug, e.benchmark_key,
+                                 e.metric_key, e.model_aggregation_key,
+                                 e.protocol_condition
+                ) AS _arm_best,
+                -- an arm nobody scored can still be a cell's only arm
+                CASE WHEN e.rep_score IS NULL THEN 1 ELSE 0 END AS _unscored
+            FROM eligible e
+            LEFT JOIN coverage c
+                   ON c.composite_slug   = e.composite_slug
+                  AND c.benchmark_key    = e.benchmark_key
+                  AND c.metric_key       = e.metric_key
+                  AND c._judge_set       IS NOT DISTINCT FROM e._judge_set
+        ),
+        picked AS (
+            SELECT *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY composite_slug, benchmark_key, metric_key,
+                                 model_aggregation_key
+                    ORDER BY
+                        -- (0) a scored row always represents the cell
+                        _unscored ASC,
+                        -- (1) protocol axis, existing representative rule:
+                        -- an arm we could not read sorts after a known-clean
+                        -- one, then the best-scoring arm wins.
+                        CASE WHEN COALESCE(json_extract_string(
+                                 protocol_condition, '$.feedback'), 'none')
+                             = 'unknown' THEN 1 ELSE 0 END ASC,
+                        _arm_best DESC NULLS LAST,
+                        COALESCE(protocol_condition, '') ASC,
+                        -- (2) judge cardinality is a preference for PANELS
+                        -- only: a disclosed panel beats its members. A single
+                        -- disclosed judge and an undisclosed condition are
+                        -- equal here, so (3) coverage decides between them.
+                        CASE WHEN _judge_n > 1 THEN 0 ELSE 1 END ASC,
+                        CASE WHEN _judge_n > 1 THEN _judge_n ELSE 0 END DESC,
+                        -- (3) widest distinct-model coverage on the page,
+                        -- per judge set
+                        _judge_models DESC,
+                        -- (4) the source's own canonical-scale number over a
+                        -- converted one
+                        CASE WHEN scale_conversion = 'none' THEN 0 ELSE 1 END ASC,
+                        -- (5) / (6) deterministic finishers. Split has no
+                        -- preference of its own: two cells that differ only
+                        -- in split are two measurements, and which one heads
+                        -- the page is settled here, deterministically
+                        -- (unstated first), not by score.
+                        COALESCE(judge_condition, '') ASC,
+                        COALESCE(split, '') ASC,
+                        rep_fact_id ASC
+                ) AS _hl_rank
+            FROM armed
+        ),
+        winners AS (
+            SELECT composite_slug, benchmark_key, metric_key,
+                   model_aggregation_key, protocol_condition, judge_condition,
+                   split
+            FROM picked WHERE _hl_rank = 1
+        )
+        SELECT
+            f.fact_id,
+            CAST(w.composite_slug IS NOT NULL AND d.fact_id IS NULL AS BOOLEAN)
+                AS is_headline
+        FROM fact_results f
+        LEFT JOIN _erv_scale_copies d ON d.fact_id = f.fact_id
+        LEFT JOIN winners w
+               ON w.composite_slug        = f.composite_slug
+              AND w.benchmark_key         = f.benchmark_key
+              AND w.metric_key            = f.metric_key
+              AND w.model_aggregation_key = f.model_aggregation_key
+              AND w.protocol_condition    IS NOT DISTINCT FROM f.protocol_condition
+              AND w.judge_condition       IS NOT DISTINCT FROM f.judge_condition
+              AND w.split                 IS NOT DISTINCT FROM f.split
+        """
+    )
+
+    con.execute(
+        f"""
+        CREATE TABLE eval_results_view AS
+        WITH benchmark_tags AS (
+            SELECT
+                composite_slug, benchmark_id,
+                resolve_benchmark_tags_udf(display_name, benchmark_id) AS derived_tags
+            FROM benchmarks
+        ),
+        joined AS (
+            SELECT
+                ta.*,
+                COALESCE(fh.is_headline, FALSE) AS is_headline,
                 m.model_id                    AS m_model_id,
                 m.display_name                AS m_display_name,
                 m.developer                   AS m_developer,
@@ -3390,7 +5000,11 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 m.open_weights                AS m_open_weights,
                 m.input_modalities            AS m_input_modalities,
                 m.output_modalities           AS m_output_modalities,
-                cmet.display_name             AS metric_display_name,
+                -- The variant tail joins the display name too, so three
+                -- readings of one metric are distinguishable on the page.
+                cmet.display_name
+                    || COALESCE(' (' || ta.metric_qualifier || ')', '')
+                                              AS metric_display_name,
                 -- Registry bounds behind the view's min_score / max_score /
                 -- score_normalized. An infinite side (the registry's
                 -- "unbounded by definition") is folded to NULL here so
@@ -3399,19 +5013,6 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 -- normalise every score to 0.
                 CASE WHEN isinf(cmet.min_score) THEN NULL ELSE cmet.min_score END AS cmet_min_score,
                 CASE WHEN isinf(cmet.max_score) THEN NULL ELSE cmet.max_score END AS cmet_max_score,
-                -- Fold-aware effective metric (same derivation as Stage C's
-                -- metric_id_effective — the fold map is deterministic on
-                -- (benchmark_key, metric_key)) + its registry bounds for
-                -- canonical-scale conversion. Unmasked on purpose: NULL
-                -- bounds must stay NULL ('no_bounds'), not become [0,1].
-                -- An INFINITE bound (the registry's "unbounded by
-                -- definition") is likewise no bound for scale placement:
-                -- a [0, inf) metric can be neither a fraction nor a percent.
-                COALESCE(bmf.to_metric_id, ta.metric_key) AS metric_key_effective,
-                bmf.scale_factor              AS eff_scale_factor,
-                cmet_eff.lower_is_better      AS eff_lower_is_better,
-                CASE WHEN isinf(cmet_eff.min_score) THEN NULL ELSE cmet_eff.min_score END AS eff_min_score,
-                CASE WHEN isinf(cmet_eff.max_score) THEN NULL ELSE cmet_eff.max_score END AS eff_max_score,
                 b.parent_benchmark_id         AS b_parent_benchmark_id,
                 b.composite_display_name      AS b_composite_display_name,
                 b.family_id                   AS b_family_id,
@@ -3427,16 +5028,7 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 b.resources                   AS b_resources,
                 -- Parent benchmark's display name (dim self-join below).
                 pb.display_name               AS pb_display_name
-            FROM tri_agg ta
-            -- Explicit ON (not USING): protocol_condition is NULL for all
-            -- ordinary rows and USING-equality would drop them; IS NOT
-            -- DISTINCT FROM matches NULLs.
-            JOIN tri_rep tr
-              ON tr.composite_slug        = ta.composite_slug
-             AND tr.model_aggregation_key = ta.model_aggregation_key
-             AND tr.benchmark_key         = ta.benchmark_key
-             AND tr.metric_key            = ta.metric_key
-             AND tr.protocol_condition    IS NOT DISTINCT FROM ta.protocol_condition
+            FROM _erv_tri ta
             -- Join keys are root-grain. `models.model_key` is the
             -- transitive root id; `benchmarks.benchmark_id` and
             -- `canonical_metrics.id` are canonical ids — the LEFT JOIN
@@ -3454,138 +5046,94 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             -- roots included).
             LEFT JOIN benchmarks pb         ON pb.composite_slug = ta.composite_slug
                                             AND pb.benchmark_id  = b.parent_benchmark_id
-            LEFT JOIN canonical_metrics cmet ON cmet.id       = ta.metric_key
-            LEFT JOIN benchmark_metric_folds bmf
-                   ON bmf.benchmark_id   = ta.benchmark_key
-                  AND bmf.from_metric_id = ta.metric_key
-            LEFT JOIN canonical_metrics cmet_eff
-                   ON cmet_eff.id = COALESCE(bmf.to_metric_id, ta.metric_key)
+            -- `metric_key` is already the renamed identity (Stage C/D), so
+            -- this IS the effective metric's registry row — no fold
+            -- re-derivation, and no second metrics join.
+            LEFT JOIN canonical_metrics cmet ON cmet.id       = ta.metric_base_key
+            -- The headline pick is constant across a condition row's fact
+            -- rows, so the representative row's flag IS the row's flag.
+            LEFT JOIN fact_headline fh ON fh.fact_id = ta.rep_fact_id
         ),
-        rank_classed AS (
-            -- Protocol-aware ranking policy. The ranking partition stays
-            -- (composite, benchmark_key, metric_key), but the ranked pool
-            -- (a) applies the answer-feedback exclusion predicate and
-            -- (b) keeps at most one row per (model, protocol-NULL-vs-not)
-            -- class — the best-scoring protocol point represents the
-            -- model; the other protocol rows (and every answer-feedback
-            -- row) get NULL position/percentile and are never "rank 1".
-            -- Within a class, rows with an UNKNOWN feedback arm sort after
-            -- known-clean rows: an arm we couldn't determine must not
-            -- displace a known no-feedback run as the model's ranked row.
-            SELECT *,
-                (rep_score IS NOT NULL
-                 AND {protocol_exclusion_sql("protocol_condition")})
-                    AS _excl_pass,
-                ROW_NUMBER() OVER (
-                    PARTITION BY composite_slug, benchmark_key, metric_key,
-                                 model_aggregation_key,
-                                 (protocol_condition IS NULL),
-                                 (rep_score IS NOT NULL
-                                  AND {protocol_exclusion_sql("protocol_condition")})
-                    ORDER BY
-                        CASE WHEN rep_score IS NULL THEN 1 ELSE 0 END ASC,
-                        CASE WHEN COALESCE(json_extract_string(
-                                 protocol_condition, '$.feedback'), 'none')
-                             = 'unknown' THEN 1 ELSE 0 END ASC,
-                        CASE WHEN COALESCE(rep_lower_is_better, FALSE)
-                             THEN rep_score
-                             ELSE -rep_score
-                        END ASC,
-                        COALESCE(protocol_condition, '') ASC
-                ) AS _class_rk,
-                -- Scale-suspect detection is per (source, benchmark,
-                -- effective-metric) GROUP; the group max is what tells a
-                -- percent-scaled publication apart from genuine fractions.
-                -- Answer-feedback rows are excluded from the group max so
-                -- an assisted run can't flip scale detection for the pool.
-                MAX(rep_score) FILTER (
-                    WHERE {protocol_exclusion_sql("protocol_condition")}
-                ) OVER (
-                    PARTITION BY composite_slug, benchmark_key, metric_key_effective
-                ) AS eff_grp_max
+        contexted AS (
+            -- Per-fact context only survives when the cell's value IS one
+            -- fact's number. A median over MMLU's three extraction filters
+            -- has no single standard error, no one temperature and no one
+            -- source record: showing the representative fact's would present
+            -- one run's setup as the setup behind a pooled figure. Those
+            -- fields go NULL and `aggregate_components` lists the inputs
+            -- instead. The label follows the same rule with one relaxation:
+            -- a pool whose facts all carry the SAME source label keeps it.
+            SELECT * REPLACE (
+                CASE WHEN _value_single_fact THEN rep_score_se END
+                    AS rep_score_se,
+                CASE WHEN _value_single_fact THEN rep_score_sd END
+                    AS rep_score_sd,
+                CASE WHEN _value_single_fact THEN rep_ci_lower END
+                    AS rep_ci_lower,
+                CASE WHEN _value_single_fact THEN rep_ci_upper END
+                    AS rep_ci_upper,
+                CASE WHEN _value_single_fact THEN rep_ci_level END
+                    AS rep_ci_level,
+                CASE WHEN _value_single_fact THEN rep_score_se_canonical END
+                    AS rep_score_se_canonical,
+                CASE WHEN _value_single_fact THEN rep_score_sd_canonical END
+                    AS rep_score_sd_canonical,
+                CASE WHEN _value_single_fact THEN rep_ci_lower_canonical END
+                    AS rep_ci_lower_canonical,
+                CASE WHEN _value_single_fact THEN rep_ci_upper_canonical END
+                    AS rep_ci_upper_canonical,
+                CASE WHEN _value_single_fact THEN rep_n_samples END
+                    AS rep_n_samples,
+                CASE WHEN _value_single_fact THEN rep_temperature END
+                    AS rep_temperature,
+                CASE WHEN _value_single_fact THEN rep_top_p END
+                    AS rep_top_p,
+                CASE WHEN _value_single_fact THEN rep_top_k END
+                    AS rep_top_k,
+                CASE WHEN _value_single_fact THEN rep_max_tokens END
+                    AS rep_max_tokens,
+                CASE WHEN _value_single_fact THEN rep_prompt_template END
+                    AS rep_prompt_template,
+                CASE WHEN _value_single_fact THEN rep_reasoning END
+                    AS rep_reasoning,
+                CASE WHEN _value_single_fact
+                     THEN rep_generation_additional_details END
+                    AS rep_generation_additional_details,
+                CASE WHEN _value_single_fact THEN rep_source_record_path END
+                    AS rep_source_record_path,
+                CASE WHEN _value_single_fact THEN rep_instance_file_path END
+                    AS rep_instance_file_path,
+                CASE WHEN _value_single_fact THEN rep_instance_file_format END
+                    AS rep_instance_file_format,
+                CASE WHEN _value_single_fact THEN rep_instance_rows END
+                    AS rep_instance_rows,
+                CASE WHEN _n_value_metric_source_labels = 1
+                     THEN _value_metric_source_label END
+                    AS rep_metric_source_label
+            )
             FROM joined
         ),
-        conv AS (
-            -- Canonical-scale conversion (merged-view spec P3, design pt 5).
-            -- Group-suspect, then per-row-only-where-unambiguous: mixed
-            -- groups (Vals.ai AIME: 99.583 percents next to genuine 0.833
-            -- fractions) convert row-by-row; the 1–1.5 band under [0,1]
-            -- bounds is ambiguous and flagged, never guessed.
-            SELECT *,
-                CASE
-                    WHEN rep_score IS NULL THEN NULL
-                    -- curated published-scale factor on the fold: a known
-                    -- fact, never detected — overrides detection entirely
-                    WHEN eff_scale_factor IS NOT NULL THEN
-                        CASE
-                            WHEN eff_min_score IS NULL OR eff_max_score IS NULL
-                                THEN 'curated'
-                            WHEN rep_score * eff_scale_factor
-                                 BETWEEN eff_min_score AND eff_max_score
-                                THEN 'curated'
-                            ELSE 'flagged'
-                        END
-                    WHEN eff_min_score IS NULL OR eff_max_score IS NULL
-                        THEN 'no_bounds'
-                    -- fraction-bounded metric, percent-looking group
-                    WHEN eff_max_score <= 1.5 AND eff_grp_max > 1.5 THEN
-                        CASE
-                            WHEN rep_score > 1.5
-                             AND rep_score / 100.0
-                                 BETWEEN eff_min_score AND eff_max_score
-                                THEN 'div100'
-                            WHEN rep_score
-                                 BETWEEN eff_min_score AND eff_max_score
-                                THEN 'none'
-                            ELSE 'flagged'
-                        END
-                    -- percent-bounded metric, whole group reported as fractions
-                    WHEN eff_min_score = 0 AND eff_max_score = 100
-                     AND eff_grp_max <= 1.0 THEN
-                        CASE
-                            WHEN rep_score BETWEEN 0 AND 1.0 THEN 'mul100'
-                            ELSE 'flagged'
-                        END
-                    -- percent-bounded group topping out in (1, 1.5]:
-                    -- ambiguous fractions-vs-tiny-percents — never guess
-                    WHEN eff_min_score = 0 AND eff_max_score = 100
-                     AND eff_grp_max <= 1.5 THEN 'flagged'
-                    WHEN rep_score BETWEEN eff_min_score AND eff_max_score
-                        THEN 'none'
-                    ELSE 'flagged'
-                END AS scale_conversion
-            FROM rank_classed
-        ),
-        conv2 AS (
-            SELECT *,
-                CASE scale_conversion
-                    WHEN 'div100'    THEN rep_score / 100.0
-                    WHEN 'mul100'    THEN rep_score * 100.0
-                    WHEN 'curated'   THEN rep_score * eff_scale_factor
-                    WHEN 'none'      THEN rep_score
-                    WHEN 'no_bounds' THEN rep_score
-                    ELSE NULL
-                END AS _score_canonical
-            FROM conv
-        ),
         ranked AS (
-            -- Rank the pool within (composite_slug, benchmark_key,
+            -- Rank the headline pool within (composite_slug, benchmark_key,
             -- metric_key), honouring lower_is_better, ON THE CANONICAL
             -- SCALE: sources within one partition can publish mixed units
             -- (Scale SEAL hle percents next to AISI fractions) and a
-            -- raw-score rank would order a 0.625 below a 2.72(%). Rows
-            -- whose scale is 'flagged' (unplaceable on the canonical
-            -- scale) leave the pool with the other exclusions. Rows
-            -- outside the pool get position=NULL; `total` counts pool
-            -- rows only.
+            -- raw-score rank would order a 0.625 below a 2.72(%).
+            -- `is_headline` already carries the answer-feedback exclusion
+            -- and the one-row-per-model pick across both condition axes; an
+            -- unscored headline row (a cell nobody scored keeps one, so
+            -- coverage counts still see it) and rows whose scale is 'flagged'
+            -- (unplaceable on the canonical scale) leave the pool on top
+            -- of that. Rows outside the pool get position=NULL; `total`
+            -- counts pool rows only.
             SELECT *,
                 CASE
-                    WHEN NOT (_excl_pass AND _class_rk = 1
+                    WHEN NOT (is_headline AND rep_score IS NOT NULL
                               AND scale_conversion IS DISTINCT FROM 'flagged')
                         THEN NULL
                     ELSE CAST(ROW_NUMBER() OVER (
                         PARTITION BY composite_slug, benchmark_key, metric_key,
-                                     (_excl_pass AND _class_rk = 1
+                                     (is_headline AND rep_score IS NOT NULL
                                       AND scale_conversion IS DISTINCT FROM 'flagged')
                         ORDER BY
                             CASE WHEN _score_canonical IS NULL THEN 1 ELSE 0 END ASC,
@@ -3593,17 +5141,16 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                                  THEN _score_canonical
                                  ELSE -_score_canonical
                             END ASC,
-                            model_aggregation_key ASC,
-                            COALESCE(protocol_condition, '') ASC
+                            model_aggregation_key ASC
                     ) AS INTEGER)
                 END AS position,
-                CAST(SUM(CASE WHEN _excl_pass AND _class_rk = 1
+                CAST(SUM(CASE WHEN is_headline AND rep_score IS NOT NULL
                               AND scale_conversion IS DISTINCT FROM 'flagged'
                          THEN 1 ELSE 0 END)
                      OVER (
                     PARTITION BY composite_slug, benchmark_key, metric_key
                 ) AS INTEGER) AS total
-            FROM conv2
+            FROM contexted
         )
         SELECT
             TIMESTAMP '{sid}' AS snapshot_id,
@@ -3632,6 +5179,24 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                  THEN COALESCE(pb_display_name, b_parent_benchmark_id)
                  ELSE NULL END                                   AS parent_benchmark_display_name,
             metric_key                                           AS metric_id,
+            -- The registry id behind `metric_id` once a scoring-variant tail
+            -- is appended, plus the tail itself. Equal to `metric_id` /
+            -- NULL on every row that carries no qualifier.
+            metric_base_key                                      AS metric_base_id,
+            metric_qualifier,
+            -- Which submitted aggregation level produced this row's value:
+            -- `root` the source's own benchmark total, `subgroup` its group
+            -- rollups, `single` a lone observation, `derived` a rollup this
+            -- pipeline computed from slice children, `none` a cell left
+            -- without a value because only task-level rows exist.
+            _value_level                                         AS value_level,
+            -- How the shown number was computed from its inputs, and — on a
+            -- suite row rolled up from registry task children — how much of
+            -- the expected task set went into it. NULL on an ordinary row:
+            -- there is no task set to be complete about.
+            _value_aggregation                                   AS value_aggregation,
+            CAST(NULL AS INTEGER)                                AS children_present,
+            CAST(NULL AS INTEGER)                                AS children_expected,
             model_aggregation_key                                AS model_key,
             m_model_id                                           AS model_id,
             url_encode_udf(model_aggregation_key)                AS model_route_id,
@@ -3761,15 +5326,29 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             b_derived_tags                                        AS derived_tags,
             COALESCE(cmet_min_score, 0)                           AS min_score,
             COALESCE(cmet_max_score, 1)                           AS max_score,
+            -- Normalised against the renamed metric's registry bounds, on
+            -- the CANONICAL score: normalising a published 1-10 WildBench
+            -- number against [0, 1] would clamp every model to 1.
             CASE
-                WHEN (COALESCE(cmet_max_score, 1) - COALESCE(cmet_min_score, 0)) <= 0 THEN 0
+                -- A cell with no value has no normalised value either. Without
+                -- this guard the clamp turns a NULL score into 1.0 — a cell the
+                -- pipeline declined to score would read as a perfect one.
+                WHEN _score_canonical IS NULL THEN NULL
+                -- No registry bounds (absent, or infinite by definition) means
+                -- no scale to normalise against, and there is no default one:
+                -- clamping an Arena Elo of 945-1620 into [0, 1] reported every
+                -- Arena model as a perfect 1.0. NULL says "not normalisable",
+                -- and AVG skips it, so the page average covers only the rows
+                -- that really have a scale.
+                WHEN cmet_min_score IS NULL OR cmet_max_score IS NULL THEN NULL
+                WHEN (cmet_max_score - cmet_min_score) <= 0 THEN 0
                 WHEN COALESCE(rep_lower_is_better, FALSE)
                     THEN GREATEST(0, LEAST(1,
-                        1.0 - (rep_score - COALESCE(cmet_min_score, 0))
-                              / (COALESCE(cmet_max_score, 1) - COALESCE(cmet_min_score, 0))))
+                        1.0 - (_score_canonical - cmet_min_score)
+                              / (cmet_max_score - cmet_min_score)))
                 ELSE GREATEST(0, LEAST(1,
-                    (rep_score - COALESCE(cmet_min_score, 0))
-                    / (COALESCE(cmet_max_score, 1) - COALESCE(cmet_min_score, 0))))
+                    (_score_canonical - cmet_min_score)
+                    / (cmet_max_score - cmet_min_score)))
             END                                                   AS score_normalized,
             regexp_replace(
                 regexp_replace(metric_summary_id_udf(benchmark_key, metric_key),
@@ -3777,18 +5356,43 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                 '_(acc|accuracy|score|value|result)$', '', 'i'
             )                                                     AS metric_pair_key,
 
-            rep_score                                             AS score,
+            -- Displayed score. A `curated` conversion is a registry-stated
+            -- fact about the source's scale (WildBench's 1-10 rating IS
+            -- wb-score on [0, 1]), so the canonical number is the one to
+            -- show and the published one moves to `score_published`. Every
+            -- other class — including a detected div100/mul100 — keeps
+            -- publishing the source's own number, as it always has.
+            -- Uncertainty follows the same rule, from the canonical columns.
+            -- A `mixed` cell already carries the canonical value in
+            -- `rep_score` (its rows share no published scale), so `score` is
+            -- that value and `score_published` is NULL — there is no one
+            -- number the sources published for this cell.
+            CASE WHEN scale_conversion = 'curated'
+                 THEN _score_canonical ELSE rep_score END       AS score,
+            CASE WHEN scale_conversion = 'mixed'
+                 THEN NULL ELSE rep_score END                   AS score_published,
             CAST({{
-                'score':             rep_score,
-                'standard_error':    rep_score_se,
+                'score':             CASE WHEN scale_conversion = 'curated'
+                                          THEN _score_canonical ELSE rep_score END,
+                'standard_error':    CASE WHEN scale_conversion = 'curated'
+                                          THEN rep_score_se_canonical
+                                          ELSE rep_score_se END,
+                'standard_deviation': CASE WHEN scale_conversion = 'curated'
+                                          THEN rep_score_sd_canonical
+                                          ELSE rep_score_sd END,
                 'sample_size':       rep_n_samples,
                 'confidence_interval': {{
-                    'lower':             rep_ci_lower,
-                    'upper':             rep_ci_upper,
+                    'lower':             CASE WHEN scale_conversion = 'curated'
+                                              THEN rep_ci_lower_canonical
+                                              ELSE rep_ci_lower END,
+                    'upper':             CASE WHEN scale_conversion = 'curated'
+                                              THEN rep_ci_upper_canonical
+                                              ELSE rep_ci_upper END,
                     'confidence_level':  rep_ci_level
                 }}
             }} AS STRUCT(
-                score DOUBLE, standard_error DOUBLE, sample_size INTEGER,
+                score DOUBLE, standard_error DOUBLE, standard_deviation DOUBLE,
+                sample_size INTEGER,
                 confidence_interval STRUCT(
                     lower DOUBLE, upper DOUBLE, confidence_level DOUBLE
                 )
@@ -3898,12 +5502,19 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             is_summary_score_udf(metric_id, rep_parent_benchmark_id, benchmark_id)
                 AS is_summary_score,
             rep_parent_benchmark_id AS summary_score_for,
-            CAST(NULL AS {aggregate_components_type}) AS aggregate_components,
+            -- The facts the shown value was computed from, listed whenever it
+            -- is a median over more than one of them. A one-fact value needs
+            -- no component list: the row's own context IS the fact's.
+            CASE WHEN _value_single_fact
+                 THEN CAST(NULL AS {aggregate_components_type})
+                 ELSE CAST(_value_components AS {aggregate_components_type})
+            END AS aggregate_components,
 
             triple_has_repro_gap        AS has_reproducibility_gap,
             triple_avg_completeness     AS completeness_score,
             is_multi_source,
             first_party_only,
+            comparability_status,
             has_variant_divergence,
             has_cross_party_divergence,
 
@@ -3918,13 +5529,16 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
                     'evaluator_relationship': rep_evaluator_relationship,
                     'organization_name':      rep_org_raw
                 }},
+                'comparability_status': comparability_status,
                 'variant_divergence': {{
+                    'has_divergence':   has_variant_divergence,
                     'magnitude':        variant_divergence_magnitude,
                     'threshold':        variant_divergence_threshold,
                     'basis':            variant_threshold_basis,
                     'differing_fields': variant_differing_fields
                 }},
                 'cross_party_divergence': {{
+                    'has_divergence':     has_cross_party_divergence,
                     'magnitude':          cross_party_divergence_magnitude,
                     'threshold':          cross_party_divergence_threshold,
                     'basis':              cross_party_threshold_basis,
@@ -3938,12 +5552,29 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             rep_instance_rows        AS instance_rows,
 
             -- Merged-view columns (spec P2/P3). `score_canonical` is on the
-            -- effective metric's registry scale; raw `score` is never
+            -- renamed metric's registry scale; raw `score` is never
             -- overwritten. Flagged rows get NULL (never guessed);
             -- no_bounds rows pass through unconverted.
-            metric_key_effective     AS metric_id_effective,
+            -- `metric_id_effective` is retained as an alias of the view's
+            -- `metric_id`: rename-at-resolution made them one identity.
+            metric_key               AS metric_id_effective,
             scale_conversion,
             _score_canonical         AS score_canonical,
+            rep_score_se_canonical   AS score_se_canonical,
+            rep_score_sd_canonical   AS score_sd_canonical,
+            rep_ci_lower_canonical   AS score_ci_lower_canonical,
+            rep_ci_upper_canonical   AS score_ci_upper_canonical,
+            -- The source's own label for the representative published
+            -- number, and the LLM-judge identity behind it. Both are row
+            -- grain: a renamed metric can carry several of each.
+            rep_metric_source_label  AS metric_source_label,
+            judge_condition,
+            -- Summary eligibility: exactly one TRUE per (composite,
+            -- benchmark, metric_id, model). Non-headline rows keep NULL
+            -- position/total/percentile and are excluded from every
+            -- page-level rollup; they stay in the view so a judge or
+            -- protocol arm is still readable next to the headline reading.
+            is_headline,
 
             -- Collections (collections spec): submission-channel tag
             -- (representative fact row's; never NULL on fact rows) and this
@@ -3951,11 +5582,474 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             -- sorted-key JSON for collection-adapter rows. One view row per
             -- protocol point.
             rep_collection_id        AS collection_id,
-            protocol_condition
+            protocol_condition,
+            -- The dataset split this row's facts scored (Stage D, stated or
+            -- inherited from the record's parts); the third condition column
+            -- of the row grain. NULL when no fact in the cell stated one.
+            split
         FROM ranked
-        ORDER BY metric_summary_id, model_key, protocol_condition
+        ORDER BY metric_summary_id, model_key, protocol_condition,
+                 judge_condition, split, is_headline DESC, rep_fact_id
         """
     )
+
+    _materialise_slice_parent_rows(con, snapshot_id, aggregate_components_type)
+
+
+def _materialise_slice_parent_rows(
+    con, snapshot_id: str, aggregate_components_type: str
+) -> None:
+    """Give a benchmark whose task variants are registry slice children a
+    row of its own, averaged over those children — but only when they are all
+    there.
+
+    When the registry models a suite's variants as separate canonical
+    benchmarks carrying `parent_benchmark_id` (BFCL-v3's 14 categories,
+    RealGuardrails' three sub-benchmarks), every fact resolves to a child and
+    the parent has none. `evals_view` drops fact-less shells, so the suite
+    disappears from the product entirely — 14 category pages and no BFCL-v3.
+
+    What makes a suite number sayable here, and not for a loose pile of task
+    rows, is that the registry states the expected task set: the parent's
+    children ARE the benchmark. So the row is emitted per (composite, model,
+    metric, protocol condition, judge condition) only when EVERY registry
+    child of that parent has a value in that cell. `children_expected` and
+    `children_present` are published on the row so a reader sees the
+    denominator, and a cell that falls short is logged as partial coverage and
+    gets no row: a mean over 13 of 14 categories is a different quantity from
+    BFCL-v3, and nothing on the page would say so.
+
+    The value is a MEAN, not a median. These are the parts of one benchmark
+    being combined into a whole, not repeated readings of one quantity, and
+    the average of the parts is what a suite score is. It is weighted by
+    `n_samples` when every child carries one — a 50-item category should not
+    count as much as a 2,000-item one — and unweighted otherwise;
+    `value_aggregation` says which. `aggregate_components` lists the children,
+    `fact_row_count` is how many there were, and every per-fact context field
+    is NULL: no fact of the parent's own exists to describe.
+
+    A parent that DOES publish this cell itself keeps its own number and gains
+    nothing here (TruthfulQA-multilingual submits a multilingual total next to
+    its 31 language children), so no child is ever counted twice into a number
+    the source already reported. That suppression is per condition — a parent
+    row under one judge says nothing about the same cell under another.
+    """
+    sid = snapshot_id_to_sql(snapshot_id)
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _erv_parent_candidates AS
+        WITH child_of AS (
+            -- The expected task set, straight from the registry: every direct
+            -- child of the parent, whether or not this composite happens to
+            -- carry data for it. Reading the composite-scoped `benchmarks`
+            -- dim instead would make the denominator whatever arrived, which
+            -- is exactly the question the coverage gate asks.
+            --
+            -- Membership role. A child the registry marks
+            -- `metadata.role = "aggregate"` is not a part of the benchmark —
+            -- it is the source's own rollup OVER other children, so averaging
+            -- it with them counts those results twice. BFCL-v3 is the case:
+            -- `bfcl-v3-single-turn` is Swiss AI's aggregate over the 13
+            -- single-turn categories, published next to them. It keeps its
+            -- own child row and its own page; it just does not enter the
+            -- parent's expected set, its coverage, or its mean. A
+            -- `diagnostic` child is excluded for the opposite reason: it
+            -- measures a different quantity under the parent's name (BFCL's
+            -- format-sensitivity spread), so averaging it with the parts
+            -- would mix units.
+            SELECT id            AS child_benchmark_id,
+                   parent_benchmark_id
+            FROM canonical_benchmarks
+            WHERE parent_benchmark_id IS NOT NULL
+              AND parent_benchmark_id <> id
+              AND COALESCE(json_extract_string(metadata, '$.role'), '')
+                  NOT IN ('aggregate', 'diagnostic')
+        ),
+        expected AS (
+            SELECT parent_benchmark_id,
+                   CAST(COUNT(*) AS INTEGER) AS children_expected
+            FROM child_of
+            GROUP BY 1
+        ),
+        child_cells AS (
+            SELECT erv.composite_slug, c.parent_benchmark_id,
+                   erv.model_key, erv.metric_id, erv.metric_base_id,
+                   erv.metric_qualifier,
+                   erv.protocol_condition, erv.judge_condition, erv.split,
+                   erv.benchmark_id, erv.evaluation_id, erv.model_info,
+                   erv.score, erv.score_canonical, erv.score_normalized,
+                   erv.score_details.sample_size AS n_samples,
+                   erv.lower_is_better, erv.metric_unit, erv.metric_display_name,
+                   erv.min_score, erv.max_score, erv.scale_conversion,
+                   erv.composite_display_name, erv.evaluation_timestamp,
+                   erv.evaluator_relationships, erv.has_first_party,
+                   erv.has_third_party, erv.reporting_orgs,
+                   erv.evaluator_display_name, erv.is_verified_evaluator,
+                   erv.collection_id, erv.source_metadata
+            FROM eval_results_view erv
+            JOIN child_of c
+              ON c.child_benchmark_id = erv.benchmark_id
+            -- Every condition row of the child, not only its headline one:
+            -- the parent is built per condition, so the children that count
+            -- towards a judge are the ones that published under that judge.
+            WHERE erv.score IS NOT NULL
+        ),
+        rolled AS (
+            -- One parent row per (composite, model, metric, protocol
+            -- condition, judge condition, split) — the same grain every other
+            -- row on this view has. The conditions are part of the
+            -- measurement, not decoration: MT-Bench's children judged by
+            -- three different judges are three readings, and medianing them
+            -- into one row under a blank judge presents a number no judge
+            -- produced and feeds it to the merged best-result and the
+            -- comparison index as though it were comparable. Children run on
+            -- different splits likewise never average into one suite value.
+            SELECT
+                composite_slug, parent_benchmark_id, model_key, metric_id,
+                protocol_condition, judge_condition, split,
+                MAX(metric_base_id)       AS metric_base_id,
+                MAX(metric_qualifier)     AS metric_qualifier,
+                -- Same scale rule as the cell rollup: children published on
+                -- different scales share only the canonical one, and an
+                -- average over their published numbers lands on no scale.
+                CAST(COUNT(DISTINCT scale_conversion) AS INTEGER)
+                                          AS _n_scale_classes,
+                -- The suite value: the mean of its parts, sample-weighted
+                -- when every part says how many samples it covers.
+                (COUNT(*) = COUNT(n_samples) AND COALESCE(SUM(n_samples), 0) > 0)
+                                          AS _weighted,
+                AVG(score)                AS _score_published_mean,
+                SUM(score * n_samples) / NULLIF(SUM(n_samples), 0)
+                                          AS _score_published_wmean,
+                AVG(score_canonical)      AS _score_canonical_mean,
+                SUM(score_canonical * n_samples) / NULLIF(SUM(n_samples), 0)
+                                          AS _score_canonical_wmean,
+                AVG(score_normalized)     AS _score_normalized_mean,
+                SUM(score_normalized * n_samples) / NULLIF(SUM(n_samples), 0)
+                                          AS _score_normalized_wmean,
+                CAST(COUNT(DISTINCT benchmark_id) AS INTEGER) AS children_present,
+                CAST(COUNT(*) AS INTEGER) AS fact_row_count,
+                BOOL_OR(COALESCE(lower_is_better, FALSE)) AS lower_is_better,
+                MAX(metric_unit)          AS metric_unit,
+                MAX(metric_display_name)  AS metric_display_name,
+                MAX(min_score)            AS min_score,
+                MAX(max_score)            AS max_score,
+                MAX(composite_display_name) AS composite_display_name,
+                arg_min(model_info, benchmark_id)       AS model_info,
+                arg_min(scale_conversion, benchmark_id) AS _scale_conversion_rep,
+                arg_min(evaluation_timestamp, benchmark_id) AS evaluation_timestamp,
+                arg_min(evaluator_relationships, benchmark_id) AS evaluator_relationships,
+                arg_min(reporting_orgs, benchmark_id) AS reporting_orgs,
+                BOOL_OR(has_first_party)  AS has_first_party,
+                BOOL_OR(has_third_party)  AS has_third_party,
+                arg_min(evaluator_display_name, benchmark_id) AS evaluator_display_name,
+                BOOL_OR(is_verified_evaluator) AS is_verified_evaluator,
+                arg_min(collection_id, benchmark_id) AS collection_id,
+                arg_min(source_metadata, benchmark_id) AS source_metadata,
+                ARRAY_AGG(struct_pack(
+                    evaluation_id          := evaluation_id,
+                    composite_slug         := composite_slug,
+                    composite_display_name := composite_display_name,
+                    score                  := score,
+                    normalized_score       := score_normalized,
+                    evaluation_timestamp   := evaluation_timestamp,
+                    source_name            := evaluator_display_name,
+                    source_type            := source_metadata.source_type,
+                    source_organization_name := source_metadata.source_organization_name,
+                    evaluator_relationship := source_metadata.evaluator_relationship
+                ) ORDER BY benchmark_id) AS aggregate_components
+            FROM child_cells
+            GROUP BY 1, 2, 3, 4, 5, 6, 7
+            HAVING COUNT(*) > 0
+        )
+        SELECT r.* EXCLUDE (_score_published_mean, _score_published_wmean,
+                            _score_canonical_mean, _score_canonical_wmean,
+                            _score_normalized_mean, _score_normalized_wmean,
+                            _n_scale_classes, _scale_conversion_rep, _weighted),
+            e.children_expected,
+            CASE WHEN r._weighted THEN '{AGG_WEIGHTED_MEAN}'
+                 ELSE '{AGG_MEAN}' END AS value_aggregation,
+            (CASE WHEN r._weighted THEN r._score_canonical_wmean
+                  ELSE r._score_canonical_mean END) AS score_canonical,
+            (CASE WHEN r._weighted THEN r._score_normalized_wmean
+                  ELSE r._score_normalized_mean END) AS score_normalized,
+            CASE WHEN r._n_scale_classes > 1
+                 THEN (CASE WHEN r._weighted THEN r._score_canonical_wmean
+                            ELSE r._score_canonical_mean END)
+                 ELSE (CASE WHEN r._weighted THEN r._score_published_wmean
+                            ELSE r._score_published_mean END)
+            END AS score,
+            CASE WHEN r._n_scale_classes > 1
+                 THEN 'mixed' ELSE r._scale_conversion_rep
+            END AS scale_conversion,
+            -- Exactly one headline row per (composite, parent, metric, model),
+            -- the invariant every page-level rollup relies on. Among a
+            -- parent's condition rows the one built from the most children
+            -- speaks for the suite; the rest stay readable next to it,
+            -- unranked, like any other condition row. A parent that reports
+            -- the cell itself under ANY condition already has its headline
+            -- row (`fact_headline`), so no derived row may claim a second
+            -- one: derived rows under the other conditions stay readable,
+            -- unranked.
+            ROW_NUMBER() OVER (
+                PARTITION BY r.composite_slug, r.parent_benchmark_id,
+                             r.model_key, r.metric_id
+                ORDER BY r.fact_row_count DESC,
+                         COALESCE(r.protocol_condition, '') ASC,
+                         COALESCE(r.judge_condition, '') ASC,
+                         COALESCE(r.split, '') ASC
+            ) = 1
+            AND NOT EXISTS (
+                SELECT 1 FROM eval_results_view erv
+                WHERE erv.composite_slug = r.composite_slug
+                  AND erv.benchmark_id   = r.parent_benchmark_id
+                  AND erv.model_key      = r.model_key
+                  AND erv.metric_id      = r.metric_id
+            ) AS _is_headline
+        FROM rolled r
+        JOIN expected e ON e.parent_benchmark_id = r.parent_benchmark_id
+        -- A parent that reports this cell itself keeps its own number — but
+        -- only for the condition it published it under. A parent row under
+        -- one judge says nothing about the same cell under another, so the
+        -- suppression is per condition, with NULL-safe equality so ordinary
+        -- condition-less rows still match each other.
+        --
+        -- Split is the one condition where NULL is weaker than a value: an
+        -- unstated split on the source's own total is no evidence that the
+        -- total and its children ran on different data (TruthfulQA-
+        -- multilingual's total sits in its own record, its 31 language rows
+        -- in theirs, all stamped `val`), and a derived mean beside it would
+        -- count the same results twice. So a bare total suppresses the
+        -- derived row under every split; a total that STATES a split
+        -- suppresses only its own.
+        WHERE NOT EXISTS (
+            SELECT 1 FROM eval_results_view erv
+            WHERE erv.composite_slug = r.composite_slug
+              AND erv.benchmark_id   = r.parent_benchmark_id
+              AND erv.model_key      = r.model_key
+              AND erv.metric_id      = r.metric_id
+              AND erv.protocol_condition IS NOT DISTINCT FROM r.protocol_condition
+              AND erv.judge_condition    IS NOT DISTINCT FROM r.judge_condition
+              AND (erv.split IS NULL OR erv.split IS NOT DISTINCT FROM r.split)
+        )
+        """
+    )
+    # The coverage gate. A mean over 13 of BFCL-v3's 14 categories is a
+    # different quantity from BFCL-v3, and nothing on the page would say so,
+    # so the short cell gets no row at all — and a line naming it, because a
+    # missing category is usually a data or seed question worth answering.
+    _log_partial_parent_coverage(con)
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE _erv_parent_rows AS
+        SELECT * EXCLUDE (children_present, children_expected),
+               children_present, children_expected
+        FROM _erv_parent_candidates
+        WHERE children_present = children_expected
+        """
+    )
+    n_parent = con.execute("SELECT count(*) FROM _erv_parent_rows").fetchone()[0]
+    if not n_parent:
+        return
+    con.execute(
+        f"""
+        INSERT INTO eval_results_view BY NAME
+        SELECT
+            TIMESTAMP '{sid}' AS snapshot_id,
+            url_encode_udf(r.composite_slug || '/' || r.parent_benchmark_id)
+                                                        AS evaluation_id,
+            metric_summary_id_udf(r.parent_benchmark_id, r.metric_id)
+                                                        AS metric_summary_id,
+            r.composite_slug,
+            r.composite_display_name,
+            r.parent_benchmark_id                       AS benchmark_id,
+            b.family_id, b.family_display_name,
+            FALSE                                       AS is_slice,
+            CAST(NULL AS VARCHAR)                       AS parent_benchmark_id,
+            CAST(NULL AS VARCHAR)                       AS parent_benchmark_display_name,
+            r.metric_id,
+            r.metric_base_id,
+            r.metric_qualifier,
+            'derived'                                   AS value_level,
+            r.model_key,
+            r.model_info.id                             AS model_id,
+            url_encode_udf(r.model_key)                 AS model_route_id,
+            r.model_info,
+            r.metric_display_name,
+            r.metric_unit,
+            r.lower_is_better,
+            resolve_benchmark_tags_udf(b.display_name, b.benchmark_id) AS derived_tags,
+            r.min_score, r.max_score,
+            r.score_normalized,
+            regexp_replace(
+                regexp_replace(
+                    metric_summary_id_udf(r.parent_benchmark_id, r.metric_id),
+                    '_(stderr|std_err|standard_error)$', '', 'i'),
+                '_(acc|accuracy|score|value|result)$', '', 'i'
+            )                                           AS metric_pair_key,
+            r.score,
+            CASE WHEN r.scale_conversion = 'mixed'
+                 THEN NULL ELSE r.score END             AS score_published,
+            CAST({{
+                'score':             r.score,
+                'standard_error':    NULL,
+                'standard_deviation': NULL,
+                'sample_size':       NULL,
+                'confidence_interval': {{
+                    'lower': NULL, 'upper': NULL, 'confidence_level': NULL
+                }}
+            }} AS STRUCT(
+                score DOUBLE, standard_error DOUBLE, standard_deviation DOUBLE,
+                sample_size INTEGER,
+                confidence_interval STRUCT(
+                    lower DOUBLE, upper DOUBLE, confidence_level DOUBLE
+                )
+            ))                                          AS score_details,
+            r.fact_row_count,
+            r.evaluation_timestamp,
+            r.source_metadata,
+            CAST({{
+                'dataset_name':    b.display_name,
+                'source_type':     b.data_format,
+                'hf_repo':         b.dataset_repo,
+                'hf_split':        NULL,
+                'samples_number':  NULL,
+                'url':             b.resources,
+                'dataset_url':     NULL,
+                'dataset_version': NULL
+            }} AS STRUCT(
+                dataset_name VARCHAR, source_type VARCHAR, hf_repo VARCHAR,
+                hf_split VARCHAR, samples_number INTEGER, url VARCHAR[],
+                dataset_url VARCHAR, dataset_version VARCHAR
+            ))                                          AS source_data,
+            r.evaluator_relationships,
+            r.has_first_party,
+            r.has_third_party,
+            r.is_verified_evaluator,
+            r.evaluator_display_name,
+            CASE
+                WHEN r.has_first_party AND r.has_third_party THEN 'both'
+                WHEN r.has_first_party                       THEN 'self'
+                ELSE                                              'third'
+            END                                         AS coverage_cell,
+            r.reporting_orgs,
+            FALSE                                       AS is_summary_score,
+            CAST(r.aggregate_components AS {aggregate_components_type})
+                                                        AS aggregate_components,
+            r.metric_id                                 AS metric_id_effective,
+            r.value_aggregation,
+            r.children_present,
+            r.children_expected,
+            r.scale_conversion,
+            r.score_canonical,
+            CAST(NULL AS VARCHAR)                       AS metric_source_label,
+            r.judge_condition,
+            r._is_headline                              AS is_headline,
+            r.collection_id,
+            r.protocol_condition,
+            r.split
+        FROM _erv_parent_rows r
+        LEFT JOIN benchmarks b ON b.composite_slug = r.composite_slug
+                              AND b.benchmark_id   = r.parent_benchmark_id
+        """
+    )
+    n_weighted = con.execute(
+        f"SELECT count(*) FROM _erv_parent_rows "
+        f"WHERE value_aggregation = '{AGG_WEIGHTED_MEAN}'"
+    ).fetchone()[0]
+    log.info(
+        "stage J: materialised %d slice-parent row(s) as the MEAN of their "
+        "registry children's cell values, complete task sets only "
+        "(%d sample-size weighted, %d unweighted)",
+        n_parent, n_weighted, n_parent - n_weighted,
+    )
+
+
+def _log_partial_parent_coverage(con, top_n: int = 20) -> None:
+    """WARN for every suite cell that was dropped because some of the
+    parent's registry children had no value in it.
+
+    A partial mean is a different quantity from the benchmark it is named
+    after, so no row is emitted. What a reader of this log decides is whether
+    the child really has no data or whether the registry's child set is wrong
+    — an over-broad parent makes every cell partial, and a set that omits a
+    real task makes the means that DO pass too narrow."""
+    rows = con.execute(
+        """
+        SELECT composite_slug, parent_benchmark_id, metric_id,
+               COUNT(*) AS n_cells,
+               MIN(children_present) AS min_present,
+               MAX(children_present) AS max_present,
+               MAX(children_expected) AS expected
+        FROM _erv_parent_candidates
+        -- Candidates the parent already reports itself were dropped by the
+        -- own-row anti-join, not by the coverage gate: the page has its
+        -- number and nothing is missing from it.
+        WHERE children_present < children_expected
+        GROUP BY 1, 2, 3
+        ORDER BY n_cells DESC, 1, 2, 3
+        """
+    ).fetchall()
+    if not rows:
+        return
+    total = sum(r[3] for r in rows)
+    log.warning(
+        "stage J: %d suite cell(s) across %d (composite, benchmark, metric) "
+        "group(s) cover only part of the parent's registry task set — no "
+        "derived row emitted (a mean over some of the tasks is not the "
+        "benchmark)", total, len(rows),
+    )
+    for slug, parent, metric, n_cells, lo, hi, expected in rows[:top_n]:
+        span = f"{lo}" if lo == hi else f"{lo}-{hi}"
+        log.warning(
+            "  partial coverage %s/%d: %s / %s / %s — %d model cell(s)",
+            span, expected, slug, parent, metric, n_cells,
+        )
+    if len(rows) > top_n:
+        log.warning("  ... and %d more group(s)", len(rows) - top_n)
+
+
+def _log_cells_without_aggregate(con, top_n: int = 20) -> None:
+    """WARN for every cell that holds only PART observations — no row that
+    measured the benchmark itself, and no complete registry task set.
+
+    These are not errors in the data: they are benchmarks where the source
+    reported per-task numbers only. What the cell then shows is
+    `AGGREGATE_LESS_CELL_LEVEL`'s business — no value at all (`none`) or a
+    pipeline-derived mean (`derived`) — but either way a reviewer wants them
+    named, to decide whether the source really has no aggregate or whether its
+    whole row simply failed to resolve as one. Cells that have a whole
+    observation never appear here."""
+    rows = con.execute(
+        f"""
+        SELECT composite_slug, benchmark_key, metric_key,
+               COUNT(*) AS n_cells, MAX(cell_fact_count) AS max_facts
+        FROM _erv_tri
+        WHERE _value_level = '{AGGREGATE_LESS_CELL_LEVEL}'
+        GROUP BY 1, 2, 3
+        ORDER BY n_cells DESC, 1, 2, 3
+        """
+    ).fetchall()
+    if not rows:
+        return
+    total = sum(r[3] for r in rows)
+    log.warning(
+        "stage J: %d cell(s) across %d (composite, benchmark, metric) group(s) "
+        "hold only PART observations with no whole and no complete registry "
+        "task set — value is %s",
+        total, len(rows),
+        "a pooling of those parts, labelled `pooled_parts`"
+        if AGGREGATE_LESS_CELL_LEVEL == "pooled_parts"
+        else "left NULL",
+    )
+    for composite_slug, benchmark_key, metric_key, n_cells, max_facts in rows[:top_n]:
+        log.warning(
+            "  parts-only cell: %s / %s / %s — %d model cell(s), "
+            "up to %d fact(s) each",
+            composite_slug, benchmark_key, metric_key, n_cells, max_facts,
+        )
+    if len(rows) > top_n:
+        log.warning("  ... and %d more group(s)", len(rows) - top_n)
 
 
 def stage_j_models_view(con, snapshot_id: str) -> None:
@@ -4061,16 +6155,25 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 -- answer-feedback rows are excluded from the score
                 -- aggregates only (FILTER, not a pool-level WHERE — counts
                 -- and signal rates still see every row).
-                CAST(COUNT(score) FILTER (
+                --
+                -- On `score_canonical`, like every other arithmetic in the
+                -- warehouse. A model's summary spans every benchmark it was
+                -- run on, so its rows are guaranteed to disagree about scale:
+                -- summarising published numbers reported `aristotle/aristotle`
+                -- as min = max = avg 86.0 for a metric bounded at 1. The
+                -- count goes with them — a row with no canonical value has
+                -- no place on the scale these three describe, and counting
+                -- it would put a denominator under numbers it never entered.
+                CAST(COUNT(score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("erv.protocol_condition")}
                 ) AS INTEGER)                                             AS score_count,
-                MIN(score) FILTER (
+                MIN(score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("erv.protocol_condition")}
                 )                                                         AS score_min,
-                MAX(score) FILTER (
+                MAX(score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("erv.protocol_condition")}
                 )                                                         AS score_max,
-                ROUND(AVG(score) FILTER (
+                ROUND(AVG(score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("erv.protocol_condition")}
                 ), 12)                                                    AS score_avg,
                 CAST(SUM(CASE WHEN is_multi_source THEN 1 ELSE 0 END) AS INTEGER)
@@ -4082,6 +6185,10 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
             LEFT JOIN benchmarks b
               ON b.composite_slug = erv.composite_slug
              AND b.benchmark_id   = erv.benchmark_id
+            -- One row per (benchmark, metric) cell: the headline reading.
+            -- Extra judge conditions and protocol arms would otherwise
+            -- count the same cell several times.
+            WHERE erv.is_headline
             GROUP BY 1
         ),
         model_comparability AS (
@@ -4123,6 +6230,7 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
             LEFT JOIN benchmarks b
               ON b.composite_slug = erv.composite_slug
              AND b.benchmark_id   = erv.benchmark_id
+            WHERE erv.is_headline
             GROUP BY 1
         ),
         erv_with_display AS (
@@ -4132,16 +6240,23 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 erv.benchmark_id                               AS raw_benchmark_id,
                 COALESCE(b.display_name, erv.benchmark_id)     AS benchmark_display,
                 erv.evaluation_id                              AS benchmark_key,
-                erv.score,
+                -- The canonical number, ranked on and shown: a model's "top
+                -- score per tag" pool spans benchmarks and therefore spans
+                -- scales, so a published-score rank puts a 100.0 percent
+                -- above every fraction on the page and then prints it.
+                erv.score_canonical                            AS score,
                 erv.metric_display_name,
                 erv.lower_is_better
             FROM eval_results_view erv
             LEFT JOIN benchmarks b
               ON b.composite_slug = erv.composite_slug
              AND b.benchmark_id   = erv.benchmark_id
-            WHERE erv.score IS NOT NULL
+            WHERE erv.score_canonical IS NOT NULL
               AND erv.derived_tags IS NOT NULL
-              -- best-style rollup: answer-feedback rows never win
+              -- best-style rollup: only the cell's headline reading, and
+              -- (redundantly, since answer-feedback rows are never
+              -- headline) never an answer-feedback row
+              AND erv.is_headline
               AND {protocol_exclusion_sql("erv.protocol_condition")}
         ),
         ranked_for_top AS (
@@ -4201,6 +6316,7 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 CAST(COUNT(*) AS INTEGER)                      AS cnt
             FROM eval_results_view erv,
                  UNNEST(from_json(erv.derived_tags, '["VARCHAR"]')) AS tag(t)
+            WHERE erv.is_headline
             GROUP BY 1, 2
         ),
         tag_stats_agg AS (
@@ -4382,9 +6498,12 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
     metric `column_key`). The frontend's eval detail page renders multi-
     metric directly off these arrays — no per-page GROUP BY.
 
-    `primary_metric_id` heuristic: metric with the most distinct models;
-    tie-break on metric_id ASC. The benchmark-level scalars (`avg_score`,
-    `top_score`, `best_model`) are scoped to that primary metric.
+    `primary_metric_id`: the registry's preferred metric when it has a
+    headline row on this page, else the metric covering the most distinct
+    models, then the most headline rows, then metric_id ASC — the same rule
+    the merged page and the hierarchy apply. The benchmark-level scalars
+    (`avg_score`, `top_score`, `best_model`) are scoped to that primary
+    metric.
 
     Depends on `eval_results_view` already being materialised on the
     connection.
@@ -4457,33 +6576,69 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 erv.composite_slug,
                 erv.benchmark_id,
                 erv.metric_id,
+                ANY_VALUE(erv.metric_base_id)      AS metric_base_id,
                 ANY_VALUE(erv.metric_display_name) AS metric_display_name,
                 ANY_VALUE(erv.metric_unit)         AS metric_unit,
                 ANY_VALUE(erv.lower_is_better)     AS lower_is_better,
                 COUNT(DISTINCT erv.model_key)      AS metric_models_count,
+                CAST(COUNT(*) AS BIGINT)           AS metric_rows_count,
                 -- top_score is a best-style rollup: answer-feedback rows
                 -- are excluded from the score aggregate only.
+                --
+                -- On score_canonical, like every other comparison on this
+                -- view. `score` is what each source published, and one page
+                -- can hold fractions beside percentages (a detected div100
+                -- row publishes 88.5 where its canonical twin is 0.885, and a
+                -- `mixed` cell publishes the canonical number outright), so a
+                -- max over it returns whichever row happened to be on the
+                -- larger scale.
                 CASE WHEN COALESCE(ANY_VALUE(erv.lower_is_better), FALSE)
-                     THEN MIN(erv.score) FILTER (
+                     THEN MIN(erv.score_canonical) FILTER (
                          WHERE {protocol_exclusion_sql("erv.protocol_condition")})
-                     ELSE MAX(erv.score) FILTER (
+                     ELSE MAX(erv.score_canonical) FILTER (
                          WHERE {protocol_exclusion_sql("erv.protocol_condition")})
                 END AS top_score
             FROM eval_results_view erv
+            -- One row per (benchmark, metric, model) cell: the headline
+            -- reading. A metric's coverage is how many models it reads for,
+            -- not how many judge channels published it.
+            WHERE erv.is_headline
             GROUP BY 1, 2, 3
         ),
         primary_metric AS (
-            -- Pick one metric per (composite, benchmark): most-covered
-            -- (tie-break on metric_id).
-            SELECT composite_slug, benchmark_id, metric_id, metric_display_name,
-                   metric_unit, lower_is_better, top_score
+            -- Default metric, the same rule the merged page applies:
+            -- the registry's preferred metric when it has at least one
+            -- headline row here; else a metric that MEASURES the thing the
+            -- benchmark is for, ahead of one that only describes the run;
+            -- then widest distinct-model coverage, most headline rows,
+            -- metric_id.
+            --
+            -- The diagnostic step exists because the coverage/alphabetical
+            -- tiebreak was headlining cost per task, response length,
+            -- degeneration and invalid-rate — every model on the page
+            -- publishes those, so they win on coverage, and `average-word-count`
+            -- sorts before `length-controlled-win-rate`. The registry marks
+            -- such metrics `metadata.role = diagnostic`; they stay on the
+            -- page, they just no longer speak for it. A page whose metrics
+            -- are ALL diagnostic still headlines one, because the ordering
+            -- only demotes.
+            SELECT composite_slug, benchmark_id, metric_id, metric_base_id,
+                   metric_display_name, metric_unit, lower_is_better, top_score
             FROM (
                 SELECT pm.*,
                        ROW_NUMBER() OVER (
-                           PARTITION BY composite_slug, benchmark_id
-                           ORDER BY metric_models_count DESC, metric_id ASC
+                           PARTITION BY pm.composite_slug, pm.benchmark_id
+                           ORDER BY
+                               COALESCE(pm.metric_base_id = cb.preferred_metric_id,
+                                        FALSE) DESC,
+                               {_diagnostic_role_sql("cmet.metadata")} ASC,
+                               pm.metric_models_count DESC,
+                               pm.metric_rows_count DESC,
+                               pm.metric_id ASC
                        ) AS _rk
                 FROM per_metric pm
+                LEFT JOIN canonical_benchmarks cb ON cb.id = pm.benchmark_id
+                LEFT JOIN canonical_metrics cmet  ON cmet.id = pm.metric_base_id
             )
             WHERE _rk = 1
         ),
@@ -4491,16 +6646,24 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             -- One row per triple on the primary metric. The
             -- `scoring_score` flips sign for lower-is-better metrics so
             -- arg_max/arg_min pick the right model in primary_facts.
+            --
+            -- SCORE CONTRACT: every average, extremum, rank and sort on this
+            -- view reads `score_canonical`, the one scale all of a page's
+            -- rows share. `score` and `score_published` are display and
+            -- provenance — they carry the source's own number, which is a
+            -- fraction on one row and a percentage on the next, so comparing
+            -- or adding them across models is arithmetic on mixed units.
             SELECT
                 erv.*,
                 CASE WHEN COALESCE(pm.lower_is_better, FALSE)
-                     THEN -erv.score ELSE erv.score
+                     THEN -erv.score_canonical ELSE erv.score_canonical
                 END AS scoring_score
             FROM eval_results_view erv
             JOIN primary_metric pm
               ON pm.composite_slug = erv.composite_slug
              AND pm.benchmark_id   = erv.benchmark_id
              AND pm.metric_id      = erv.metric_id
+            WHERE erv.is_headline
         ),
         evaluator_names_agg AS (
             -- Distinct org names across primary-metric triples for this
@@ -4548,13 +6711,32 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 -- exclusion predicate as FILTER on the score
                 -- aggregates only — NOT a pool-level WHERE, which would
                 -- also change models_count / evaluator_names / gap rates.
-                ROUND(AVG(pt.score) FILTER (
+                ROUND(AVG(pt.score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("pt.protocol_condition")}
                 ), 12)                                                 AS avg_score,
-                MIN(pt.score) FILTER (
+                -- The denominator behind that average. `models_count` is
+                -- every model with a headline cell on the primary metric,
+                -- scored or not; AVG silently skips the unscored ones, so a
+                -- page could report 317 models over a mean of 216. This says
+                -- how many actually contributed.
+                CAST(COUNT(DISTINCT pt.model_key) FILTER (
+                    WHERE pt.score_canonical IS NOT NULL
+                      AND {protocol_exclusion_sql("pt.protocol_condition")}
+                ) AS BIGINT)                                           AS scored_models_count,
+                -- The list card's normalised figure is the mean of the
+                -- per-model normalised scores this page already shows, not a
+                -- second normalisation of `avg_score`. Deriving it again from
+                -- the average published number skipped the canonical-scale
+                -- conversion and the lower-is-better inversion, so the list
+                -- card and the result rows disagreed: SQuAD read 22.22 on the
+                -- card and 0.33 on the rows, HarmBench 0.26 against 0.74.
+                ROUND(AVG(pt.score_normalized) FILTER (
+                    WHERE {protocol_exclusion_sql("pt.protocol_condition")}
+                ), 12)                                                 AS avg_score_normalized,
+                MIN(pt.score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("pt.protocol_condition")}
                 )                                                      AS min_score_seen,
-                MAX(pt.score) FILTER (
+                MAX(pt.score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("pt.protocol_condition")}
                 )                                                      AS max_score_seen,
                 -- top/bottom are addressable identifiers — use model_key so
@@ -4654,28 +6836,15 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             GROUP BY pm.composite_slug, pm.benchmark_id
         ),
         leaderboard_one_per_metric AS (
-            -- Collapse protocol points to one row per (composite,
+            -- Collapse condition points to one row per (composite,
             -- benchmark, model, metric) for the pre-pivoted leaderboard:
             -- the values MAP is keyed by metric_id and would raise on
-            -- duplicate keys. Representative = the row the ranking policy
-            -- would rank (non-feedback first, then best score); a
-            -- feedback-only cell falls back to its best feedback row.
-            SELECT * FROM (
-                SELECT erv.*,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY erv.composite_slug, erv.benchmark_id,
-                                     erv.model_key, erv.metric_id
-                        ORDER BY
-                            CASE WHEN {protocol_exclusion_sql("erv.protocol_condition")}
-                                 THEN 0 ELSE 1 END ASC,
-                            CASE WHEN erv.score IS NULL THEN 1 ELSE 0 END ASC,
-                            CASE WHEN COALESCE(erv.lower_is_better, FALSE)
-                                 THEN erv.score ELSE -erv.score END ASC,
-                            COALESCE(erv.protocol_condition, '') ASC
-                    ) AS _pp_rk
-                FROM eval_results_view erv
-            )
-            WHERE _pp_rk = 1
+            -- duplicate keys. Headline rows only, like every other
+            -- page-level rollup — a cell whose rows are all answer-feedback
+            -- arms has no headline and contributes nothing, rather than
+            -- publishing a score that is excluded from the rankings,
+            -- summaries and comparison index it sits beside.
+            SELECT erv.* FROM eval_results_view erv WHERE erv.is_headline
         ),
         leaderboard_per_model AS (
             -- One row per (composite_slug, benchmark_id, model_key)
@@ -4773,11 +6942,26 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 MAX(fr.lower_is_better)            AS lower_is_better,
                 CAST(COUNT(DISTINCT fr.model_aggregation_key) AS INTEGER)
                                                    AS metric_models_count,
+                -- The subtask's best reading, on `score_canonical`. This is a
+                -- MIN/MAX across models, which is arithmetic over a set of
+                -- rows that need not share a published scale, and the
+                -- carve-out for `curated` only covered the one class the
+                -- registry had restated: LiveBench's Zebra Puzzle reported a
+                -- top of 100.0 under a metric the same row declares to be a
+                -- proportion. The canonical scale is the only one every row
+                -- here shares, so the extreme is taken on it.
                 CASE WHEN COALESCE(MAX(fr.lower_is_better), FALSE)
-                     THEN MIN(fr.score) ELSE MAX(fr.score) END AS top_score
+                     THEN MIN(fr.score_canonical)
+                     ELSE MAX(fr.score_canonical)
+                END AS top_score
             FROM fact_results fr
-            LEFT JOIN canonical_metrics cmet ON cmet.id = fr.metric_key
-            WHERE fr.composite_slug         IS NOT NULL
+            LEFT JOIN canonical_metrics cmet ON cmet.id = fr.metric_base_key
+            -- Headline fact rows only: the condition grain sits above the
+            -- slice grain, so this drops the losing judge/protocol
+            -- conditions without dropping any slice.
+            WHERE fr.fact_id IN (SELECT fact_id FROM fact_headline
+                                 WHERE is_headline)
+              AND fr.composite_slug         IS NOT NULL
               AND fr.benchmark_key          IS NOT NULL
               AND fr.slice_key              IS NOT NULL
               AND fr.metric_key             IS NOT NULL
@@ -4870,6 +7054,8 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             )) AS metric_config,
 
             COALESCE(pf.models_count, 0)                AS models_count,
+            -- How many of those models the page average actually covers.
+            COALESCE(pf.scored_models_count, 0)         AS scored_models_count,
             ena.evaluator_names,
             ena.verified_evaluator_names,
             sta.source_types,
@@ -4886,12 +7072,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                                THEN pf.max_score_seen ELSE pf.min_score_seen END
             ) AS STRUCT("name" VARCHAR, score DOUBLE)) AS worst_model,
             pf.avg_score,
-            CASE
-                WHEN cmet.min_score IS NULL OR cmet.max_score IS NULL
-                  OR isinf(cmet.min_score) OR isinf(cmet.max_score)
-                  OR cmet.max_score = cmet.min_score THEN NULL
-                ELSE (pf.avg_score - cmet.min_score) / (cmet.max_score - cmet.min_score)
-            END                                          AS avg_score_norm,
+            pf.avg_score_normalized                      AS avg_score_norm,
             pm.top_score                                 AS top_score,
 
             COALESCE(b.card_present, FALSE)              AS has_card,
@@ -5058,7 +7239,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                                         AND pb.benchmark_id  = b.parent_benchmark_id
         LEFT JOIN primary_metric pm     ON pm.composite_slug = b.composite_slug
                                         AND pm.benchmark_id  = b.benchmark_id
-        LEFT JOIN canonical_metrics cmet ON cmet.id = pm.metric_id
+        LEFT JOIN canonical_metrics cmet ON cmet.id = pm.metric_base_id
         LEFT JOIN primary_facts pf      ON pf.composite_slug = b.composite_slug
                                         AND pf.benchmark_id  = b.benchmark_id
         LEFT JOIN primary_comparability pcmp ON pcmp.composite_slug = b.composite_slug
@@ -5085,7 +7266,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
         -- isn't an eval. Aligning with comparison-index, which is built
         -- from per-(eval, metric) buckets and therefore already excludes
         -- these shells.
-        WHERE EXISTS (
+        WHERE (EXISTS (
             -- benchmarks dim's `benchmark_id` is the canonical-or-raw
             -- key, so match it against fr.benchmark_key (not the
             -- canonical-only fr.benchmark_id) — otherwise raw-only
@@ -5094,7 +7275,17 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             SELECT 1 FROM fact_results fr
             WHERE fr.composite_slug = b.composite_slug
               AND fr.benchmark_key  = b.benchmark_id
-        )
+        ) OR EXISTS (
+            -- A suite whose task variants are registry slice children has
+            -- no facts of its own but does have a value, rolled up from
+            -- those children in `eval_results_view`. Retaining it on that
+            -- basis is what keeps BFCL-v3 and RealGuardrails in the eval
+            -- list next to their categories, instead of showing 14 category
+            -- pages and no suite.
+            SELECT 1 FROM eval_results_view erv
+            WHERE erv.composite_slug = b.composite_slug
+              AND erv.benchmark_id   = b.benchmark_id
+        ))
         -- Drop leaderboard rollup metrics that EEE ships as if they
         -- were benchmark names. HELM family ("Mean win rate", "Mean
         -- score"), BFCL ("overall"), facts-grounding ("score"), etc.
@@ -5136,8 +7327,10 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
     registry seed guard keeps '/' out of benchmark ids).
 
     The default metric is the registry `preferred_metric_id` when at
-    least one source reports it (post-fold), else the Q1 fallback:
-    most observations, ties by distinct models then lexicographic.
+    least one source reports it (post-fold), else the fallback: widest
+    distinct-model coverage, ties by observation count then lexicographic.
+    Coverage leads because a metric five sources publish for two models
+    describes the page worse than one three sources publish for three.
     `best_result` follows Q10: directional on the effective metric,
     flagged rows excluded; when the default metric has no registry
     bounds (generic `score` pages) the unconverted pool is used as a
@@ -5157,21 +7350,24 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
             -- carry protocol_condition through for the best_result pool.
             SELECT r.benchmark_id, r.evaluation_id, r.composite_slug,
                    r.composite_display_name, r.family_id, r.family_display_name,
-                   r.metric_id_effective, r.model_key, r.model_info,
+                   r.metric_id_effective, r.metric_base_id,
+                   r.model_key, r.model_info,
                    r.score, r.score_canonical, r.scale_conversion,
                    r.protocol_condition,
                    CAST(NULL AS VARCHAR) AS slice_id,
                    CAST(NULL AS VARCHAR) AS slice_display_name
             FROM eval_results_view r
             JOIN canonical_benchmarks cb ON cb.id = r.benchmark_id
-            WHERE NOT r.is_slice AND r.score IS NOT NULL
+            -- Headline rows only: one observation per (source, model) cell.
+            WHERE NOT r.is_slice AND r.score IS NOT NULL AND r.is_headline
         ),
         sl AS (
             SELECT r.parent_benchmark_id AS benchmark_id,
                    CAST(NULL AS VARCHAR) AS evaluation_id,
                    r.composite_slug, r.composite_display_name,
                    r.family_id, r.family_display_name,
-                   r.metric_id_effective, r.model_key, r.model_info,
+                   r.metric_id_effective, r.metric_base_id,
+                   r.model_key, r.model_info,
                    r.score, r.score_canonical, r.scale_conversion,
                    r.protocol_condition,
                    r.benchmark_id AS slice_id,
@@ -5180,7 +7376,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
             FROM eval_results_view r
             JOIN canonical_benchmarks cb ON cb.id = r.parent_benchmark_id
             LEFT JOIN canonical_benchmarks cbs ON cbs.id = r.benchmark_id
-            WHERE r.is_slice AND r.score IS NOT NULL
+            WHERE r.is_slice AND r.score IS NOT NULL AND r.is_headline
         ),
         universe AS (
             SELECT benchmark_id, 'benchmark' AS grain
@@ -5200,31 +7396,44 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
         ),
         metric_stats AS (
             SELECT benchmark_id, metric_id_effective,
+                   MAX(metric_base_id)             AS metric_base_id,
                    COUNT(*)                        AS results_count,
                    COUNT(DISTINCT model_key)       AS models_count,
+                   -- the denominator behind any average over this metric:
+                   -- models whose cell actually carries a value
+                   COUNT(DISTINCT model_key) FILTER (
+                       WHERE score_canonical IS NOT NULL) AS scored_models_count,
                    COUNT(DISTINCT composite_slug)  AS sources_count
             FROM page_rows
             GROUP BY 1, 2
         ),
         chosen AS (
+            -- Same ordering as the per-source page: registry preference
+            -- first, then a metric that measures the task ahead of one that
+            -- only describes the run (registry `metadata.role = diagnostic`),
+            -- then coverage, row count, id.
             SELECT ms.*,
-                   (ms.metric_id_effective = cb.preferred_metric_id) AS is_registry_preferred,
+                   (ms.metric_base_id = cb.preferred_metric_id) AS is_registry_preferred,
                    ROW_NUMBER() OVER (
                        PARTITION BY ms.benchmark_id
                        ORDER BY
-                           COALESCE(ms.metric_id_effective = cb.preferred_metric_id, FALSE) DESC,
-                           ms.results_count DESC,
+                           COALESCE(ms.metric_base_id = cb.preferred_metric_id, FALSE) DESC,
+                           {_diagnostic_role_sql("cmet.metadata")} ASC,
                            ms.models_count DESC,
+                           ms.results_count DESC,
                            ms.metric_id_effective ASC
                    ) AS rk
             FROM metric_stats ms
             LEFT JOIN canonical_benchmarks cb ON cb.id = ms.benchmark_id
+            LEFT JOIN canonical_metrics cmet  ON cmet.id = ms.metric_base_id
         ),
         default_metric AS (
             SELECT benchmark_id,
                    metric_id_effective AS default_metric_id,
+                   -- the registry id behind it, for the metric-meta joins
+                   metric_base_id      AS default_metric_base_id,
                    COALESCE(is_registry_preferred, FALSE) AS preferred_from_registry,
-                   results_count, models_count, sources_count
+                   results_count, models_count, scored_models_count, sources_count
             FROM chosen WHERE rk = 1
         ),
         best AS (
@@ -5254,7 +7463,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
             JOIN default_metric dm
               ON dm.benchmark_id = p.benchmark_id
              AND p.metric_id_effective = dm.default_metric_id
-            LEFT JOIN canonical_metrics cm ON cm.id = dm.default_metric_id
+            LEFT JOIN canonical_metrics cm ON cm.id = dm.default_metric_base_id
             WHERE p.scale_conversion != 'flagged'
               -- slice-grain pages get NO best_result: a best across
               -- different slices compares incomparables (same rule as the
@@ -5324,7 +7533,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
                    }} ORDER BY ms.results_count DESC, ms.metric_id_effective ASC)
                        AS metrics
             FROM metric_stats ms
-            LEFT JOIN canonical_metrics cm ON cm.id = ms.metric_id_effective
+            LEFT JOIN canonical_metrics cm ON cm.id = ms.metric_base_id
             GROUP BY ms.benchmark_id
         ),
         slices_list AS (
@@ -5358,6 +7567,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
             CAST(so.all_sources_count AS INTEGER)   AS all_sources_count,
             CAST(dm.results_count  AS INTEGER)      AS results_count,
             CAST(dm.models_count   AS INTEGER)      AS models_count,
+            CAST(dm.scored_models_count AS INTEGER) AS scored_models_count,
             CAST({{
                 'model_name':     b.model_name,
                 'model_key':      b.model_key,
@@ -5376,7 +7586,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
         FROM universe u
         LEFT JOIN canonical_benchmarks cb ON cb.id = u.benchmark_id
         LEFT JOIN default_metric dm       ON dm.benchmark_id = u.benchmark_id
-        LEFT JOIN canonical_metrics cm    ON cm.id = dm.default_metric_id
+        LEFT JOIN canonical_metrics cm    ON cm.id = dm.default_metric_base_id
         LEFT JOIN best b                  ON b.benchmark_id = u.benchmark_id AND b.rk = 1
         LEFT JOIN sources so              ON so.benchmark_id = u.benchmark_id
         LEFT JOIN metrics_list ml         ON ml.benchmark_id = u.benchmark_id
@@ -5409,9 +7619,12 @@ def stage_j_emit_view_parquets(con, out_dir: Path, snapshot_id: str) -> None:
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     for table, sort_key in [
-        # protocol_condition completes the sort: one view row per protocol
-        # point means (composite, metric, model) alone is no longer total.
-        ("eval_results_view", "(composite_slug, metric_summary_id, model_key, protocol_condition)"),
+        # protocol_condition, judge_condition and split complete the sort:
+        # one view row per (protocol point, judge condition, split) means
+        # (composite, metric, model) alone is no longer total.
+        ("eval_results_view",
+         "(composite_slug, metric_summary_id, model_key, protocol_condition, "
+         "judge_condition, split)"),
         ("models_view",       "(model_key)"),
         ("evals_view",        "(evaluation_id)"),
         ("merged_evals_view", "(evaluation_id)"),
@@ -5419,7 +7632,27 @@ def stage_j_emit_view_parquets(con, out_dir: Path, snapshot_id: str) -> None:
         path = out_dir / f"{table}.parquet"
         con.execute(
             f"""
-            COPY (SELECT * FROM {table} ORDER BY {sort_key} NULLS LAST)
+            COPY (SELECT {explicit_projection_sql(con, table)} FROM {table}
+                  ORDER BY {sort_key} NULLS LAST)
             TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)
             """
         )
+
+    # Re-emit fact_results with the headline flag attached. Stage I writes the
+    # facts before the mapping exists, and a consumer reading the facts
+    # directly (the frontend's build-time matrix) has no way to re-derive the
+    # pick. `fact_headline` stays the cached source of truth; this is a
+    # denormalised copy of it on the grain the consumer already reads.
+    path = out_dir / "fact_results.parquet"
+    con.execute(
+        f"""
+        COPY (
+            SELECT {explicit_projection_sql(con, "fact_results", "f")},
+                   CAST(COALESCE(h.is_headline, FALSE) AS BOOLEAN) AS is_headline
+            FROM fact_results f
+            LEFT JOIN fact_headline h ON h.fact_id = f.fact_id
+            ORDER BY {_qualify_sort_key(FACT_RESULTS_SORT_KEY, "f")} NULLS LAST
+        )
+        TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+        """
+    )

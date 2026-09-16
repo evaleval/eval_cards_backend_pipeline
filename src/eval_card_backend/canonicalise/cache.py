@@ -12,11 +12,20 @@ don't appear here — only the table the *next* stage reads from.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Fingerprint of the table shapes this code writes into a stage cache. Bump
+# whenever a stage's cached output gains, loses or re-types a column: a
+# `--from-stage` run against an older cache would otherwise restore the old
+# shape and fail deep inside a later stage's SQL with a binder error.
+CACHE_SCHEMA_VERSION = 12
+
+_SCHEMA_MARKER = "_cache_schema.json"
 
 # Ordered stage letters. 'H' was removed when completeness moved per-row.
 STAGE_ORDER: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G", "I", "J")
@@ -56,7 +65,9 @@ STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     "F": ("fact_results",),
     "G": ("benchmarks", "composites", "families", "models"),
     "I": (),  # Stage I writes the warehouse parquets; nothing in-memory to cache.
-    "J": ("eval_results_view", "models_view", "evals_view", "merged_evals_view"),
+    "J": ("eval_results_view", "models_view", "evals_view", "merged_evals_view",
+          # fact-grain headline map; the sidecars read it after Stage J
+          "fact_headline"),
 }
 
 
@@ -134,7 +145,61 @@ class StageCache:
     def has_table(self, table: str) -> bool:
         return self._path(table).exists()
 
+    @property
+    def _marker_path(self) -> Path:
+        return self._dir / _SCHEMA_MARKER
+
+    def _write_schema_version(self) -> None:
+        self._marker_path.write_text(
+            json.dumps({"cache_schema_version": CACHE_SCHEMA_VERSION})
+        )
+
+    def _clear_schema_version(self) -> None:
+        self._marker_path.unlink(missing_ok=True)
+
+    def _prune_after(self, stage_letter: str) -> list[str]:
+        """Delete cached outputs of every stage AFTER `stage_letter`.
+
+        A rebuild that stops at Stage D inside an existing snapshot dir would
+        otherwise leave E..J parquets from the previous generation behind, and
+        a later `--from-stage` run would restore that mixture.
+        """
+        dropped: list[str] = []
+        for stage in STAGE_ORDER[STAGE_ORDER.index(stage_letter) + 1:]:
+            for table in STAGE_OUTPUTS[stage]:
+                path = self._path(table)
+                if path.exists():
+                    path.unlink()
+                    dropped.append(table)
+        return dropped
+
+    def assert_schema_current(self) -> None:
+        """Fail fast when the on-disk cache was written by a pipeline whose
+        stage-output shapes differ from this one's.
+
+        A cache dir with no marker predates the fingerprint entirely, so it is
+        treated as stale rather than trusted.
+        """
+        if not self._dir.exists():
+            return
+        try:
+            found = json.loads(self._marker_path.read_text())["cache_schema_version"]
+        except (OSError, ValueError, KeyError):
+            found = None
+        if found == CACHE_SCHEMA_VERSION:
+            return
+        raise RuntimeError(
+            f"stage cache at {self._dir} declares cache_schema_version="
+            f"{found!r}, but this pipeline writes {CACHE_SCHEMA_VERSION}. "
+            f"The cached stage outputs have a different column shape and "
+            f"cannot be resumed from. Re-run from Stage A (drop --from-stage, "
+            f"or pass --from-stage A) to rebuild the cache."
+        )
+
     def write_table(self, con, table: str) -> None:
+        """Write one table's parquet. Deliberately does NOT stamp the schema
+        marker — only a completed `write_stage` may do that, so an interrupted
+        write can never leave a blessed but incomplete cache dir."""
         if not self.enabled:
             return
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -166,32 +231,58 @@ class StageCache:
         return {p.stem for p in self._dir.glob("*.parquet")}
 
     def write_stage(self, con, stage_letter: str) -> None:
+        """Write this stage's outputs, then bless the dir.
+
+        Order matters: later stages' stale parquets go first, the marker is
+        stamped last. An interrupted run therefore leaves an unmarked (and so
+        unusable) cache rather than one that looks current.
+        """
+        if not self.enabled:
+            return
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._clear_schema_version()
+        dropped = self._prune_after(stage_letter)
+        if dropped:
+            log.info(
+                "stage cache: stage %s rewrite dropped %d stale later-stage "
+                "table(s): %s", stage_letter, len(dropped), sorted(dropped),
+            )
         for table in STAGE_OUTPUTS[stage_letter]:
             self.write_table(con, table)
+        self._write_schema_version()
 
     def restore_through(self, con, last_stage: str) -> list[str]:
         """Restore every cached output table for stages A .. last_stage.
 
         Returns the list of restored tables for logging.
 
-        Tables that aren't on disk are silently skipped — this is
-        intentional, since some uses (tests, partial-stage scenarios)
-        deliberately cache only a subset. The downside is that schema
-        drift from a STAGE_OUTPUTS change in a newer pipeline version
-        produces a cryptic `CatalogException: table not found` later
-        rather than a clear "delete the stale cache" message here. If
-        you hit a CatalogException early in a `--from-stage` rerun, the
-        likely fix is `rm -rf .cache/canonicalise/<snapshot>` so the
-        cache is rebuilt against the current STAGE_OUTPUTS layout.
+        Every table STAGE_OUTPUTS declares for A..last_stage must be on
+        disk. A missing one means the cache was written by a pipeline with
+        a different STAGE_OUTPUTS layout, or by a run that died mid-write;
+        either way restoring the survivors would silently mix generations,
+        so fail here with an actionable message instead of surfacing a
+        `CatalogException: table not found` deep inside a later stage.
         """
-        restored: list[str] = []
+        self.assert_schema_current()
+        wanted: list[tuple[str, str]] = []
         for stage in STAGE_ORDER:
-            for table in STAGE_OUTPUTS[stage]:
-                if self.has_table(table):
-                    self.load_table(con, table)
-                    restored.append(table)
+            wanted.extend((stage, table) for table in STAGE_OUTPUTS[stage])
             if stage == last_stage:
                 break
+        missing = [f"{stage}:{table}" for stage, table in wanted
+                   if not self.has_table(table)]
+        if missing:
+            raise RuntimeError(
+                f"stage cache at {self._dir} is incomplete for stages "
+                f"A..{last_stage}: missing {', '.join(missing)}. The cache "
+                f"was written by a different STAGE_OUTPUTS layout or by an "
+                f"interrupted run. Re-run from Stage A (drop --from-stage, "
+                f"or pass --from-stage A) to rebuild it."
+            )
+        restored: list[str] = []
+        for _, table in wanted:
+            self.load_table(con, table)
+            restored.append(table)
         return restored
 
 

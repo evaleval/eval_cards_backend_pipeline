@@ -1,0 +1,54 @@
+{
+  "evaluation_id": "ev_two_judge_openeval",
+  "schema_version": "0.2.2",
+  "retrieved_timestamp": "2026-04-30T00:00:00Z",
+  "evaluation_timestamp": "2026-04-29T00:00:00Z",
+  "model_info": {
+    "developer": "synthetic",
+    "name": "two-judge",
+    "id": "synthetic/two-judge"
+  },
+  "source_metadata": {
+    "source_name": "OpenEval",
+    "source_type": "evaluation_run",
+    "source_organization_name": "OpenEval",
+    "evaluator_relationship": "third_party"
+  },
+  "eval_library": {"name": "openeval", "version": "1.0"},
+  "evaluation_results": [
+    {
+      "evaluation_name": "omni-math",
+      "source_data": {"dataset_name": "omni-math", "source_type": "other"},
+      "metric_config": {
+        "metric_id": "fixtures_judges.omni-math.score",
+        "metric_name": "Correctness",
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 1.0,
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "gpt_correctness",
+          "metric_models_json": "[\"openai/gpt-4o-2024-05-13\"]"
+        }
+      },
+      "score_details": {"score": 0.9}
+    },
+    {
+      "evaluation_name": "omni-math",
+      "source_data": {"dataset_name": "omni-math", "source_type": "other"},
+      "metric_config": {
+        "metric_id": "fixtures_judges.omni-math.score",
+        "metric_name": "Correctness",
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 1.0,
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "claude_correctness",
+          "metric_models_json": "[\"anthropic/claude-3-5-sonnet-20241022\"]"
+        }
+      },
+      "score_details": {"score": 0.5}
+    }
+  ]
+}

@@ -79,11 +79,20 @@ def test_manifest_required_keys(tmp_path, monkeypatch):
     _materialise_views_and_sidecars(out)
     manifest = json.loads((out / "manifest.json").read_text())
     assert {
-        "generated_at", "config_version", "skipped_configs",
+        "generated_at", "schema_version", "config_version", "skipped_configs",
         "model_count", "eval_count", "metric_eval_count",
         "source_config_count", "skipped_config_count",
         "summary_artifacts",
     } <= set(manifest.keys())
+    # Pinned by the contract: the warehouse schema, the config generation
+    # (bumped for the judge/headline grain) and the comparability semantics
+    # a consumer keys its own caches on.
+    from eval_card_backend.canonicalise import sidecars
+
+    assert manifest["schema_version"] == sidecars.SCHEMA_VERSION
+    assert manifest["config_version"] == 2
+    headline = json.loads((out / "headline.json").read_text())
+    assert headline["signal_version"] == "1.1"
 
 
 def test_manifest_skipped_configs_lists_alphaxiv(tmp_path, monkeypatch):
@@ -446,18 +455,26 @@ def test_hierarchy_gpqa_diamond_emits_as_benchmark_not_slice(tmp_path):
             'wasp' AS composite_slug,
             'gpqa' AS benchmark_id,
             'accuracy' AS metric_id,
+            'accuracy' AS metric_base_id,
             'Accuracy' AS metric_display_name,
             'openai/gpt-5' AS model_key,
-            struct_pack(source_organization_name := 'WASP') AS source_metadata
+            struct_pack(source_organization_name := 'WASP') AS source_metadata,
+            TRUE AS is_headline
         UNION ALL
         SELECT
             'wasp',
             'gpqa-diamond',
             'accuracy',
+            'accuracy',
             'Accuracy',
             'openai/gpt-5',
-            struct_pack(source_organization_name := 'WASP')
+            struct_pack(source_organization_name := 'WASP'),
+            TRUE
         """
+    )
+    con.execute(
+        "CREATE TABLE canonical_benchmarks AS "
+        "SELECT 'gpqa' AS id, NULL::VARCHAR AS preferred_metric_id"
     )
     con.execute(
         """
@@ -474,9 +491,20 @@ def test_hierarchy_gpqa_diamond_emits_as_benchmark_not_slice(tmp_path):
             -- preserve the original 7-column INSERT shape.
             benchmark_key VARCHAR AS (benchmark_id),
             metric_key VARCHAR AS (metric_id),
-            model_aggregation_key VARCHAR AS (model_key)
+            -- no scoring-variant qualifiers here, so the registry-lookup
+            -- key is the observation key
+            metric_base_key VARCHAR AS (metric_id),
+            model_aggregation_key VARCHAR AS (model_key),
+            aggregate_level VARCHAR AS ('leaf'),
+            -- the slice helper filters on the Stage J headline map
+            fact_id VARCHAR AS (benchmark_id || '|' || metric_id
+                                || '|' || model_key)
         )
         """
+    )
+    con.execute(
+        "CREATE VIEW fact_headline AS "
+        "SELECT fact_id, TRUE AS is_headline FROM fact_results"
     )
     con.executemany(
         "INSERT INTO fact_results VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -487,7 +515,8 @@ def test_hierarchy_gpqa_diamond_emits_as_benchmark_not_slice(tmp_path):
     )
     con.execute(
         "CREATE TABLE canonical_metrics AS "
-        "SELECT 'accuracy' AS id, 'Accuracy' AS display_name"
+        "SELECT 'accuracy' AS id, 'Accuracy' AS display_name, "
+        "NULL::JSON AS metadata"
     )
 
     sidecars.write_hierarchy(

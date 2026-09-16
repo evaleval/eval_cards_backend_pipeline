@@ -21,8 +21,11 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
         resolve_resolution_source_py,
         resolve_resolution_granularity_py,
         resolve_structured_metric_id_py,
+        resolve_structured_metric_qualifier_py,
         resolve_structured_benchmark_id_py,
         resolve_structured_benchmark_raw_py,
+        resolve_structured_benchmark_subset_py,
+        resolve_benchmark_observation_role_py,
         resolve_metric_direct_py,
         metric_name_wins_py,
     ) = udfs.make_resolver_udfs(resolver, metric_catch_all_ids)
@@ -79,6 +82,14 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
         ["VARCHAR", "VARCHAR"], "VARCHAR",
         null_handling="special",
     )
+    # The tail of the same match: the scoring variant spelled after the
+    # metric segment, which keeps side-by-side variants apart in Stage J.
+    con.create_function(
+        "resolve_structured_metric_qualifier",
+        resolve_structured_metric_qualifier_py,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
     # Structured benchmark pre-step: the benchmark-side counterpart, probing
     # the dotted evaluation_name's segments against the benchmark vocabulary
     # instead of concatenating them.
@@ -90,6 +101,22 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
     con.create_function(
         "resolve_structured_benchmark_raw", resolve_structured_benchmark_raw_py,
         ["VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    con.create_function(
+        "resolve_structured_benchmark_subset",
+        resolve_structured_benchmark_subset_py,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    # The same match read as an observation role — whole / part / unknown.
+    # A name the structured path could not read is a whole only when a
+    # byte-exact alias names the benchmark the row resolved to (third
+    # argument); otherwise it is recorded as unread.
+    con.create_function(
+        "resolve_benchmark_observation_role",
+        resolve_benchmark_observation_role_py,
+        ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
         null_handling="special",
     )
     con.create_function(

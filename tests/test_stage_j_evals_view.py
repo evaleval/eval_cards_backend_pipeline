@@ -78,6 +78,17 @@ def _reparent_mmlu_under_suite(con) -> None:
         "UPDATE benchmarks SET parent_benchmark_id = 'mmlu-suite', "
         "is_slice = TRUE WHERE benchmark_id = 'mmlu'"
     )
+    # and the registry edge behind it: the parent's expected task set, which
+    # the suite rollup requires to be complete before it states a number.
+    # Stage J creates its own stand-in for this table later; borrow the same
+    # helper here so the schema matches.
+    from eval_card_backend.canonicalise import stages
+
+    stages._ensure_merged_view_inputs(con)
+    con.execute(
+        "INSERT INTO canonical_benchmarks (id, parent_benchmark_id) "
+        "VALUES ('mmlu-suite', NULL), ('mmlu', 'mmlu-suite')"
+    )
 
 
 def test_evals_view_columns_match_spec(tmp_path, monkeypatch):
@@ -141,8 +152,9 @@ def test_parent_benchmark_display_name_null_for_roots(tmp_path, monkeypatch):
 
 def test_parent_benchmark_display_name_for_slice_rows(tmp_path, monkeypatch):
     """A slice row surfaces its parent benchmark's own display name (not
-    the composite label), via the dim self-join. Row counts stay intact —
-    the self-join must not fan out."""
+    the composite label), via the dim self-join. The self-join itself must
+    not fan out: the only row the reparenting adds is the suite parent,
+    which is now retained on its children's rolled-up value."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     baseline = _materialise_views(out)
@@ -156,11 +168,12 @@ def test_parent_benchmark_display_name_for_slice_rows(tmp_path, monkeypatch):
         "FROM evals_view WHERE benchmark_id = 'mmlu'"
     ).fetchall()
     assert rows == [("mmlu-suite", "MMLU Suite")]
-    # Additive: the parent self-join must not change row counts. The
-    # synthetic fact-less parent shell is excluded as before.
+    assert con.execute(
+        "SELECT COUNT(*) FROM evals_view WHERE benchmark_id = 'mmlu-suite'"
+    ).fetchone()[0] == 1
     assert con.execute(
         "SELECT COUNT(*) FROM evals_view"
-    ).fetchone()[0] == baseline_count
+    ).fetchone()[0] == baseline_count + 1
 
 
 def test_evals_view_excludes_factless_parent_shells(tmp_path, monkeypatch):
@@ -237,13 +250,21 @@ def test_leaderboard_metrics_one_per_metric(tmp_path, monkeypatch):
         assert m["scope"] == "root"
 
 
+def _variant_rows_are_submitted_totals(con):
+    """The variant fixture's three rows are one benchmark measured three
+    ways. Mark them as the source's own benchmark-level readings, which is
+    what they stand for: without a submitted level they are an aggregate-less
+    pile and the cell correctly shows no number — a different test."""
+    con.execute("UPDATE fact_results SET aggregate_level = 'root'")
+
+
 def test_leaderboard_rows_pivoted_values_map(tmp_path, monkeypatch):
     """Each row's `values` is a MAP keyed by metric column_key.
     fixtures_variant: 3 fact rows, all same model+benchmark+metric,
     representative score = median = 0.78."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_variant")
-    con = _materialise_views(out)
+    con = _materialise_views(out, mutate=_variant_rows_are_submitted_totals)
     row = con.execute("SELECT leaderboard_rows FROM evals_view").fetchone()[0]
     assert row is not None
     assert len(row) >= 1
@@ -262,7 +283,7 @@ def test_avg_score_normalisation_uses_metric_bounds(tmp_path, monkeypatch):
     avg_score == avg_score_norm."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_variant")
-    con = _materialise_views(out)
+    con = _materialise_views(out, mutate=_variant_rows_are_submitted_totals)
     row = con.execute(
         "SELECT avg_score, avg_score_norm FROM evals_view"
     ).fetchone()
@@ -345,14 +366,20 @@ def test_tags_struct_shape(tmp_path, monkeypatch):
 
 
 def test_third_party_ratio_xparty_fixture(tmp_path, monkeypatch):
-    """fixtures_xparty: 1 model, 1 benchmark, coverage_cell='both' → ratio=1.0."""
+    """fixtures_xparty carries one first-party and one third-party record on
+    the same model and benchmark. Two resolved orgs in one config means the
+    composite org-partition rule gives each its own source page, and each page
+    now reports the relationship its own submitter declared — the ratio is 0
+    on the self-reported page and 1 on the independent one, not 1 on both."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_xparty")
     con = _materialise_views(out)
-    ratio = con.execute(
-        "SELECT third_party_ratio FROM evals_view"
-    ).fetchone()[0]
-    assert ratio == 1.0
+    ratios = [
+        r[0] for r in con.execute(
+            "SELECT third_party_ratio FROM evals_view ORDER BY third_party_ratio"
+        ).fetchall()
+    ]
+    assert ratios == [0.0, 1.0]
 
 
 @pytest.mark.skip(

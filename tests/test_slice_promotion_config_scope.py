@@ -275,3 +275,62 @@ def test_evaluation_result_id_collision_keeps_distinct_overrides(con):
     first = sorted(_overrides(con).items())
     slice_promotion.compute_overrides(con)
     assert sorted(_overrides(con).items()) == first
+
+
+def test_scoped_alias_beats_a_canonical_of_the_same_spelling(con):
+    """The scoped-first contract has to survive the case where the slice
+    spelling IS a canonical id somewhere else in the registry.
+
+    RewardBench's `Math` category is scoped to `rewardbench-2-math`, and
+    `math` is also a global canonical benchmark in its own right. Testing
+    `slugify(raw) in canonical_set` before consulting scoped aliases sent
+    every such row to the global canonical — the folder's own statement about
+    its own category, overruled by a name collision. The scoped alias is the
+    more specific evidence and is probed first.
+    """
+    _make_canonical_benchmarks(con, [
+        ("math", None),
+        ("reward-bench", None),
+        ("rewardbench-2-math", "reward-bench"),
+        ("rewardbench-2-safety", "reward-bench"),
+    ])
+    _make_aliases(con, [
+        # The collision: a scoped alias whose spelling is another canonical.
+        ("Math", "rewardbench-2-math", "benchmark", "confirmed", "reward-bench"),
+        ("Safety", "rewardbench-2-safety", "benchmark", "confirmed", "reward-bench"),
+        ("reward-bench", "reward-bench", "benchmark", "confirmed", None),
+        ("other-folder", "math", "benchmark", "confirmed", None),
+    ])
+    _make_results_exploded(con, [
+        ("ev_rb1", 0, "reward-bench", "reward-bench", "Math"),
+        ("ev_rb2", 0, "reward-bench", "reward-bench", "Safety"),
+    ])
+
+    slice_promotion.compute_overrides(con)
+    ov = _overrides(con)
+
+    assert ov["ev_rb1#0"] == "rewardbench-2-math"
+    assert ov["ev_rb2#0"] == "rewardbench-2-safety"
+
+
+def test_canonical_spelling_still_wins_without_a_scoped_alias(con):
+    """No regression for the ordinary case: with no scoped alias for the
+    folder, a slice spelling that IS a canonical id still resolves to it."""
+    _make_canonical_benchmarks(con, [
+        ("math", None),
+        ("gsm8k", None),
+        ("some-suite", None),
+    ])
+    _make_aliases(con, [
+        ("some-suite", "some-suite", "benchmark", "confirmed", None),
+    ])
+    _make_results_exploded(con, [
+        ("ev_s1", 0, "some-suite", "some-suite", "math"),
+        ("ev_s2", 0, "some-suite", "some-suite", "gsm8k"),
+    ])
+
+    slice_promotion.compute_overrides(con)
+    ov = _overrides(con)
+
+    assert ov["ev_s1#0"] == "math"
+    assert ov["ev_s2#0"] == "gsm8k"

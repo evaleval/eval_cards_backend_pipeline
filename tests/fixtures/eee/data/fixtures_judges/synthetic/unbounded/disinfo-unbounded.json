@@ -1,0 +1,53 @@
+{
+  "evaluation_id": "ev_disinfo_unbounded",
+  "schema_version": "0.2.2",
+  "retrieved_timestamp": "2026-04-30T00:00:00Z",
+  "evaluation_timestamp": "2026-04-29T00:00:00Z",
+  "model_info": {
+    "developer": "synthetic",
+    "name": "unbounded",
+    "id": "synthetic/unbounded"
+  },
+  "source_metadata": {
+    "source_name": "OpenEval",
+    "source_type": "evaluation_run",
+    "source_organization_name": "OpenEval",
+    "evaluator_relationship": "third_party"
+  },
+  "eval_library": {
+    "name": "openeval",
+    "version": "1.0"
+  },
+  "evaluation_results": [
+    {
+      "evaluation_name": "disinfo-bench",
+      "source_data": {"dataset_name": "disinfo-bench", "source_type": "other"},
+      "metric_config": {
+        "metric_id": "fixtures_judges.disinfo-bench.rating",
+        "metric_name": "Rating",
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "gpt_rating",
+          "metric_models_json": "[\"openai/gpt-4o-2024-05-13\"]"
+        }
+      },
+      "score_details": {"score": 0.5},
+      "generation_config": {"generation_args": {"temperature": 0.0}}
+    },
+    {
+      "evaluation_name": "disinfo-bench",
+      "source_data": {"dataset_name": "disinfo-bench", "source_type": "other"},
+      "metric_config": {
+        "metric_id": "fixtures_judges.disinfo-bench.rating",
+        "metric_name": "Rating",
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "gpt_rating",
+          "metric_models_json": "[\"openai/gpt-4o-2024-05-13\"]"
+        }
+      },
+      "score_details": {"score": 0.52},
+      "generation_config": {"generation_args": {"temperature": 1.0}}
+    }
+  ]
+}

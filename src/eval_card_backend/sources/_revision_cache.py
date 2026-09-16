@@ -34,12 +34,27 @@ def write_cache_revision(target: Path, revision: str | None) -> None:
     (target / _MARKER).write_text(revision, encoding="utf-8")
 
 
+def clear_cache_revision(target: Path) -> None:
+    """Drop the marker, e.g. after re-indexing an existing cache unpinned."""
+    (target / _MARKER).unlink(missing_ok=True)
+
+
 # `huggingface_hub` writes one metadata file per downloaded file under the
 # local dir; its first line is the commit hash the file came from. Unlike
 # `_MARKER` it is written on *every* download, pinned or not, so it tracks
 # what is actually on disk.
 _HF_DOWNLOAD_META_DIR = Path(".cache") / "huggingface" / "download"
 _MAX_METADATA_SCAN = 4096
+
+
+def hf_download_commit(target: Path, filename: str) -> str | None:
+    """Commit hash `huggingface_hub` recorded for one downloaded file, or None."""
+    meta = Path(target) / _HF_DOWNLOAD_META_DIR / f"{filename}.metadata"
+    try:
+        with meta.open(encoding="utf-8") as fh:
+            return fh.readline().strip() or None
+    except OSError:
+        return None
 
 
 def cached_revision(target: Path | None) -> str | None:

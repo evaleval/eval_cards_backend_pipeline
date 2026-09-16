@@ -75,6 +75,13 @@ def variant_parent_id_py(parents_json: str | None) -> str | None:
 
 miss_counter: Counter[str] = Counter()
 miss_examples: dict[str, Counter[str]] = defaultdict(Counter)
+
+# Caller-declared entity types that resolve against another type's vocabulary
+# but are counted on their own line. An LLM judge is a model and resolves like
+# one, but it is not a model anyone is evaluating: counting its misses as
+# evaluated-model misses made a run with three unregistered judges look like a
+# run with three unidentified subjects, and hid real model misses behind them.
+_COUNTED_SEPARATELY: dict[str, str] = {"judge_model": "model"}
 exception_seen: set[tuple[str, str]] = set()
 exception_counter: Counter[tuple[str, str]] = Counter()
 
@@ -106,6 +113,10 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
     call halves the work and lets repeated raws across rows (most rows share
     the same model_raw / benchmark_raw / etc.) hit cache.
     """
+    # The same cleaner Stage C feeds the plain benchmark lookup, so the
+    # observation-role UDF re-reads exactly the resolution the row got.
+    from eval_entity_resolver.eee import clean_eval_name
+
     # Cache the resolver result struct so both UDFs read from the same memo.
     # 16k entries comfortably covers our scale (a few hundred unique entities
     # × 5 entity types × ~50 source_configs); LRU evicts beyond that.
@@ -121,8 +132,9 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
     ) -> str | None:
         if not raw or not isinstance(raw, str) or not raw.strip():
             return None
+        lookup_type = _COUNTED_SEPARATELY.get(entity_type, entity_type)
         try:
-            result = _resolve_cached(raw, entity_type, source_config)
+            result = _resolve_cached(raw, lookup_type, source_config)
         except Exception as e:
             key = (entity_type or "?", type(e).__name__)
             exception_counter[key] += 1
@@ -193,9 +205,27 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
 
     @functools.lru_cache(maxsize=4096)
     def _structured_metric_cached(raw_id: str, source_config: str | None):
-        return resolver.resolve_structured_metric_id(
+        return resolver.resolve_structured_metric(
             raw_id, source_config, catch_all_ids=metric_catch_all_ids
         )
+
+    def _structured_metric(raw_id: str | None, source_config: str | None):
+        """The structured match for a namespaced `metric_config.metric_id`,
+        or None. Shared by the id and qualifier UDFs so both read one
+        decision.
+
+        Fail-safe: with no catch-all flags in the registry data (a
+        pre-catch-all revision), raw field names like `.score` and aggregate
+        labels like `.overall` would outrank prose — so the pre-step disables
+        itself outright rather than regress."""
+        if not metric_catch_all_ids:
+            return None
+        if not raw_id or not isinstance(raw_id, str) or not raw_id.strip():
+            return None
+        try:
+            return _structured_metric_cached(raw_id, source_config)
+        except Exception:
+            return None
 
     def resolve_metric_direct_py(
         raw_name: str | None, source_config: str | None
@@ -265,20 +295,23 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
         """Positionless registry-membership resolution over the namespaced
         `metric_config.metric_id` segments (see
         Resolver.resolve_structured_metric_id). NULL on any miss/deferral
-        so Stage C falls through to the extract_metric path.
+        so Stage C falls through to the extract_metric path."""
+        match = _structured_metric(raw_id, source_config)
+        return match.canonical_id if match is not None else None
 
-        Fail-safe: with no catch-all flags in the registry data (a
-        pre-catch-all revision), raw field names like `.score` and
-        aggregate labels like `.overall` would outrank prose — so the
-        pre-step disables itself outright rather than regress."""
-        if not metric_catch_all_ids:
-            return None
-        if not raw_id or not isinstance(raw_id, str) or not raw_id.strip():
-            return None
-        try:
-            return _structured_metric_cached(raw_id, source_config)
-        except Exception:
-            return None
+    def resolve_structured_metric_qualifier_py(
+        raw_id: str | None, source_config: str | None
+    ) -> str | None:
+        """The tail the structured metric match spelled after the segment
+        that named the metric (`gpqa.accuracy.strict` -> `strict`). NULL
+        when the id carries no tail, when the tail is only an aggregate
+        marker, or when the whole id matched a registry alias.
+
+        Stage D appends it to the metric key so scoring variants the source
+        reports side by side stay separate observations instead of pooling
+        into one median."""
+        match = _structured_metric(raw_id, source_config)
+        return match.qualifier if match is not None else None
 
     @functools.lru_cache(maxsize=4096)
     def _structured_benchmark_cached(raw_name: str, source_config: str | None):
@@ -310,6 +343,66 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
         match = _structured_benchmark(raw_name, source_config)
         return match.benchmark_raw if match is not None else None
 
+    def resolve_structured_benchmark_subset_py(
+        raw_name: str | None, source_config: str | None
+    ) -> str | None:
+        """The REAL subset the structured match found, or NULL.
+
+        A subset the registry claims as part of the benchmark's own name is
+        not a subset of it: `polyglotoxicityprompts.….small_overall` resolves
+        through an alias on the whole joined spelling, so the row measured the
+        benchmark, while `mmlu.mmlu.anatomy` resolves on the segment and
+        `anatomy` really is one subject of MMLU. This returns NULL for the
+        first and `anatomy` for the second, which is what the value rule needs
+        to tell a whole observation from a part. `benchmark_raw` keeps the
+        full spelling for the display slice either way."""
+        match = _structured_benchmark(raw_name, source_config)
+        if match is None or match.subset_is_identity:
+            return None
+        return match.subset
+
+    def resolve_benchmark_observation_role_py(
+        raw_name: str | None, source_config: str | None,
+        benchmark_id: str | None,
+    ) -> str:
+        """What the row is VERIFIED to have observed: `whole`, `part`, or
+        `unknown`.
+
+        The structured path answers for dotted names. A FLAT name (no dots,
+        spaces: most of HELM) is read by the plain alias index instead, and
+        one of its answers is a verification too: a byte-exact alias, scoped
+        or global, is the registry stating that this spelling, as written,
+        IS the benchmark it points at. `MMLU All Subjects` -> `mmlu` is such
+        a statement, and the row is a whole observation of `mmlu`. A flat
+        name that hits a slice child the same way (`Anatomy` scoped to HELM
+        -> `mmlu-anatomy`) is the whole of that child's own cell, exactly as
+        a structured `bfcl_v3.simple` is; relative to the parent it is a
+        part, and it sits in the child's cell rather than the parent's.
+
+        The exact hit has to land on the benchmark the row was RESOLVED to
+        (`benchmark_id`): a later hotfix or slice promotion that moved the
+        row to another canonical leaves the alias statement about a
+        different benchmark, so the row stays `unknown`.
+
+        `normalized` and fuzzy hits state that two spellings probably mean
+        one benchmark and nothing about what the row measured; those rows
+        stay `unknown` and pool exactly as they always have, the label just
+        stops asserting something resolution never checked."""
+        match = _structured_benchmark(raw_name, source_config)
+        if match is not None:
+            return match.observation_role
+        if not raw_name or not isinstance(raw_name, str) or benchmark_id is None:
+            return "unknown"
+        try:
+            result = _resolve_cached(
+                clean_eval_name(raw_name), "benchmark", source_config
+            )
+        except Exception:
+            return "unknown"
+        if result.strategy == "exact" and result.canonical_id == benchmark_id:
+            return "whole"
+        return "unknown"
+
     return (
         resolve_canonical_id_py,
         resolve_strategy_py,
@@ -318,8 +411,11 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
         resolve_resolution_source_py,
         resolve_resolution_granularity_py,
         resolve_structured_metric_id_py,
+        resolve_structured_metric_qualifier_py,
         resolve_structured_benchmark_id_py,
         resolve_structured_benchmark_raw_py,
+        resolve_structured_benchmark_subset_py,
+        resolve_benchmark_observation_role_py,
         resolve_metric_direct_py,
         metric_name_wins_py,
     )
@@ -341,9 +437,14 @@ def log_resolver_summary(top_n: int = 10) -> None:
     for entity_type, count in miss_counter.most_common():
         examples = miss_examples[entity_type].most_common(top_n)
         sample_str = ", ".join(f"{raw!r}×{n}" for raw, n in examples)
+        label = (
+            f"{entity_type} (resolved as {_COUNTED_SEPARATELY[entity_type]})"
+            if entity_type in _COUNTED_SEPARATELY
+            else entity_type
+        )
         log.info(
             "  %s: %d no_match across %d distinct raws — top: %s",
-            entity_type,
+            label,
             count,
             len(miss_examples[entity_type]),
             sample_str,

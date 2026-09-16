@@ -1,0 +1,108 @@
+{
+ "evaluation_id": "ev_tasks_many",
+ "schema_version": "0.2.2",
+ "retrieved_timestamp": "2026-04-30T00:00:00Z",
+ "evaluation_timestamp": "2026-04-29T00:00:00Z",
+ "model_info": {
+  "developer": "vendor",
+  "name": "TaskModel",
+  "id": "vendor/task-model",
+  "inference_platform": "test"
+ },
+ "source_metadata": {
+  "source_name": "Tasks Inc",
+  "source_type": "evaluation_run",
+  "source_organization_name": "Tasks Inc",
+  "evaluator_relationship": "first_party"
+ },
+ "eval_library": {
+  "name": "minibench",
+  "version": "1.0"
+ },
+ "evaluation_results": [
+  {
+   "evaluation_name": "omni-math.category.alpha",
+   "source_data": {
+    "dataset_name": "omni-math",
+    "source_type": "other"
+   },
+   "metric_config": {
+    "metric_id": "omni-math.acc",
+    "metric_name": "Accuracy",
+    "evaluation_description": "Accuracy",
+    "metric_kind": null,
+    "metric_unit": null,
+    "score_type": "continuous",
+    "min_score": 0.0,
+    "max_score": 1.0,
+    "lower_is_better": false
+   },
+   "score_details": {
+    "score": 0.1
+   }
+  },
+  {
+   "evaluation_name": "omni-math.category.beta",
+   "source_data": {
+    "dataset_name": "omni-math",
+    "source_type": "other"
+   },
+   "metric_config": {
+    "metric_id": "omni-math.acc",
+    "metric_name": "Accuracy",
+    "evaluation_description": "Accuracy",
+    "metric_kind": null,
+    "metric_unit": null,
+    "score_type": "continuous",
+    "min_score": 0.0,
+    "max_score": 1.0,
+    "lower_is_better": false
+   },
+   "score_details": {
+    "score": 0.2
+   }
+  },
+  {
+   "evaluation_name": "omni-math.category.gamma",
+   "source_data": {
+    "dataset_name": "omni-math",
+    "source_type": "other"
+   },
+   "metric_config": {
+    "metric_id": "omni-math.acc",
+    "metric_name": "Accuracy",
+    "evaluation_description": "Accuracy",
+    "metric_kind": null,
+    "metric_unit": null,
+    "score_type": "continuous",
+    "min_score": 0.0,
+    "max_score": 1.0,
+    "lower_is_better": false
+   },
+   "score_details": {
+    "score": 0.3
+   }
+  },
+  {
+   "evaluation_name": "omni-math.category.delta",
+   "source_data": {
+    "dataset_name": "omni-math",
+    "source_type": "other"
+   },
+   "metric_config": {
+    "metric_id": "omni-math.acc",
+    "metric_name": "Accuracy",
+    "evaluation_description": "Accuracy",
+    "metric_kind": null,
+    "metric_unit": null,
+    "score_type": "continuous",
+    "min_score": 0.0,
+    "max_score": 1.0,
+    "lower_is_better": false
+   },
+   "score_details": {
+    "score": 0.4
+   }
+  }
+ ]
+}

@@ -45,8 +45,12 @@ from eval_card_backend.slugs import url_encode
 
 log = logging.getLogger(__name__)
 
-CONFIG_VERSION = 1
-SIGNAL_VERSION = "1.0"
+CONFIG_VERSION = 2
+SIGNAL_VERSION = "1.1"
+
+# Warehouse contract version, carried on manifest.json. 2 = judge conditions,
+# rename-at-resolution `metric_key`, fact-level canonical scores.
+SCHEMA_VERSION = 2
 
 
 def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
@@ -87,6 +91,7 @@ def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
     skipped = sorted(IGNORED_CONFIGS)
     payload = {
         "generated_at":          snapshot_meta["snapshot_id"],
+        "schema_version":        SCHEMA_VERSION,
         "config_version":        CONFIG_VERSION,
         "skipped_configs":       skipped,
         "model_count":           int(model_count or 0),
@@ -312,7 +317,9 @@ def _completeness_block(con, tag: str | None) -> dict:
                 erv.model_key, erv.benchmark_id, erv.metric_id,
                 erv.completeness_score AS triple_avg_completeness
             FROM eval_results_view erv
-            WHERE 1 = 1 {tag_clause}
+            -- One row per (benchmark, metric, model) cell: the headline
+            -- reading. Extra judge/protocol rows are the same cell.
+            WHERE erv.is_headline {tag_clause}
         )
         SELECT
             COUNT(*)                                AS total_triples,
@@ -346,7 +353,7 @@ def _provenance_block(con, tag: str | None) -> dict:
             SUM(CASE WHEN erv.coverage_cell = 'both'                          THEN 1 ELSE 0 END) AS pst_collaborative,
             SUM(CASE WHEN erv.coverage_cell = 'third' AND NOT erv.has_third_party THEN 1 ELSE 0 END) AS pst_unspecified
         FROM eval_results_view erv
-        WHERE 1 = 1 {tag_clause}
+        WHERE erv.is_headline {tag_clause}
         """
     ).fetchone()
     (total, multi, first_only, pst_fp, pst_tp, pst_co, pst_un) = row
@@ -379,6 +386,12 @@ def _comparability_block(con, tag: str | None) -> dict:
         SELECT
             COUNT(DISTINCT fr.comparability_group_id)                 AS total_triples,
             COUNT(DISTINCT fr.comparability_group_id)
+                FILTER (WHERE fr.comparability_status = 'ok')         AS assessable,
+            COUNT(DISTINCT fr.comparability_group_id)
+                FILTER (WHERE fr.comparability_status = 'mixed_scale') AS mixed_scale,
+            COUNT(DISTINCT fr.comparability_group_id)
+                FILTER (WHERE fr.comparability_status = 'no_bounds')   AS no_bounds,
+            COUNT(DISTINCT fr.comparability_group_id)
                 FILTER (WHERE fr.has_variant_divergence)              AS variant_divergent,
             COUNT(DISTINCT fr.comparability_group_id)
                 FILTER (WHERE fr.has_cross_party_divergence)          AS cross_party_divergent,
@@ -397,9 +410,16 @@ def _comparability_block(con, tag: str | None) -> dict:
         WHERE fr.comparability_group_id IS NOT NULL {tag_clause}
         """
     ).fetchone()
-    (total, var_div, cross_div, var_elig, cross_elig) = row
+    (total, assessable, mixed, unbounded,
+     var_div, cross_div, var_elig, cross_elig) = row
     return {
         "total_triples":               int(total or 0),
+        # Assessability is the group's comparability_status: an `ok` group was
+        # compared on one agreed scale, the other two could not be compared at
+        # all and carry NULL — never FALSE — divergence flags.
+        "assessable_groups":           int(assessable or 0),
+        "mixed_scale_groups":          int(mixed or 0),
+        "no_bounds_groups":            int(unbounded or 0),
         "variant_divergent_count":     int(var_div or 0),
         "cross_party_divergent_count": int(cross_div or 0),
         "groups_with_variant_check":     int(var_elig or 0),
@@ -483,6 +503,8 @@ def _composites_list(con) -> list[dict]:
             COUNT(*)                                     AS evaluation_count
         FROM eval_results_view
         WHERE composite_slug IS NOT NULL
+          -- headline rows only: evaluation_count is cells, not conditions
+          AND is_headline
         GROUP BY composite_slug
         ORDER BY evaluation_count DESC, composite_slug ASC
         """
@@ -908,17 +930,23 @@ def _context_metric(con, benchmark_key: str) -> str | None:
     return metric_id
 
 
-def _context_scale_multiplier(con, composite_slug: str, benchmark_key: str,
-                              metric_id: str) -> float | None:
-    """The Stage J scale conversion for one (composite, benchmark, metric)
-    group, as a multiplier to apply to fact-grain scores. None when the group
-    is `flagged`/`no_bounds`, unclassified, or classified inconsistently — all
-    cases where the external values can't be placed on the canonical scale.
+def _context_scale_is_usable(con, composite_slug: str, benchmark_key: str,
+                             metric_id: str) -> bool:
+    """Whether one (composite, benchmark, metric) group's headline rows sit on
+    a single usable canonical scale. False when the group is
+    `flagged`/`no_bounds`, unclassified, or classified inconsistently — all
+    cases where the external values can't be placed on the canonical scale, so
+    the source is dropped.
 
-    Keyed on `metric_id_effective`, not the raw `metric_id`: an aggregator
-    whose metric folds into the canonical one keeps its raw id in
-    `eval_results_view` (llm-stats reports `score`), so keying on the raw id
-    finds nothing and silently drops the source. Dropping the metric predicate
+    Nothing is rescaled here: Stage D writes `score_canonical` and
+    `score_se_canonical` per row, and the caller reads those. This is only the
+    gate, so it must look at exactly the rows the caller keeps — the HEADLINE
+    rows. A losing judge condition carrying a different conversion class would
+    otherwise read as inconsistent and drop an entirely valid source.
+
+    Keyed on the effective metric id: an aggregator whose metric renames onto
+    the canonical one reports its own raw label, so keying on the raw id finds
+    nothing and silently drops the source. Dropping the metric predicate
     altogether is not the answer either — a composite whose other metric
     carries a different scale would then read as inconsistent and be dropped
     (`scale-seal-hle`/`hle`: accuracy is div100, calibration-error is none).
@@ -930,6 +958,7 @@ def _context_scale_multiplier(con, composite_slug: str, benchmark_key: str,
             FROM eval_results_view
             WHERE composite_slug = ? AND benchmark_id = ?
               AND metric_id_effective = ?
+              AND is_headline
               AND scale_conversion IS NOT NULL
             ORDER BY 1
             """,
@@ -943,36 +972,15 @@ def _context_scale_multiplier(con, composite_slug: str, benchmark_key: str,
             "conversion (saw %s); dropping the source",
             composite_slug, benchmark_key, metric_id, kinds or ["<none>"],
         )
-        return None
-    conversion = usable[0]
-    if conversion == "none":
-        return 1.0
-    if conversion == "div100":
-        return 0.01
-    if conversion == "mul100":
-        return 100.0
-    if conversion == "curated":
-        factor = None
-        if _table_exists(con, "benchmark_metric_folds"):
-            row = con.execute(
-                "SELECT scale_factor FROM benchmark_metric_folds "
-                "WHERE benchmark_id = ? AND from_metric_id = ? "
-                "AND scale_factor IS NOT NULL LIMIT 1",
-                [benchmark_key, metric_id],
-            ).fetchone()
-            factor = row[0] if row else None
-        if factor is None:
-            log.warning(
-                "collection_context: %s/%s/%s is scale-conversion 'curated' "
-                "but carries no fold scale_factor; dropping the source",
-                composite_slug, benchmark_key, metric_id,
-            )
-        return factor
-    log.warning(
-        "collection_context: unknown scale_conversion %r on %s/%s/%s; "
-        "dropping the source", conversion, composite_slug, benchmark_key, metric_id,
-    )
-    return None
+        return False
+    if usable[0] not in ("none", "div100", "mul100", "curated"):
+        log.warning(
+            "collection_context: unknown scale_conversion %r on %s/%s/%s; "
+            "dropping the source", usable[0], composite_slug, benchmark_key,
+            metric_id,
+        )
+        return False
+    return True
 
 
 def _context_external_points(con, *, collection_id: str, benchmark_key: str,
@@ -1018,18 +1026,19 @@ def _context_external_points(con, *, collection_id: str, benchmark_key: str,
     by_model: dict[str, list[dict]] = defaultdict(list)
     display_names = _context_composite_display_names(con, sources)
     for composite_slug in sources:
-        multiplier = _context_scale_multiplier(
+        if not _context_scale_is_usable(
             con, composite_slug, benchmark_key, metric_id
-        )
-        if multiplier is None:
+        ):
             continue
         rows = con.execute(
             """
             WITH keyed AS (
                 SELECT f.model_aggregation_key AS model,
                        f.agent_scaffold_raw    AS scaffold,
-                       f.score,
-                       f.score_se,
+                       f.score_canonical       AS score,
+                       -- the row's own canonical uncertainty; a source-wide
+                       -- multiplier would misconvert a mixed-class group
+                       f.score_se_canonical    AS score_se,
                        f.evaluation_timestamp  AS run_date,
                        TRY_CAST(f.retrieved_timestamp AS DOUBLE) AS ts,
                        MAX(TRY_CAST(f.retrieved_timestamp AS DOUBLE)) OVER (
@@ -1037,9 +1046,14 @@ def _context_external_points(con, *, collection_id: str, benchmark_key: str,
                                         f.agent_scaffold_raw
                        ) AS key_latest_ts
                 FROM fact_results f
-                WHERE f.composite_slug = ? AND f.benchmark_key = ?
+                -- Headline rows only: a benchmark measured under several
+                -- judge conditions would otherwise offer the same (model,
+                -- scaffold) key two scores and trip the ambiguity guard.
+                WHERE f.fact_id IN (SELECT fact_id FROM fact_headline
+                                    WHERE is_headline)
+                  AND f.composite_slug = ? AND f.benchmark_key = ?
                   AND f.metric_key_effective = ?
-                  AND f.score IS NOT NULL
+                  AND f.score_canonical IS NOT NULL
                   AND f.model_aggregation_key IS NOT NULL
                   AND f.org_id NOT IN (SELECT UNNEST(?))
             )
@@ -1086,20 +1100,18 @@ def _context_external_points(con, *, collection_id: str, benchmark_key: str,
         })
         for (model_key, scaffold, score, score_se, run_date,
                 retrieved_ts) in rows:
-            value = score * multiplier
-            if not 0.0 <= value <= 1.0:
+            if not 0.0 <= score <= 1.0:
                 raise RuntimeError(
                     f"collection_context: {composite_slug}/{benchmark_key} "
                     f"external point {model_key}/{scaffold} converts to "
-                    f"{value!r}, outside [0, 1]"
+                    f"{score!r}, outside [0, 1]"
                 )
             by_model[model_key].append({
                 "scaffold": scaffold,
                 "source": display_names.get(composite_slug, composite_slug),
-                "score": round(value, 6),
+                "score": round(score, 6),
                 "score_se": (
-                    None if score_se is None
-                    else round(score_se * multiplier, 6)
+                    None if score_se is None else round(score_se, 6)
                 ),
                 "run_date": str(run_date) if run_date is not None else None,
                 "retrieved_at": _context_retrieved_date(retrieved_ts),
@@ -2345,16 +2357,6 @@ def peel_metric_tail(label: str | None) -> tuple[str, str | None]:
     return (label, None)
 
 
-# Primary-metric preference list, in order.
-# Compared case-insensitively against metric_display_name. Earlier
-# entries win.
-_PRIMARY_METRIC_PREFERENCE: tuple[str, ...] = (
-    "overall", "mean win rate", "mean score", "score", "accuracy",
-    "exact match", "exact_match", "win rate", "elo", "rank",
-    "pass@1", "f1", "mean",
-)
-
-
 # Explicit overrides for which benchmark is the "primary readout" of a
 # family or composite — i.e. the row whose primary metric the frontend
 # surfaces as the family's headline number.
@@ -2401,25 +2403,46 @@ def _mark_family_primary_benchmark(
         b["is_primary"] = (b["key"] == primary_key)
 
 
-def _pick_primary_metric_key(metrics: list[dict]) -> str | None:
+def _pick_primary_metric_key(
+    metrics: list[dict], preferred: str | None = None
+) -> str | None:
     """Return the metric_key of the primary metric for a benchmark, or
-    None when the benchmark has no metrics:
+    None when the benchmark has no metrics.
 
-      1. First metric whose display name (case-insensitive) matches an
-         entry in `_PRIMARY_METRIC_PREFERENCE`, in preference order.
-      2. Fallback: most-reported metric (highest `models_count`,
-         tie-break alphabetical on metric_key).
+    ONE default-metric rule, shared verbatim with `evals_view.primary_metric_id`
+    and `merged_evals_view.preferred_metric_id` (`stages.py`, `primary_metric`
+    / `chosen`), in the same order:
+
+      1. the registry's `preferred_metric_id`, compared on the metric's BASE
+         id — a qualified reading (`accuracy::strict`) is still the preferred
+         metric, and comparing the qualified key would silently reject it;
+      2. a metric that measures the task ahead of one that only describes the
+         run (registry `metadata.role = diagnostic`), which is what stops a
+         page headlining cost-per-task or average word count;
+      3. widest distinct-model coverage, then most headline rows, then
+         metric key.
+
+    `metrics` is built from headline rows only, so presence in the list IS
+    "has a headline row". Each entry carries `base_key` (its `metric_base_id`)
+    and `is_diagnostic`; both default to the safe reading when absent.
+
+    The two artifacts must agree because the frontend reads the hierarchy for
+    navigation and the view for the number: a hierarchy node pointing at
+    `cost-per-task` while the page headlines `score` is one benchmark with two
+    answers.
     """
     if not metrics:
         return None
-    by_name = {(m.get("display_name") or m["key"]).strip().lower(): m
-               for m in metrics}
-    for pref in _PRIMARY_METRIC_PREFERENCE:
-        if pref in by_name:
-            return by_name[pref]["key"]
-    best = max(
+    best = min(
         metrics,
-        key=lambda m: (int(m.get("models_count") or 0), -ord(m["key"][:1] or " ")),
+        key=lambda m: (
+            0 if preferred is not None and (m.get("base_key") or m["key"]) == preferred
+            else 1,
+            1 if m.get("is_diagnostic") else 0,
+            -int(m.get("models_count") or 0),
+            -int(m.get("rows_count") or 0),
+            m["key"],
+        ),
     )
     return best["key"]
 
@@ -2451,17 +2474,26 @@ def _hierarchy_composite_benchmark(
     # preference list.
     metrics_rows = con.execute(
         """
-        SELECT metric_id,
-               MAX(metric_display_name)                    AS display_name,
-               ARRAY_AGG(DISTINCT source_metadata.source_organization_name
-                         ORDER BY source_metadata.source_organization_name)
-                   FILTER (WHERE source_metadata.source_organization_name IS NOT NULL)
+        SELECT r.metric_id,
+               MAX(r.metric_display_name)                  AS display_name,
+               ARRAY_AGG(DISTINCT r.source_metadata.source_organization_name
+                         ORDER BY r.source_metadata.source_organization_name)
+                   FILTER (WHERE r.source_metadata.source_organization_name IS NOT NULL)
                    AS sources,
-               COUNT(DISTINCT model_key)                   AS models_count
-        FROM eval_results_view
-        WHERE composite_slug = ? AND benchmark_id = ?
-        GROUP BY metric_id
-        ORDER BY metric_id
+               COUNT(DISTINCT r.model_key)                 AS models_count,
+               COUNT(*)                                    AS rows_count,
+               -- The registry identity behind the reading, and its role.
+               -- Both feed the shared primary-metric rule; without them this
+               -- sidecar re-derived the headline on coverage alone and
+               -- disagreed with the view it annotates.
+               MAX(r.metric_base_id)                       AS metric_base_id,
+               BOOL_OR(json_extract_string(cmet.metadata, '$.role') = 'diagnostic')
+                                                           AS is_diagnostic
+        FROM eval_results_view r
+        LEFT JOIN canonical_metrics cmet ON cmet.id = r.metric_base_id
+        WHERE r.composite_slug = ? AND r.benchmark_id = ? AND r.is_headline
+        GROUP BY r.metric_id
+        ORDER BY r.metric_id
         """,
         [composite_slug, benchmark_id],
     ).fetchall()
@@ -2491,11 +2523,23 @@ def _hierarchy_composite_benchmark(
             "display_name":  m[1] or m[0],
             "sources":       m[2] or [],
             "models_count":  int(m[3] or 0),
+            "rows_count":    int(m[4] or 0),
+            "base_key":      m[5],
+            "is_diagnostic": bool(m[6]),
         }
         for m in metrics_rows
     ]
-    primary_metric_key = _pick_primary_metric_key(metrics)
+    preferred_row = con.execute(
+        "SELECT preferred_metric_id FROM canonical_benchmarks WHERE id = ?",
+        [benchmark_id],
+    ).fetchone()
+    primary_metric_key = _pick_primary_metric_key(
+        metrics, preferred_row[0] if preferred_row else None
+    )
     for m in metrics:
+        m.pop("rows_count", None)
+        m.pop("base_key", None)
+        m.pop("is_diagnostic", None)
         m["is_primary"] = (m["key"] == primary_metric_key)
 
     family_id = root.get("family_id") or benchmark_id
@@ -2592,6 +2636,7 @@ def _hierarchy_composite_slices(
                     AS sources
             FROM eval_results_view erv
             WHERE erv.composite_slug = ? AND erv.benchmark_id = ?
+              AND erv.is_headline
             GROUP BY erv.metric_id
             ORDER BY erv.metric_id
             """,
@@ -2626,12 +2671,18 @@ def _hierarchy_composite_slices(
                 fr.slice_key,
                 fr.metric_key                            AS metric_id,
                 MIN(fr.slice_name)                       AS slice_name_rep,
+                -- A slice is one evaluation_name family, so it sits at one
+                -- aggregation level; MAX picks that single value.
+                MAX(fr.aggregate_level)                  AS aggregate_level,
                 MAX(cmet.display_name)                   AS metric_display,
                 ARRAY_AGG(DISTINCT fr.org_raw ORDER BY fr.org_raw)
                     FILTER (WHERE fr.org_raw IS NOT NULL) AS sources
             FROM fact_results fr
-            LEFT JOIN canonical_metrics cmet ON cmet.id = fr.metric_key
-            WHERE fr.composite_slug = ?
+            LEFT JOIN canonical_metrics cmet ON cmet.id = fr.metric_base_key
+            -- Headline fact rows only (semi-join, never a fan-out).
+            WHERE fr.fact_id IN (SELECT fact_id FROM fact_headline
+                                 WHERE is_headline)
+              AND fr.composite_slug = ?
               AND fr.benchmark_key = ?
               AND fr.slice_key IS NOT NULL
               AND fr.metric_key IS NOT NULL
@@ -2640,6 +2691,7 @@ def _hierarchy_composite_slices(
         SELECT
             slice_key,
             MIN(slice_name_rep) AS slice_display_name,
+            MAX(aggregate_level) AS aggregate_level,
             ARRAY_AGG(struct_pack(
                 metric_id      := metric_id,
                 metric_display := metric_display,
@@ -2660,21 +2712,56 @@ def _hierarchy_composite_slices(
         if slice_key in sibling_keys:
             continue
         out.append({
-            "key":          slice_key,
-            "display_name": row[1] or slice_key,
-            "is_bare_stem": slice_key == benchmark_id,
+            "key":             slice_key,
+            "display_name":    row[1] or slice_key,
+            "is_bare_stem":    slice_key == benchmark_id,
+            "aggregate_level": row[2],
             "metrics": [
                 {
                     "key":          m["metric_id"],
                     "display_name": m["metric_display"] or m["metric_id"],
                     "sources":      list(m["sources"] or []),
                 }
-                for m in row[2]
+                for m in row[3]
             ],
         })
 
+    _nest_subgroup_slices(out)
     out.sort(key=lambda s: s["key"])
     return out
+
+
+def _nest_subgroup_slices(slices: list[dict]) -> None:
+    """Point each slice at the group aggregate that covers it, in place.
+
+    A source that reports a group rollup beside the tasks inside it
+    (global_mmlu's `fr_overall` next to `fr_stem`, `fr_business`, ...) was
+    rendering all three as peers of each other and of the benchmark total, so
+    the tree said the French rollup and French STEM were siblings. They are
+    not: one contains the other.
+
+    The rollup's own key ends in the aggregate marker, so stripping it leaves
+    the prefix its members share. A slice whose key extends that prefix is a
+    member and gets `parent_key`; a rollup, and a task with no rollup above
+    it, keeps `parent_key` None and stays directly under the benchmark."""
+    marker = " overall"
+    groups = {
+        s["key"][: -len(marker)]: s["key"]
+        for s in slices
+        if s.get("aggregate_level") == "subgroup" and s["key"].endswith(marker)
+    }
+    for s in slices:
+        s.setdefault("aggregate_level", None)
+        parent = None
+        if s.get("aggregate_level") != "subgroup":
+            # longest matching prefix, so nested groups resolve to the
+            # closest one rather than the outermost
+            for prefix, group_key in groups.items():
+                if s["key"].startswith(prefix + " ") and (
+                    parent is None or len(prefix) > len(parent[0])
+                ):
+                    parent = (prefix, group_key)
+        s["parent_key"] = parent[1] if parent else None
 
 
 def _hierarchy_families_index(con) -> list[dict]:
@@ -2964,7 +3051,23 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
     # MAX-FILTER pattern stage I uses when packing it into metric_config.
     rows = con.execute(
         """
-        WITH metric_kinds AS (
+        WITH protocol_points AS (
+            -- Submission-axis bookkeeping, counted BEFORE the headline
+            -- filter: how many protocol arms this cell stands for. Judge
+            -- conditions are not submissions, so distinct protocol points
+            -- is the count, not rows.
+            SELECT
+                evaluation_id, metric_summary_id, model_route_id,
+                CAST(COUNT(DISTINCT COALESCE(protocol_condition, ''))
+                     AS INTEGER) AS n_points
+            FROM eval_results_view
+            WHERE score IS NOT NULL
+              AND model_route_id IS NOT NULL
+              AND COALESCE(json_extract_string(protocol_condition, '$.feedback'),
+                           'none') <> 'answer_feedback'
+            GROUP BY 1, 2, 3
+        ),
+        metric_kinds AS (
             SELECT
                 benchmark_key,
                 metric_key,
@@ -3006,12 +3109,9 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             mv.developer,
             mk.metric_kind,
             -- Protocol collapse bookkeeping (submission-axis hook): how
-            -- many non-excluded protocol points this representative row
-            -- stands for.
-            CAST(COUNT(*) OVER (
-                PARTITION BY erv.evaluation_id, erv.metric_summary_id,
-                             erv.model_route_id
-            ) AS INTEGER) AS n_protocol_points
+            -- many non-excluded protocol points this headline row stands
+            -- for.
+            COALESCE(pp.n_points, 1) AS n_protocol_points
         FROM eval_results_view erv
         -- Join on model_key (root-grain identity) so unresolved models
         -- still pick up models_view entries via the raw fallback.
@@ -3021,11 +3121,20 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
           ON mk.benchmark_key = erv.benchmark_id
          AND mk.metric_key    = erv.metric_id
         LEFT JOIN canonical_metrics cme
-          ON cme.id = erv.metric_id_effective
-        WHERE erv.score             IS NOT NULL
+          ON cme.id = erv.metric_base_id
+        LEFT JOIN protocol_points pp
+          ON  pp.evaluation_id     = erv.evaluation_id
+          AND pp.metric_summary_id = erv.metric_summary_id
+          AND pp.model_route_id    = erv.model_route_id
+        -- The comparison scale, not the published one: this artifact ranks
+        -- models against each other, and `score` is whatever each source
+        -- printed (0.71 on one row, 60.5 on the next).
+        WHERE erv.score_canonical   IS NOT NULL
           AND erv.evaluation_id     IS NOT NULL
           AND erv.metric_summary_id IS NOT NULL
           AND erv.model_route_id    IS NOT NULL
+          -- one cell per (eval, metric, model): the headline reading
+          AND erv.is_headline
           -- collections-spec answer-feedback rows are excluded from
           -- this precomputed cross-benchmark artifact outright.
           AND COALESCE(json_extract_string(erv.protocol_condition, '$.feedback'),
@@ -3038,7 +3147,7 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                          erv.model_route_id
             ORDER BY
                 CASE WHEN COALESCE(erv.lower_is_better, FALSE)
-                     THEN erv.score ELSE -erv.score END ASC,
+                     THEN erv.score_canonical ELSE -erv.score_canonical END ASC,
                 COALESCE(erv.protocol_condition, '') ASC
         ) = 1
         """
@@ -3109,10 +3218,16 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
         lower_is_better = bool(first["lower_is_better"])
 
         # Stable second pass: score in the metric's preferred direction,
-        # ties keeping the route-id order above. Mirrors the legacy
-        # producer's ordering so existing UI ranks don't shift on cutover.
+        # ties keeping the route-id order above.
+        #
+        # On `score_canonical`, the one scale every row here shares. Ranking
+        # the published `score` compared a fraction against a percentage and
+        # buried the leader: BFCL Memory's Claude Opus 4.5 is canonical 0.7097
+        # on a `mixed` cell, first of 91 in `eval_results_view`, but 81st here
+        # because percent-valued peers (2.155-60.535) sorted above it. The
+        # emitted `score` stays the source's own number, for display.
         peer_rows.sort(
-            key=lambda r: r["score"], reverse=not lower_is_better
+            key=lambda r: r["score_canonical"], reverse=not lower_is_better
         )
 
         total = len(peer_rows)
@@ -3121,11 +3236,12 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
         previous_score = None
         for idx, rec in enumerate(peer_rows, start=1):
             sc = rec["score"]
-            # Dense-tie ranking: position only advances when score changes,
-            # so peers at the same score share a rank. Matches legacy.
-            if previous_score is None or sc != previous_score:
+            rank_on = rec["score_canonical"]
+            # Dense-tie ranking: position only advances when the comparison
+            # value changes, so peers at the same score share a rank.
+            if previous_score is None or rank_on != previous_score:
                 position = idx
-                previous_score = sc
+                previous_score = rank_on
 
             scores_out.append({
                 "model_route_id":    rec["model_route_id"],
@@ -3255,10 +3371,15 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
              AND NOT r.is_slice
              AND r.metric_id_effective = m.preferred_metric_id
             LEFT JOIN models_view mv ON mv.model_key = r.model_key
-            LEFT JOIN canonical_metrics cmm ON cmm.id = m.preferred_metric_id
+            -- On the ROW's base id, not the merged page's qualified default:
+            -- `preferred_metric_id` is `metric_id_effective`, so a qualified
+            -- default (`accuracy::strict`) matches no `canonical_metrics.id`
+            -- and the comparison bounds silently come back NULL.
+            LEFT JOIN canonical_metrics cmm ON cmm.id = r.metric_base_id
             WHERE m.grain = 'benchmark'
               AND r.score_canonical IS NOT NULL
               AND r.model_route_id IS NOT NULL
+              AND r.is_headline
               AND r.scale_conversion != 'flagged'
               -- collections-spec answer-feedback rows never seed a
               -- merged best-score cell.
@@ -3447,6 +3568,7 @@ def write_benchmark_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
               ON m.benchmark_id = r.benchmark_id
              AND r.metric_id_effective = m.preferred_metric_id
             WHERE NOT r.is_slice AND r.scale_conversion IS NOT NULL
+              AND r.is_headline
             GROUP BY 1, 2, 3
             ORDER BY 1, 2, n DESC, 3
             """
@@ -3538,7 +3660,8 @@ def write_peer_ranks(con, out_dir: Path, snapshot_meta: dict) -> Path:
         JOIN evals_view ev
           ON  ev.evaluation_id      = erv.evaluation_id
           AND ev.primary_metric_id  = erv.metric_id
-        WHERE erv.score          IS NOT NULL
+        WHERE erv.score_canonical IS NOT NULL
+          AND erv.is_headline
           AND erv.position       IS NOT NULL
           AND erv.total          IS NOT NULL
           AND erv.model_route_id IS NOT NULL

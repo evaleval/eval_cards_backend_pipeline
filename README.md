@@ -72,11 +72,26 @@ Stage letters: A (load) · B (explode) · C (resolve identity) · D (flatten
 + join dims) · E (per-row signals) · F (group signals) · G (dim
 materialisation) · I (canonical-warehouse emit) · J (view-layer emit).
 
+Each cache directory records the `CACHE_SCHEMA_VERSION` the pipeline that
+wrote it declared (`canonicalise/cache.py`). When a stage's cached output
+changes shape the constant is bumped, and `--from-stage` against a cache
+written before the bump fails immediately with a message naming the stale
+directory. The fix is always a full run from Stage A.
+
+The marker is written only once a stage's outputs are all on disk, and
+writing stage X first deletes the cached outputs of every later stage. A run
+cut short by `--to-stage` or by an interruption therefore leaves a cache that
+either refuses to restore (no marker) or restores a single consistent
+generation — never a Stage D rebuild sitting on top of yesterday's Stage J.
+A restore also requires every table the requested stages declare; a missing
+one fails with the same "re-run from Stage A" message.
+
 ## Output layout
 
 ```
 warehouse/<snapshot_id>/
 ├── fact_results.parquet           # one row per atomic score, all signal columns
+│                                  #   (+ is_headline, re-emitted in Stage J)
 ├── benchmarks.parquet             # one row per (composite, benchmark) appearance
 ├── composites.parquet             # one row per composite_slug
 ├── families.parquet               # one row per benchmark family

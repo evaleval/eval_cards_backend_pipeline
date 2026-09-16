@@ -1,0 +1,44 @@
+{
+  "evaluation_id": "ev_helm_safety_model_a",
+  "schema_version": "0.2.2",
+  "retrieved_timestamp": "2026-04-30T00:00:00Z",
+  "evaluation_timestamp": "2026-04-29T00:00:00Z",
+  "model_info": {
+    "developer": "safety",
+    "name": "model-a",
+    "id": "safety/model-a"
+  },
+  "source_metadata": {
+    "source_name": "HELM",
+    "source_type": "evaluation_run",
+    "source_organization_name": "HELM",
+    "evaluator_relationship": "third_party"
+  },
+  "eval_library": {
+    "name": "helm",
+    "version": "1.0"
+  },
+  "evaluation_results": [
+    {
+      "evaluation_name": "harmbench",
+      "source_data": {
+        "dataset_name": "harmbench",
+        "source_type": "other"
+      },
+      "metric_config": {
+        "metric_id": "fixtures_judges.harmbench.score",
+        "metric_name": "Score",
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 1.0,
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "LM Evaluated Safety score"
+        }
+      },
+      "score_details": {
+        "score": 0.75
+      }
+    }
+  ]
+}

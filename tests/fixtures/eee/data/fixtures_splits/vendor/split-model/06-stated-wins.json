@@ -1,0 +1,70 @@
+{
+ "evaluation_id": "ev_split_stated",
+ "schema_version": "0.2.2",
+ "retrieved_timestamp": "2026-04-30T00:00:00Z",
+ "evaluation_timestamp": "2026-04-29T00:00:00Z",
+ "model_info": {
+  "developer": "vendor",
+  "name": "SplitModel",
+  "id": "vendor/split-model",
+  "inference_platform": "test"
+ },
+ "source_metadata": {
+  "source_name": "Splits Inc",
+  "source_type": "evaluation_run",
+  "source_organization_name": "Splits Inc",
+  "evaluator_relationship": "first_party"
+ },
+ "eval_library": {
+  "name": "minibench",
+  "version": "1.0"
+ },
+ "evaluation_results": [
+  {
+   "evaluation_name": "disinfo-bench.overall",
+   "source_data": {
+    "dataset_name": "disinfo-bench",
+    "source_type": "hf_dataset",
+    "hf_repo": "vendor/disinfo-bench",
+    "hf_split": "test"
+   },
+   "metric_config": {
+    "metric_id": "disinfo-bench.acc",
+    "metric_name": "Accuracy",
+    "evaluation_description": "Accuracy",
+    "metric_kind": null,
+    "metric_unit": null,
+    "score_type": "continuous",
+    "min_score": 0.0,
+    "max_score": 1.0,
+    "lower_is_better": false
+   },
+   "score_details": {
+    "score": 0.9
+   }
+  },
+  {
+   "evaluation_name": "disinfo-bench.part.a",
+   "source_data": {
+    "dataset_name": "disinfo-bench",
+    "source_type": "hf_dataset",
+    "hf_repo": "vendor/disinfo-bench",
+    "hf_split": "validation"
+   },
+   "metric_config": {
+    "metric_id": "disinfo-bench.acc",
+    "metric_name": "Accuracy",
+    "evaluation_description": "Accuracy",
+    "metric_kind": null,
+    "metric_unit": null,
+    "score_type": "continuous",
+    "min_score": 0.0,
+    "max_score": 1.0,
+    "lower_is_better": false
+   },
+   "score_details": {
+    "score": 0.8
+   }
+  }
+ ]
+}

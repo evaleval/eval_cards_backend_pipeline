@@ -1,0 +1,111 @@
+{
+  "evaluation_id": "ev_safety_model_b",
+  "schema_version": "0.2.2",
+  "retrieved_timestamp": "2026-04-30T00:00:00Z",
+  "evaluation_timestamp": "2026-04-29T00:00:00Z",
+  "model_info": {
+    "developer": "safety",
+    "name": "model-b",
+    "id": "safety/model-b"
+  },
+  "source_metadata": {
+    "source_name": "OpenEval",
+    "source_type": "evaluation_run",
+    "source_organization_name": "OpenEval",
+    "evaluator_relationship": "third_party"
+  },
+  "eval_library": {
+    "name": "openeval",
+    "version": "1.0"
+  },
+  "evaluation_results": [
+    {
+      "evaluation_name": "harmbench",
+      "source_data": {
+        "dataset_name": "harmbench",
+        "source_type": "other"
+      },
+      "metric_config": {
+        "metric_id": "fixtures_judges.harmbench.score",
+        "metric_name": "Score",
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 1.0,
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "gpt_refusal",
+          "metric_models_json": "[\"openai/gpt-4o-2024-05-13\"]"
+        }
+      },
+      "score_details": {
+        "score": 0.6
+      }
+    },
+    {
+      "evaluation_name": "xstest",
+      "source_data": {
+        "dataset_name": "xstest",
+        "source_type": "other"
+      },
+      "metric_config": {
+        "metric_id": "fixtures_judges.xstest.score",
+        "metric_name": "Score",
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 1.0,
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "gpt_refusal",
+          "metric_models_json": "[\"openai/gpt-4o-2024-05-13\"]"
+        }
+      },
+      "score_details": {
+        "score": 0.6
+      }
+    },
+    {
+      "evaluation_name": "simplesafetytests",
+      "source_data": {
+        "dataset_name": "simplesafetytests",
+        "source_type": "other"
+      },
+      "metric_config": {
+        "metric_id": "fixtures_judges.simplesafetytests.score",
+        "metric_name": "Score",
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 1.0,
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "gpt_refusal",
+          "metric_models_json": "[\"openai/gpt-4o-2024-05-13\"]"
+        }
+      },
+      "score_details": {
+        "score": 0.61
+      }
+    },
+    {
+      "evaluation_name": "anthropic-red-team",
+      "source_data": {
+        "dataset_name": "anthropic-red-team",
+        "source_type": "other"
+      },
+      "metric_config": {
+        "metric_id": "fixtures_judges.anthropic-red-team.score",
+        "metric_name": "Score",
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 1.0,
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "gpt_refusal",
+          "metric_models_json": "[\"openai/gpt-4o-2024-05-13\"]"
+        }
+      },
+      "score_details": {
+        "score": 0.62
+      }
+    }
+  ]
+}

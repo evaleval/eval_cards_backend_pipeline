@@ -14,6 +14,7 @@ literal.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import duckdb
 import pytest
@@ -448,17 +449,29 @@ def test_derive_metric_meta_udf_synonym_normalisation(con):
 
 
 class _StructuredStubResolver(_StubResolver):
-    """Stub with the structured metric-id method the pre-step binds to."""
+    """Stub with the structured metric-match method the pre-step binds to.
+
+    `structured` maps a raw id to either a canonical id or a
+    (canonical id, qualifier) pair, so a test can exercise the tail without
+    standing up an alias store."""
 
     def __init__(self, structured=None, catch_all_seen=None):
         super().__init__()
         self.structured = structured or {}
         self.catch_all_seen = catch_all_seen
 
-    def resolve_structured_metric_id(self, raw_id, source_config=None, catch_all_ids=frozenset()):
+    def resolve_structured_metric(self, raw_id, source_config=None, catch_all_ids=frozenset()):
         if self.catch_all_seen is not None:
             self.catch_all_seen.append(catch_all_ids)
-        return self.structured.get(raw_id)
+        hit = self.structured.get(raw_id)
+        if hit is None:
+            return None
+        canonical, qualifier = hit if isinstance(hit, tuple) else (hit, None)
+        return SimpleNamespace(
+            canonical_id=canonical,
+            matched_segment=canonical,
+            qualifier=qualifier,
+        )
 
 
 def test_resolve_structured_metric_id_round_trip():
@@ -475,6 +488,29 @@ def test_resolve_structured_metric_id_round_trip():
         "       resolve_structured_metric_id(NULL, NULL)"
     ).fetchone()
     assert rows == ("elo", None, None)
+    c.close()
+
+
+def test_resolve_structured_metric_qualifier_round_trip():
+    """The qualifier UDF surfaces the tail of the same match, and stays NULL
+    wherever the id UDF returns NULL."""
+    udfs.reset_resolver_counters()
+    c = duckdb.connect()
+    register_udfs(
+        c,
+        _StructuredStubResolver({
+            "gpqa.accuracy.strict": ("accuracy", "strict"),
+            "lmarena.elo.overall": "elo",
+        }),
+        frozenset({"score", "overall"}),
+    )
+    rows = c.execute(
+        "SELECT resolve_structured_metric_qualifier('gpqa.accuracy.strict', NULL),"
+        "       resolve_structured_metric_qualifier('lmarena.elo.overall', NULL),"
+        "       resolve_structured_metric_qualifier('llm_stats.gdpval-aa.score', NULL),"
+        "       resolve_structured_metric_qualifier(NULL, NULL)"
+    ).fetchone()
+    assert rows == ("strict", None, None, None)
     c.close()
 
 
@@ -589,3 +625,24 @@ def test_metric_catch_all_ids_reads_the_nested_layout_too(tmp_path):
         {"id": "accuracy", "metadata": "{}"},
     ]).to_parquet(tmp_path / "canonical_metrics" / "part-0.parquet")
     assert _metric_catch_all_ids(tmp_path) == frozenset({"score"})
+
+
+def test_judge_model_misses_are_counted_on_their_own_line(caplog):
+    """An LLM judge resolves against the model vocabulary but is not a model
+    anyone is evaluating. Counting its misses as evaluated-model misses made a
+    run with unregistered judges look like a run with unidentified subjects."""
+    udfs.reset_resolver_counters()
+    c = duckdb.connect()
+    register_udfs(c, _StubResolver(), frozenset({"score"}))
+    c.execute(
+        "SELECT resolve_canonical_id('never/seen-model', 'model', NULL),"
+        "       resolve_canonical_id('cais/HarmBench-cls', 'judge_model', NULL)"
+    )
+    assert udfs.miss_counter["model"] == 1
+    assert udfs.miss_counter["judge_model"] == 1
+    with caplog.at_level("INFO"):
+        udfs.log_resolver_summary()
+    lines = [r.getMessage() for r in caplog.records]
+    assert any("judge_model (resolved as model): 1 no_match" in ln for ln in lines)
+    assert any(ln.strip().startswith("model: 1 no_match") for ln in lines)
+    c.close()

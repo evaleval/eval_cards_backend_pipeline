@@ -89,6 +89,17 @@ def _reparent_mmlu_under_suite(con) -> None:
         "UPDATE benchmarks SET parent_benchmark_id = 'mmlu-suite', "
         "is_slice = TRUE WHERE benchmark_id = 'mmlu'"
     )
+    # and the registry edge behind it: the parent's expected task set, which
+    # the suite rollup requires to be complete before it states a number.
+    # Stage J creates its own stand-in for this table later; borrow the same
+    # helper here so the schema matches.
+    from eval_card_backend.canonicalise import stages
+
+    stages._ensure_merged_view_inputs(con)
+    con.execute(
+        "INSERT INTO canonical_benchmarks (id, parent_benchmark_id) "
+        "VALUES ('mmlu-suite', NULL), ('mmlu', 'mmlu-suite')"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +168,9 @@ def test_parent_benchmark_display_name_null_for_roots(tmp_path, monkeypatch):
 
 def test_parent_benchmark_display_name_for_slice_rows(tmp_path, monkeypatch):
     """A slice row surfaces its parent benchmark's own display name (not
-    the composite label), via the dim self-join. Row counts stay intact —
-    the self-join must not fan out."""
+    the composite label), via the dim self-join. The self-join must not fan
+    out: the extra rows the reparenting produces are exactly the suite
+    parent's, rolled up from its children."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     baseline = _materialise_view(out)
@@ -172,10 +184,21 @@ def test_parent_benchmark_display_name_for_slice_rows(tmp_path, monkeypatch):
         "FROM eval_results_view WHERE benchmark_id = 'mmlu'"
     ).fetchall()
     assert rows == [("mmlu-suite", "MMLU Suite")]
-    # Additive: the parent self-join must not change row counts.
+    derived = con.execute(
+        "SELECT COUNT(*) FROM eval_results_view "
+        "WHERE benchmark_id = 'mmlu-suite'"
+    ).fetchone()[0]
+    assert derived > 0
+    assert all(
+        lvl == "derived"
+        for (lvl,) in con.execute(
+            "SELECT value_level FROM eval_results_view "
+            "WHERE benchmark_id = 'mmlu-suite'"
+        ).fetchall()
+    )
     assert con.execute(
         "SELECT COUNT(*) FROM eval_results_view"
-    ).fetchone()[0] == baseline_count
+    ).fetchone()[0] == baseline_count + derived
 
 
 def test_eee_record_url_built_from_source_path(tmp_path, monkeypatch):
@@ -264,12 +287,21 @@ def test_model_route_id_round_trips(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _variant_rows_are_submitted_totals(con):
+    """The variant fixture's three rows are one benchmark measured three
+    ways. Mark them as the source's own benchmark-level readings, which is
+    what they stand for: without a submitted level they are an aggregate-less
+    pile and the cell correctly shows no number — a different test."""
+    con.execute("UPDATE fact_results SET aggregate_level = 'root'")
+
+
 def test_score_uses_median_across_fact_rows(tmp_path, monkeypatch):
     """fixtures_variant has three first-party rows (0.5, 0.78, 0.85) on the
-    same triple. Representative score = median = 0.78."""
+    same triple. Several submitted readings of one quantity pool by median =
+    0.78."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_variant")
-    con = _materialise_view(out)
+    con = _materialise_view(out, mutate=_variant_rows_are_submitted_totals)
     row = con.execute(
         "SELECT score, fact_row_count FROM eval_results_view"
     ).fetchone()
@@ -401,7 +433,7 @@ def test_evalcards_annotations_struct_populated(tmp_path, monkeypatch):
 def test_score_details_struct_shape(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_variant")
-    con = _materialise_view(out)
+    con = _materialise_view(out, mutate=_variant_rows_are_submitted_totals)
     row = con.execute(
         "SELECT score_details FROM eval_results_view"
     ).fetchone()
@@ -461,9 +493,10 @@ def test_primary_key_is_unique(tmp_path, monkeypatch):
 def test_infinite_registry_bound_reads_like_null(tmp_path, monkeypatch):
     """The registry spells "unbounded by definition" as an infinite float.
     The view's min_score / max_score / score_normalized must read exactly
-    as they do for a NULL bound (the [0, 1] defaults), never a 0/inf range
-    that normalises every score to 0, and no infinite value may reach the
-    parquet the frontend reads."""
+    as they do for a NULL bound, never a 0/inf range that normalises every
+    score to 0, and no infinite value may reach the parquet the frontend
+    reads. Both spellings mean the same thing — no bounds — so neither
+    produces a normalised score."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
 
@@ -487,4 +520,4 @@ def test_infinite_registry_bound_reads_like_null(tmp_path, monkeypatch):
     assert infinite == baseline
     for _, _, lo, hi, norm in infinite:
         assert (lo, hi) == (0.0, 1.0)
-        assert norm is not None and 0.0 <= norm <= 1.0
+        assert norm is None

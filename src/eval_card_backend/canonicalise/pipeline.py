@@ -814,6 +814,14 @@ def _log_canonicalisation_summary(con, fact_count: int) -> None:
                         AND benchmark_id IS NOT NULL
                         AND metric_id IS NOT NULL)          AS resolved_groups,
             COUNT(DISTINCT comparability_group_id)
+                FILTER (WHERE comparability_status = 'ok')  AS assessable_groups,
+            COUNT(DISTINCT comparability_group_id)
+                FILTER (WHERE comparability_status = 'mixed_scale')
+                                                            AS mixed_scale_groups,
+            COUNT(DISTINCT comparability_group_id)
+                FILTER (WHERE comparability_status = 'no_bounds')
+                                                            AS no_bounds_groups,
+            COUNT(DISTINCT comparability_group_id)
                 FILTER (WHERE variant_divergence_threshold IS NOT NULL)
                                                             AS variant_eligible,
             COUNT(DISTINCT comparability_group_id)
@@ -833,7 +841,8 @@ def _log_canonicalisation_summary(con, fact_count: int) -> None:
     (
         unresolved_model, unresolved_benchmark, unresolved_metric,
         unresolved_org, unresolved_harness, score_scale_anomalies,
-        resolved_groups, variant_eligible, cross_eligible,
+        resolved_groups, assessable_groups, mixed_scale_groups,
+        no_bounds_groups, variant_eligible, cross_eligible,
         variant_pos, cross_pos, bc_n, bc_mean, bc_min, bc_max,
     ) = row
     log.info(
@@ -843,6 +852,13 @@ def _log_canonicalisation_summary(con, fact_count: int) -> None:
     )
     log.info("  score_scale_anomalies: %d", score_scale_anomalies)
     log.info("  resolved (m,b,metric) groups: %d", resolved_groups)
+    # Assessability is the group's comparability_status, not the presence of a
+    # threshold: a group can be `ok` and still carry no threshold when the
+    # signal itself does not apply (one row, one reporting org).
+    log.info(
+        "  comparability groups: assessable=%d mixed_scale=%d no_bounds=%d",
+        assessable_groups, mixed_scale_groups, no_bounds_groups,
+    )
     log.info("  variant-divergence eligible groups: %d", variant_eligible)
     log.info("  cross-party-divergence eligible groups: %d", cross_eligible)
     log.info("  variant-divergence groups: %d", variant_pos)

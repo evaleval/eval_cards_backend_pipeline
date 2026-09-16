@@ -35,7 +35,21 @@ CREATE TABLE fact_results (
     -- working unchanged.
     benchmark_key          VARCHAR AS (benchmark_id),
     metric_key             VARCHAR AS (metric_id),
-    model_aggregation_key  VARCHAR AS (model_key)
+    -- No scoring-variant qualifiers in these synthetic rows, so the
+    -- registry-lookup key is the observation key.
+    metric_base_key        VARCHAR AS (metric_id),
+    model_aggregation_key  VARCHAR AS (model_key),
+    -- Stage D reads the aggregation level off the raw evaluation_name's
+    -- last segment; here the slice key stands in for it, so a synthetic
+    -- `<group> overall` row is a group rollup and everything else a leaf.
+    aggregate_level        VARCHAR AS (
+        CASE WHEN slice_key LIKE '% overall' THEN 'subgroup' ELSE 'leaf' END),
+    -- The slice helper filters on the Stage J headline map; synthetic rows
+    -- are all headline, so a generated key + a view over it is enough.
+    fact_id                VARCHAR AS (
+        COALESCE(composite_slug, '') || '|' || COALESCE(benchmark_id, '')
+        || '|' || COALESCE(slice_key, '') || '|' || COALESCE(metric_id, '')
+        || '|' || COALESCE(model_key, '') || '|' || COALESCE(org_raw, ''))
 )
 """
 
@@ -60,6 +74,10 @@ def _seed_minimal_tables(con):
     """Provide the three tables the slice helper reads, plus a one-row
     `benchmarks` stand-in so queries that join it run."""
     con.execute(_FACT_DDL)
+    con.execute(
+        "CREATE VIEW fact_headline AS "
+        "SELECT fact_id, TRUE AS is_headline FROM fact_results"
+    )
     con.execute(_BENCH_DDL)
     con.execute(_METRICS_DDL)
     con.execute("INSERT INTO benchmarks VALUES ('helm-classic', 'mmlu', NULL, FALSE)")
@@ -190,3 +208,57 @@ def test_slice_display_name_picks_deterministic_representative(con):
     assert slices["mmlu"]["display_name"] == "MMLU"
     # `mmlu` slice key matches the benchmark id → flagged as bare-stem.
     assert slices["mmlu"]["is_bare_stem"] is True
+
+
+def test_group_rollup_slices_nest_their_member_tasks(con):
+    """A source that reports a group rollup beside the tasks inside it
+    (global_mmlu's `fr_overall` next to `fr_stem`) used to render all of them
+    as peers, so the tree said the French rollup and French STEM were
+    siblings. The rollup's key ends in the aggregate marker, and every task
+    whose key extends the prefix left over is a member of it."""
+    _seed_minimal_tables(con)
+    con.execute("INSERT INTO canonical_metrics VALUES ('accuracy', 'Accuracy')")
+    con.executemany(
+        "INSERT INTO fact_results VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("helm-classic", "mmlu", "global mmlu fr overall",
+             "fr_overall", "accuracy", "m1", "OpenAI"),
+            ("helm-classic", "mmlu", "global mmlu fr stem",
+             "fr_stem", "accuracy", "m1", "OpenAI"),
+            ("helm-classic", "mmlu", "global mmlu fr business",
+             "fr_business", "accuracy", "m1", "OpenAI"),
+            ("helm-classic", "mmlu", "global mmlu de overall",
+             "de_overall", "accuracy", "m1", "OpenAI"),
+            ("helm-classic", "mmlu", "global mmlu de stem",
+             "de_stem", "accuracy", "m1", "OpenAI"),
+            # a task with no rollup above it stays directly under the benchmark
+            ("helm-classic", "mmlu", "global mmlu", "overall",
+             "accuracy", "m1", "OpenAI"),
+        ],
+    )
+    parents = {
+        s["key"]: s["parent_key"]
+        for s in _hierarchy_composite_slices(con, "helm-classic", "mmlu", [])
+    }
+    assert parents["global mmlu fr overall"] is None
+    assert parents["global mmlu de overall"] is None
+    assert parents["global mmlu fr stem"] == "global mmlu fr overall"
+    assert parents["global mmlu fr business"] == "global mmlu fr overall"
+    assert parents["global mmlu de stem"] == "global mmlu de overall"
+    assert parents["global mmlu"] is None
+
+
+def test_slices_without_any_rollup_keep_a_null_parent(con):
+    """MMLU-subject style slices, where no group aggregate exists at all."""
+    _seed_minimal_tables(con)
+    con.execute("INSERT INTO canonical_metrics VALUES ('accuracy', 'Accuracy')")
+    con.executemany(
+        "INSERT INTO fact_results VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("helm-classic", "mmlu", "anatomy", "Anatomy", "accuracy", "m1", "OpenAI"),
+            ("helm-classic", "mmlu", "astronomy", "Astronomy", "accuracy", "m1", "OpenAI"),
+        ],
+    )
+    slices = _hierarchy_composite_slices(con, "helm-classic", "mmlu", [])
+    assert all(s["parent_key"] is None for s in slices)
+    assert all(s["aggregate_level"] == "leaf" for s in slices)

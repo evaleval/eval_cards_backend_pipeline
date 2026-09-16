@@ -1,0 +1,37 @@
+{
+  "evaluation_id": "ev_disinfo_scale_ai",
+  "schema_version": "0.2.2",
+  "retrieved_timestamp": "2026-04-30T00:00:00Z",
+  "evaluation_timestamp": "2026-04-29T00:00:00Z",
+  "model_info": {
+    "developer": "synthetic",
+    "name": "two-party",
+    "id": "synthetic/two-party"
+  },
+  "source_metadata": {
+    "source_name": "Scale AI",
+    "source_type": "evaluation_run",
+    "source_organization_name": "Scale AI",
+    "evaluator_relationship": "third_party"
+  },
+  "eval_library": {"name": "openeval", "version": "1.0"},
+  "evaluation_results": [
+    {
+      "evaluation_name": "disinfo-bench",
+      "source_data": {"dataset_name": "disinfo-bench", "source_type": "other"},
+      "metric_config": {
+        "metric_id": "fixtures_judges.disinfo-bench.accuracy",
+        "metric_name": "Accuracy",
+        "score_type": "continuous",
+        "min_score": 0.0,
+        "max_score": 100.0,
+        "lower_is_better": false,
+        "additional_details": {
+          "raw_metric_name": "judge_accuracy",
+          "metric_models_json": "[\"openai/gpt-4o-2024-05-13\"]"
+        }
+      },
+      "score_details": {"score": 0.5}
+    }
+  ]
+}

@@ -375,7 +375,7 @@ def test_fixture_07_no_score_dropped_with_counter(tmp_path, monkeypatch):
 
 
 def test_all_configs_run_without_error(tmp_path, monkeypatch):
-    """Smoke test: run the pipeline over the full fixture corpus (all 4 configs
+    """Smoke test: run the pipeline over the full fixture corpus (every config
     at once). Verifies no cross-config interaction issues."""
     eee_root = FIXTURES / "eee"
     cards_root = FIXTURES / "auto_benchmarkcards"
@@ -397,27 +397,38 @@ def test_all_configs_run_without_error(tmp_path, monkeypatch):
     )
 
     df = _facts(out)
-    # 13 EEE records total (10 + 3 from fixtures_slices); 1 has no score
-    # → 12 fact rows.
-    assert len(df) == 12
+    # 51 EEE records (10 + 3 from fixtures_slices + 25 from fixtures_judges +
+    # 7 from fixtures_tasks + 6 from fixtures_splits); 1 has no score, and the
+    # judged records carry several published numbers each (the safety pair
+    # now spans all four safety benchmarks) → 99 fact rows.
+    assert len(df) == 99
 
     # Resolved-keys counts
     assert df["benchmark_id"].notna().all()    # all benchmarks resolve
     assert df["metric_id"].notna().all()       # all metrics resolve
-    # Only the community fine-tune fails resolution → 1 row with NULL model_id.
-    assert df["model_id"].isna().sum() == 1
+    # The community fine-tune plus the synthetic / GPT-5.x / safety models the
+    # judge fixtures name, and `vendor/task-model` / `vendor/split-model` from
+    # the task and split fixtures, are deliberately absent from the registry
+    # fixture.
+    assert df["model_id"].isna().sum() == 82
+    assert df.loc[df["model_raw"] == "community/fine-tune-7b",
+                  "model_id"].isna().all()
 
     # slice_key / slice_name columns are plumbed through Stages C→D→E→F→I.
     # The cross-config snapshot has 3 distinct raws resolving to mmlu —
     # "mmlu", "Anatomy", "Astronomy" — so EVERY row with benchmark_id=mmlu
     # gets a slice_key (including the literal-"mmlu" rows from older
     # fixtures, which represent the overall MMLU rollup as its own
-    # slice). Only the swebench-verified + appworld rows stay NULL since
-    # those benchmarks have one raw each in the snapshot.
+    # slice). A benchmark with one raw in the snapshot stays NULL:
+    # swebench-verified, appworld, and the judge fixtures' benchmarks.
+    # `fixtures_tasks` deliberately publishes several raws per benchmark
+    # (that is the shape its task-identity cases need), so its benchmarks
+    # carry slice keys too.
     assert "slice_key" in df.columns
     assert "slice_name" in df.columns
     mmlu_rows = df[df["benchmark_id"] == "mmlu"]
     assert mmlu_rows["slice_key"].notna().all()
     assert set(mmlu_rows["slice_key"]) == {"mmlu", "anatomy", "astronomy"}
-    non_mmlu = df[df["benchmark_id"] != "mmlu"]
-    assert non_mmlu["slice_key"].isna().all()
+    single_raw = df[df["benchmark_id"].isin(["swebench-verified", "appworld"])]
+    assert len(single_raw) > 0
+    assert single_raw["slice_key"].isna().all()

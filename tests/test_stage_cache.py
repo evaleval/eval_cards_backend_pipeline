@@ -6,12 +6,14 @@ populated cache produces the same fact_results as a no-flag run.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import duckdb
 import pytest
 
 from eval_card_backend.canonicalise.cache import (
+    CACHE_SCHEMA_VERSION,
     STAGE_ORDER,
     STAGE_OUTPUTS,
     StageCache,
@@ -71,20 +73,106 @@ def test_stage_cache_cached_tables(tmp_path):
     assert cache.cached_tables() == {"a", "b"}
 
 
+def _write_stages(con, cache, *letters):
+    """Materialise every STAGE_OUTPUTS table for the given stages and cache
+    them the way the orchestrator does (one write_stage call per stage)."""
+    for letter in letters:
+        for table in STAGE_OUTPUTS[letter]:
+            con.execute(f"CREATE OR REPLACE TABLE {table} AS SELECT 1 AS x")
+        cache.write_stage(con, letter)
+        for table in STAGE_OUTPUTS[letter]:
+            con.execute(f"DROP TABLE {table}")
+
+
 def test_stage_cache_restore_through(tmp_path):
-    """`restore_through("C")` loads A and B's outputs but not C's."""
+    """`restore_through("B")` loads A and B's outputs but not C's."""
     con = duckdb.connect()
     cache = StageCache(tmp_path, "snap")
-    # Pre-populate cache: A's eee_raw, B's results_exploded, C's results_resolved
-    for table in ("eee_raw", "results_exploded", "results_resolved"):
-        con.execute(f"CREATE TABLE {table} AS SELECT 1 AS x")
-        cache.write_table(con, table)
-        con.execute(f"DROP TABLE {table}")
+    _write_stages(con, cache, "A", "B", "C")
 
     restored = cache.restore_through(con, "B")  # through B inclusive
     assert "results_exploded" in restored
     assert "eee_raw" in restored
     assert "results_resolved" not in restored
+
+
+def test_writing_a_stage_drops_later_stage_caches(tmp_path):
+    """A partial A-D rebuild inside a populated snapshot dir must not leave
+    the previous generation's E..J parquets behind for a later resume."""
+    con = duckdb.connect()
+    cache = StageCache(tmp_path, "snap")
+    _write_stages(con, cache, "A", "B", "C", "D", "E", "F")
+    assert cache.has_table("fact_results")  # F's output
+
+    _write_stages(con, cache, "D")  # re-run that stops at D
+
+    assert cache.has_table("fact_results_staging")
+    assert not cache.has_table("fact_results_signaled")  # E
+    assert not cache.has_table("fact_results")  # F
+    with pytest.raises(RuntimeError, match="incomplete for stages A..F"):
+        cache.restore_through(con, "F")
+
+
+def test_restore_refuses_an_interrupted_write(tmp_path):
+    """Marker present but a declared table missing = a run that died between
+    two COPYs. Restoring the survivors would mix generations."""
+    con = duckdb.connect()
+    cache = StageCache(tmp_path, "snap")
+    _write_stages(con, cache, "A", "B")
+    (cache.dir / "results_exploded.parquet").unlink()
+
+    cache.assert_schema_current()  # the marker itself is still current
+    with pytest.raises(RuntimeError, match="B:results_exploded"):
+        cache.restore_through(con, "B")
+
+
+# ---------------------------------------------------------------------------
+# Unit: cache schema fingerprint
+# ---------------------------------------------------------------------------
+
+
+def _seed_cache(tmp_path):
+    con = duckdb.connect()
+    cache = StageCache(tmp_path, "snap")
+    _write_stages(con, cache, "A")
+    return con, cache
+
+
+def test_writing_a_cache_stamps_the_schema_version(tmp_path):
+    _, cache = _seed_cache(tmp_path)
+    marker = json.loads((cache.dir / "_cache_schema.json").read_text())
+    assert marker == {"cache_schema_version": CACHE_SCHEMA_VERSION}
+    cache.assert_schema_current()
+
+
+def test_a_bare_table_write_does_not_bless_the_cache(tmp_path):
+    """Only a completed write_stage stamps the marker, so a half-written dir
+    reads as stale rather than current."""
+    con = duckdb.connect()
+    cache = StageCache(tmp_path, "snap")
+    con.execute("CREATE TABLE eee_raw AS SELECT 1 AS x")
+    cache.write_table(con, "eee_raw")
+    assert not (cache.dir / "_cache_schema.json").exists()
+    with pytest.raises(RuntimeError, match="cache_schema_version=None"):
+        cache.assert_schema_current()
+
+
+def test_restore_refuses_a_cache_from_a_different_schema(tmp_path):
+    con, cache = _seed_cache(tmp_path)
+    (cache.dir / "_cache_schema.json").write_text(
+        json.dumps({"cache_schema_version": CACHE_SCHEMA_VERSION - 1})
+    )
+    with pytest.raises(RuntimeError, match="Re-run from Stage A"):
+        cache.restore_through(con, "A")
+
+
+def test_restore_refuses_a_cache_with_no_fingerprint(tmp_path):
+    """A cache written before the fingerprint existed carries an unknown
+    column shape, so it is stale by definition rather than trusted."""
+    con, cache = _seed_cache(tmp_path)
+    (cache.dir / "_cache_schema.json").unlink()
+    with pytest.raises(RuntimeError, match="cache_schema_version=None"):
+        cache.restore_through(con, "A")
 
 
 # ---------------------------------------------------------------------------

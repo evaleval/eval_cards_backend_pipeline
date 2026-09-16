@@ -28,6 +28,8 @@ from tests.test_canonicalise_e2e import (
 
 from eval_card_backend.sources import collections as collections_src
 
+JUDGE_GPT = "openai/gpt-4o-2024-05-13"
+
 
 def _load_extractor_module():
     path = (
@@ -486,8 +488,19 @@ def _canon(d):
     return json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _synthetic_result(eval_id, retrieved, org, score, se, n_tasks):
+def _synthetic_result(eval_id, retrieved, org, score, se, n_tasks,
+                      judges=(JUDGE_GPT,)):
     rec = _study_record(eval_id, org, "minibench", score, retrieved=retrieved)
+    # The study grades with an LLM judge and says so in the typed
+    # `llm_scoring` struct, so these rows carry BOTH condition axes through
+    # ingestion: the protocol point the adapter assigns and the judge
+    # condition Stage D reads off the record.
+    rec["evaluation_results"][0]["metric_config"]["llm_scoring"] = {
+        "input_prompt": "grade the answer",
+        "judges": [
+            {"model_info": {"id": j, "name": j.split("/")[-1]}} for j in judges
+        ],
+    }
     rec["evaluation_results"][0]["score_details"] = {
         "score": score,
         "uncertainty": {
@@ -688,9 +701,11 @@ def test_view_layer_protocol_policy(adapter_out):
     by_score = {round(r[1], 4): r for r in erv}
     # feedback row: shown but never ranked
     assert by_score[0.95][2] is None
-    # ranked pool = ordinary (0.6) + none-arm protocol row (0.5)
-    assert by_score[0.6][2] == 1 and by_score[0.6][3] == 2
-    assert by_score[0.5][2] == 2 and by_score[0.5][3] == 2
+    # ranked pool = the model's ONE headline row (issue #47): the arms
+    # compete, the best non-feedback arm represents the model, and the
+    # others stay visible and unranked beneath it
+    assert by_score[0.6][2] == 1 and by_score[0.6][3] == 1
+    assert by_score[0.5][2] is None
     assert by_score[0.5][4] == "test-study"
 
     ev = con.execute(
@@ -700,9 +715,10 @@ def test_view_layer_protocol_policy(adapter_out):
         WHERE benchmark_id = 'minibench'
         """
     ).fetchone()
-    # best-style rollups exclude the answer-feedback row (0.95)
+    # best-style rollups exclude the answer-feedback row (0.95); the
+    # average is over headline rows, so the model counts once (0.6)
     assert ev[0] == 0.6 and ev[1] == 0.6
-    assert abs(ev[2] - (0.5 + 0.6) / 2) < 1e-9
+    assert ev[2] == 0.6
 
     merged = con.execute(
         f"""
@@ -721,7 +737,7 @@ def test_view_layer_protocol_policy(adapter_out):
         """
     ).fetchone()
     assert mv[0] == 0.6
-    assert abs(mv[1] - (0.5 + 0.6) / 2) < 1e-9
+    assert mv[1] == 0.6
 
 
 def test_comparison_index_protocol_collapse(adapter_out):
@@ -730,8 +746,8 @@ def test_comparison_index_protocol_collapse(adapter_out):
     entry = payload["evals"][eval_id]
     (metric,) = entry["metrics"]
     (cell,) = metric["scores"]
-    # collapsed to the best non-feedback row (ordinary 0.6 beats 0.5);
-    # 2 protocol-legal rows stand behind the cell
+    # the cell is the model's headline row (ordinary 0.6 beats the 0.5
+    # arm); 2 protocol-legal arms stand behind it
     assert cell["score"] == 0.6
     assert cell["submission_count"] == 2
     assert cell["submission_axis"] == "protocol"
@@ -839,3 +855,91 @@ def test_curated_detach_fails_full_run(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="no observed raw key"):
         _run_pipeline(tmp_path, monkeypatch)
+
+
+def test_protocol_and_judge_conditions_survive_stage_f_together(adapter_out):
+    """Ingestion fixture for the two condition axes at once: the study's rows
+    carry a protocol point from the adapter AND a judge condition from the
+    record's typed `llm_scoring`. Stage F's group key and hash must take both
+    — the hash is md5 over the six grain components in order."""
+    con = duckdb.connect()
+    rows = con.execute(
+        f"""
+        SELECT protocol_condition, judge_condition, comparability_group_id,
+               md5(md5(model_aggregation_key)
+                   || md5(benchmark_key)
+                   || md5(COALESCE(slice_key, ''))
+                   || md5(metric_key)
+                   || md5(COALESCE(protocol_condition, ''))
+                   || md5(COALESCE(judge_condition, ''))
+                   -- split joined the comparability key: a run on `test` and
+                   -- a run on `train` are two measurements
+                   || md5(COALESCE(split, ''))) AS expected
+        FROM read_parquet('{adapter_out}/fact_results.parquet')
+        WHERE collection_id = 'test-study'
+        ORDER BY protocol_condition
+        """
+    ).fetchall()
+    assert len(rows) == 2
+    for protocol, judge, group_id, expected in rows:
+        assert protocol is not None
+        assert json.loads(judge) == {
+            "judges": [JUDGE_GPT], "label": "accuracy",
+        }
+        assert group_id == expected
+    # the two arms are two measurements: same judge, different protocol point
+    assert rows[0][1] == rows[1][1]
+    assert rows[0][0] != rows[1][0]
+    assert rows[0][2] != rows[1][2]
+
+
+def test_trajectory_emit_is_byte_identical_across_runs(tmp_path):
+    """The trajectory sort has to be total. Two emits of the same rows in a
+    different physical order must produce the same bytes; the natural key
+    (collection, benchmark, model, protocol, task, idx) is not unique, so the
+    whole row is the final tie-break."""
+    from eval_card_backend.canonicalise import stages
+
+    traj = [
+        # three rows sharing the natural key, distinguished only by payload
+        {"collection_id": "c", "benchmark_raw": "b", "model_raw": "m",
+         "task_id": "t0", "protocol_condition": None, "trajectory_idx": None,
+         "score": float(i), "is_correct": bool(i % 2),
+         "total_tokens": 100 + i, "output_tokens": 50, "reasoning_tokens": 10,
+         "num_turns": 2, "tool_calls": 1, "n_pieces": 1,
+         "wall_time_s": 1.0, "working_time_s": 0.5, "stop_reason": "submit",
+         "partial_start": False, "unstitchable": False,
+         "token_source_cumulative": True, "source_record_uuids": ["u"]}
+        for i in range(3)
+    ]
+
+    def emit(order, out_dir):
+        con = duckdb.connect()
+        collections_src.create_collection_tables(con)
+        for row in order:
+            con.execute(
+                "INSERT INTO collection_trajectories_raw VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                list(row.values()),
+            )
+        for table, cols in (
+            ("fact_results",
+             "'' AS collection_id, '' AS model_raw, '' AS source_config, "
+             "'' AS model_id, '' AS benchmark_id, '' AS model_key, "
+             "'' AS benchmark_key, '' AS evaluation_id, '' AS composite_slug, "
+             "'' AS metric_key, '' AS slice_key, '' AS fact_id"),
+            ("benchmarks", "'' AS composite_slug, '' AS benchmark_id"),
+            ("composites", "'' AS composite_slug"),
+            ("families", "'' AS family_id"),
+            ("models", "'' AS model_key"),
+            ("canonical_metrics", "'' AS id"),
+        ):
+            con.execute(f"CREATE TABLE {table} AS SELECT {cols} WHERE FALSE")
+        stages.stage_i_emit_warehouse_parquets(
+            con, out_dir, "2026-04-30T00:00:00Z"
+        )
+        return (out_dir / "collection_trajectories.parquet").read_bytes()
+
+    first = emit(traj, tmp_path / "a")
+    second = emit(list(reversed(traj)), tmp_path / "b")
+    assert first == second
