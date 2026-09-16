@@ -14,9 +14,18 @@ fixtures' source_configs — the row count is what's checked.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+# Module- and session-scoped pipeline fixtures call Settings.from_env() before
+# the per-test guard below runs, so the upstream revision pins CI exports must
+# be gone before any fixture is built. Otherwise ensure_snapshot sees a pinned
+# revision, treats the fixture dir as a stale cache and downloads the real
+# registry over it.
+for _rev_var in ("EEE_REVISION", "ENTITY_REGISTRY_REVISION", "BENCHMARK_METADATA_REVISION"):
+    os.environ.pop(_rev_var, None)
 
 
 @pytest.fixture(scope="session")
