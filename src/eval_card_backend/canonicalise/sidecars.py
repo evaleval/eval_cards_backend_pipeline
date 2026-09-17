@@ -3095,6 +3095,10 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             erv.model_key,
             erv.model_id,
             erv.model_route_id,
+            -- The dataset split the row states. Carried onto every
+            -- per-source score cell so a consumer can compare a model
+            -- only against peers scored on the same split.
+            erv.split,
             -- Decoder knobs from the row's generation_config struct; the
             -- per-source detail rows on the model page read these off the
             -- score cells (no eval-id join is possible from reported-results).
@@ -3259,6 +3263,9 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
                 "scale_conversion":  rec["scale_conversion"],
                 "rank":              position,
                 "total":             total,
+                # Split as the row states it, unnormalised; null when the
+                # row states none.
+                "split":             rec["split"],
                 # Protocol-varied cells (collections spec): this cell
                 # is the best of `submission_count` protocol points.
                 "submission_count":  int(rec["n_protocol_points"] or 1),
@@ -3485,6 +3492,10 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
     payload = {
         "generated_at":       snapshot_meta["snapshot_id"],
         "config_version":     CONFIG_VERSION,
+        # Capability marker for this artifact alone: 2 declares that
+        # per-source score cells carry `split`. Consumers that need the
+        # split gate on it and fall back when it is absent.
+        "comparison_index_version": 2,
         "metric_group_order": list(_METRIC_GROUP_ORDER),
         "evals":              evals_out,
         "by_model":           {

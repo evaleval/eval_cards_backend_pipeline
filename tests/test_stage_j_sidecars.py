@@ -778,6 +778,162 @@ def test_comparison_index_generation_params_null_when_unreported(tmp_path, monke
                 assert cell["max_tokens"] is None
 
 
+# Split labels a consumer can compare on. Anything else a row states is
+# carried through verbatim and treated as unknown for comparison.
+_RECOGNISED_SPLITS = {"train", "test", "validation", "val", "dev"}
+
+
+def _comparison_index_with_merged(out_dir: Path) -> dict:
+    """Build `comparison-index.json` on a connection that also carries the
+    registry benchmark dim, so `merged_evals_view` is populated and the
+    artifact holds merged entries beside the per-source ones.
+    """
+    from eval_card_backend.canonicalise import sidecars, stages
+    from eval_card_backend.canonicalise.resolver_setup import register_udfs
+    from eval_card_backend.sources import registry as registry_src
+    from eval_entity_resolver import Resolver
+
+    con = duckdb.connect()
+    alias_store = registry_src.load_alias_store(FIXTURES / "entity_registry")
+    register_udfs(con, Resolver(alias_store))
+    for table in (
+        "fact_results", "benchmarks", "composites", "families", "models",
+        "canonical_metrics",
+    ):
+        con.execute(
+            f"CREATE TABLE {table} AS "
+            f"SELECT * FROM read_parquet('{out_dir}/{table}.parquet')"
+        )
+    # The committed fixture parquet carries neither preferred_metric_id nor
+    # preferred_metric_llm_judged; pad it the way the dim loader does.
+    con.execute(
+        "CREATE TABLE canonical_benchmarks AS "
+        "SELECT id, display_name, "
+        "       CAST(parent_benchmark_id AS VARCHAR) AS parent_benchmark_id, "
+        "       CAST(NULL AS VARCHAR) AS preferred_metric_id, "
+        "       CAST(metadata AS VARCHAR) AS metadata, "
+        "       CAST(NULL AS BOOLEAN) AS preferred_metric_llm_judged "
+        f"FROM read_parquet('{FIXTURES}/entity_registry/canonical_benchmarks.parquet')"
+    )
+    stages.stage_j_eval_results_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_merged_evals_view(con, "2026-04-30T00:00:00Z")
+    snap = json.loads((out_dir / "snapshot_meta.json").read_text())
+    sidecars.write_comparison_index(con, out_dir, snap)
+    return json.loads((out_dir / "comparison-index.json").read_text())
+
+
+def _per_source_cells(ci: dict) -> list[dict]:
+    return [
+        cell
+        for entry in ci["evals"].values() if not entry.get("is_merged")
+        for metric in entry["metrics"]
+        for cell in metric["scores"]
+    ]
+
+
+def _merged_cells(ci: dict) -> list[dict]:
+    return [
+        cell
+        for entry in ci["evals"].values() if entry.get("is_merged")
+        for metric in entry["metrics"]
+        for cell in metric["scores"]
+    ]
+
+
+def test_comparison_index_declares_version_two(tmp_path, monkeypatch):
+    """The artifact's own capability marker: 2 means per-source score cells
+    carry `split`. Independent of the warehouse-wide config_version."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    _materialise_views_and_sidecars(out)
+    ci = json.loads((out / "comparison-index.json").read_text())
+    assert ci["comparison_index_version"] == 2
+
+
+def test_comparison_index_per_source_scores_carry_split(tmp_path, monkeypatch):
+    """Per-source score cells carry the split their row states. The splits
+    fixture states `test` on at least one scored row; the key is present
+    (null) on every other cell."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_splits")
+    _materialise_views_and_sidecars(out)
+    ci = json.loads((out / "comparison-index.json").read_text())
+    cells = _per_source_cells(ci)
+    assert cells, "comparison-index has no per-source scores; nothing to validate"
+    for cell in cells:
+        assert "split" in cell
+        assert cell["split"] is None or isinstance(cell["split"], str)
+    stated = {c["split"] for c in cells if c["split"] is not None}
+    assert stated & _RECOGNISED_SPLITS, stated
+
+
+def test_comparison_index_split_null_when_unstated(tmp_path, monkeypatch):
+    """A corpus whose rows state no split emits the key as null on every
+    per-source cell, never a sentinel and never a missing key."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    _materialise_views_and_sidecars(out)
+    ci = json.loads((out / "comparison-index.json").read_text())
+    cells = _per_source_cells(ci)
+    assert cells, "comparison-index has no per-source scores; nothing to validate"
+    for cell in cells:
+        assert "split" in cell
+        assert cell["split"] is None
+
+
+def test_comparison_index_merged_scores_have_no_split(tmp_path, monkeypatch):
+    """Merged cells are a best-across-sources pick made before any split is
+    known, so they carry no split at all."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_splits")
+    ci = _comparison_index_with_merged(out)
+    cells = _merged_cells(ci)
+    assert cells, "comparison-index has no merged scores; nothing to validate"
+    for cell in cells:
+        assert "split" not in cell
+
+
+def test_comparison_index_by_model_has_no_split(tmp_path, monkeypatch):
+    """The inverse index is a per-model score lookup, not a comparison pool;
+    it stays on its existing shape."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_splits")
+    _materialise_views_and_sidecars(out)
+    ci = json.loads((out / "comparison-index.json").read_text())
+    assert ci["by_model"], "comparison-index has no by_model entries"
+    for eval_map in ci["by_model"].values():
+        for metric_map in eval_map.values():
+            for entry in metric_map.values():
+                assert "split" not in entry
+
+
+@pytest.mark.parametrize("config", ["fixtures_clean", "fixtures_splits"])
+def test_comparison_index_split_is_the_only_addition(tmp_path, monkeypatch, config):
+    """Strip the split key off every per-source cell and the version marker
+    off the top level, and the artifact must equal the golden byte for byte.
+
+    The goldens are a producer run over the committed fixture corpus, whose
+    output is deterministic run to run. Regenerate them alongside any
+    intended change to this builder's output.
+    """
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, config)
+    ci = _comparison_index_with_merged(out)
+
+    assert ci.pop("comparison_index_version") == 2
+    for entry in ci["evals"].values():
+        for metric in entry["metrics"]:
+            for cell in metric["scores"]:
+                cell.pop("split", None)
+
+    golden = json.loads(
+        (Path(__file__).parent / "golden" / f"comparison-index-{config}.json").read_text()
+    )
+    assert ci == golden
+
+
 # ---------------------------------------------------------------------------
 # benchmark_index.json
 # ---------------------------------------------------------------------------

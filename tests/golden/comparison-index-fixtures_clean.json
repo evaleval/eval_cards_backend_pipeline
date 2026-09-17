@@ -1,0 +1,195 @@
+{
+  "by_model": {
+    "community%2Ffine-tune-7b": {
+      "fixtures-clean%2Fmmlu": {
+        "mmlu%3Aaccuracy": {
+          "max_tokens": 1024,
+          "rank": 2,
+          "scale_conversion": "none",
+          "score": 0.4,
+          "score_canonical": 0.4,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": 0.0,
+          "total": 2
+        }
+      },
+      "mmlu": {
+        "mmlu%3Aaccuracy": {
+          "max_tokens": 1024,
+          "rank": 2,
+          "score": 0.4,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": 0.0,
+          "total": 2
+        }
+      }
+    },
+    "openai%2Fgpt-4o": {
+      "fixtures-clean%2Fmmlu": {
+        "mmlu%3Aaccuracy": {
+          "max_tokens": 1024,
+          "rank": 1,
+          "scale_conversion": "none",
+          "score": 0.85,
+          "score_canonical": 0.85,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": 0.0,
+          "total": 2
+        }
+      },
+      "mmlu": {
+        "mmlu%3Aaccuracy": {
+          "max_tokens": 1024,
+          "rank": 1,
+          "score": 0.85,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": 0.0,
+          "total": 2
+        }
+      }
+    }
+  },
+  "config_version": 2,
+  "evals": {
+    "fixtures-clean%2Fmmlu": {
+      "benchmark_id": "mmlu",
+      "composite_display_name": "OpenAI",
+      "composite_slug": "fixtures-clean",
+      "derived_tags": [
+        "general",
+        "knowledge"
+      ],
+      "display_name": "MMLU",
+      "evaluation_id": "fixtures-clean%2Fmmlu",
+      "family_display_name": "MMLU",
+      "family_id": "mmlu",
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "mmlu%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "OpenAI",
+              "max_tokens": 1024,
+              "model_family_id": "openai/gpt-4o",
+              "model_family_name": "GPT-4",
+              "model_route_id": "openai%2Fgpt-4o",
+              "rank": 1,
+              "scale_conversion": "none",
+              "score": 0.85,
+              "score_canonical": 0.85,
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": 0.0,
+              "total": 2,
+              "variant_key": "default"
+            },
+            {
+              "developer": "community",
+              "max_tokens": 1024,
+              "model_family_id": "community/fine-tune-7b",
+              "model_family_name": "",
+              "model_route_id": "community%2Ffine-tune-7b",
+              "rank": 2,
+              "scale_conversion": "none",
+              "score": 0.4,
+              "score_canonical": 0.4,
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": 0.0,
+              "total": 2,
+              "variant_key": "default"
+            }
+          ],
+          "unit": "proportion"
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "mmlu": {
+      "benchmark_id": "mmlu",
+      "composite_display_name": null,
+      "composite_slug": null,
+      "derived_tags": [],
+      "display_name": "MMLU",
+      "evaluation_id": "mmlu",
+      "family_display_name": "MMLU",
+      "family_id": "mmlu",
+      "is_merged": true,
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "mmlu%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "OpenAI",
+              "max_tokens": 1024,
+              "model_family_id": "openai/gpt-4o",
+              "model_family_name": "GPT-4",
+              "model_route_id": "openai%2Fgpt-4o",
+              "rank": 1,
+              "score": 0.85,
+              "source_composite_slug": "fixtures-clean",
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": 0.0,
+              "total": 2,
+              "variant_key": "default"
+            },
+            {
+              "developer": "community",
+              "max_tokens": 1024,
+              "model_family_id": "community/fine-tune-7b",
+              "model_family_name": "",
+              "model_route_id": "community%2Ffine-tune-7b",
+              "rank": 2,
+              "score": 0.4,
+              "source_composite_slug": "fixtures-clean",
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": 0.0,
+              "total": 2,
+              "variant_key": "default"
+            }
+          ],
+          "unit": null
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    }
+  },
+  "generated_at": "2026-04-30T00:00:00Z",
+  "metric_group_order": [
+    "capability",
+    "robustness",
+    "efficiency",
+    "cost",
+    "latency",
+    "rank",
+    "other"
+  ]
+}

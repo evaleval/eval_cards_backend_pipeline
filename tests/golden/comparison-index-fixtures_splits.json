@@ -1,0 +1,610 @@
+{
+  "by_model": {
+    "vendor%2Fsplit-model": {
+      "cnn-dailymail": {
+        "cnn-dailymail%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "score": 0.3,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      },
+      "disinfo-bench": {
+        "disinfo-bench%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "score": 0.9,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      },
+      "fixtures-splits%2Fcnn-dailymail": {
+        "cnn-dailymail%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "scale_conversion": "none",
+          "score": 0.3,
+          "score_canonical": 0.3,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      },
+      "fixtures-splits%2Fdisinfo-bench": {
+        "disinfo-bench%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "scale_conversion": "none",
+          "score": 0.9,
+          "score_canonical": 0.9,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      },
+      "fixtures-splits%2Flexam": {
+        "lexam%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "scale_conversion": "none",
+          "score": 0.7,
+          "score_canonical": 0.7,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      },
+      "fixtures-splits%2Fomni-math": {
+        "omni-math%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "scale_conversion": "none",
+          "score": 0.5,
+          "score_canonical": 0.5,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      },
+      "fixtures-splits%2Fwildbench": {
+        "wildbench%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "scale_conversion": "none",
+          "score": 0.71,
+          "score_canonical": 0.71,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      },
+      "lexam": {
+        "lexam%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "score": 0.7,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      },
+      "omni-math": {
+        "omni-math%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "score": 0.5,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      },
+      "wildbench": {
+        "wildbench%3Aaccuracy": {
+          "max_tokens": null,
+          "rank": 1,
+          "score": 0.71,
+          "submission_axis": "default",
+          "submission_count": 1,
+          "temperature": null,
+          "total": 1
+        }
+      }
+    }
+  },
+  "config_version": 2,
+  "evals": {
+    "cnn-dailymail": {
+      "benchmark_id": "cnn-dailymail",
+      "composite_display_name": null,
+      "composite_slug": null,
+      "derived_tags": [],
+      "display_name": "CNN/DailyMail",
+      "evaluation_id": "cnn-dailymail",
+      "family_display_name": "CNN/DailyMail",
+      "family_id": "cnn-dailymail",
+      "is_merged": true,
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "cnn-dailymail%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "score": 0.3,
+              "source_composite_slug": "fixtures-splits",
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": null
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "disinfo-bench": {
+      "benchmark_id": "disinfo-bench",
+      "composite_display_name": null,
+      "composite_slug": null,
+      "derived_tags": [],
+      "display_name": "Disinfo Bench",
+      "evaluation_id": "disinfo-bench",
+      "family_display_name": "Disinfo Bench",
+      "family_id": "disinfo-bench",
+      "is_merged": true,
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "disinfo-bench%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "score": 0.9,
+              "source_composite_slug": "fixtures-splits",
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": null
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "fixtures-splits%2Fcnn-dailymail": {
+      "benchmark_id": "cnn-dailymail",
+      "composite_display_name": "Splits Inc",
+      "composite_slug": "fixtures-splits",
+      "derived_tags": [
+        "linguistic_core"
+      ],
+      "display_name": "CNN/DailyMail",
+      "evaluation_id": "fixtures-splits%2Fcnn-dailymail",
+      "family_display_name": "CNN/DailyMail",
+      "family_id": "cnn-dailymail",
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "cnn-dailymail%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "scale_conversion": "none",
+              "score": 0.3,
+              "score_canonical": 0.3,
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": "proportion"
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "fixtures-splits%2Fdisinfo-bench": {
+      "benchmark_id": "disinfo-bench",
+      "composite_display_name": "Splits Inc",
+      "composite_slug": "fixtures-splits",
+      "derived_tags": [
+        "general"
+      ],
+      "display_name": "Disinfo Bench",
+      "evaluation_id": "fixtures-splits%2Fdisinfo-bench",
+      "family_display_name": "Disinfo Bench",
+      "family_id": "disinfo-bench",
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "disinfo-bench%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "scale_conversion": "none",
+              "score": 0.9,
+              "score_canonical": 0.9,
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": "proportion"
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "fixtures-splits%2Flexam": {
+      "benchmark_id": "lexam",
+      "composite_display_name": "Splits Inc",
+      "composite_slug": "fixtures-splits",
+      "derived_tags": [
+        "law",
+        "applied_reasoning"
+      ],
+      "display_name": "LEXam",
+      "evaluation_id": "fixtures-splits%2Flexam",
+      "family_display_name": "LEXam",
+      "family_id": "lexam",
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "lexam%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "scale_conversion": "none",
+              "score": 0.7,
+              "score_canonical": 0.7,
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": "proportion"
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "fixtures-splits%2Fomni-math": {
+      "benchmark_id": "omni-math",
+      "composite_display_name": "Splits Inc",
+      "composite_slug": "fixtures-splits",
+      "derived_tags": [
+        "mathematics"
+      ],
+      "display_name": "Omni-MATH",
+      "evaluation_id": "fixtures-splits%2Fomni-math",
+      "family_display_name": "Omni-MATH",
+      "family_id": "omni-math",
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "omni-math%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "scale_conversion": "none",
+              "score": 0.5,
+              "score_canonical": 0.5,
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": "proportion"
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "fixtures-splits%2Fwildbench": {
+      "benchmark_id": "wildbench",
+      "composite_display_name": "Splits Inc",
+      "composite_slug": "fixtures-splits",
+      "derived_tags": [
+        "general"
+      ],
+      "display_name": "WildBench",
+      "evaluation_id": "fixtures-splits%2Fwildbench",
+      "family_display_name": "WildBench",
+      "family_id": "wildbench",
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "wildbench%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "scale_conversion": "none",
+              "score": 0.71,
+              "score_canonical": 0.71,
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": "proportion"
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "lexam": {
+      "benchmark_id": "lexam",
+      "composite_display_name": null,
+      "composite_slug": null,
+      "derived_tags": [],
+      "display_name": "LEXam",
+      "evaluation_id": "lexam",
+      "family_display_name": "LEXam",
+      "family_id": "lexam",
+      "is_merged": true,
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "lexam%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "score": 0.7,
+              "source_composite_slug": "fixtures-splits",
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": null
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "omni-math": {
+      "benchmark_id": "omni-math",
+      "composite_display_name": null,
+      "composite_slug": null,
+      "derived_tags": [],
+      "display_name": "Omni-MATH",
+      "evaluation_id": "omni-math",
+      "family_display_name": "Omni-MATH",
+      "family_id": "omni-math",
+      "is_merged": true,
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "omni-math%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "score": 0.5,
+              "source_composite_slug": "fixtures-splits",
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": null
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    },
+    "wildbench": {
+      "benchmark_id": "wildbench",
+      "composite_display_name": null,
+      "composite_slug": null,
+      "derived_tags": [],
+      "display_name": "WildBench",
+      "evaluation_id": "wildbench",
+      "family_display_name": "WildBench",
+      "family_id": "wildbench",
+      "is_merged": true,
+      "is_slice": false,
+      "is_summary_score": false,
+      "metrics": [
+        {
+          "canonical_max_score": 1.0,
+          "canonical_min_score": 0.0,
+          "group": "capability",
+          "group_order": 0,
+          "lower_is_better": false,
+          "metric_id": "accuracy",
+          "metric_key": "accuracy",
+          "metric_name": "Accuracy",
+          "metric_summary_id": "wildbench%3Aaccuracy",
+          "scores": [
+            {
+              "developer": "vendor",
+              "max_tokens": null,
+              "model_family_id": "vendor/split-model",
+              "model_family_name": "",
+              "model_route_id": "vendor%2Fsplit-model",
+              "rank": 1,
+              "score": 0.71,
+              "source_composite_slug": "fixtures-splits",
+              "submission_axis": "default",
+              "submission_count": 1,
+              "temperature": null,
+              "total": 1,
+              "variant_key": "default"
+            }
+          ],
+          "unit": null
+        }
+      ],
+      "parent_benchmark_id": null,
+      "summary_score_for": null
+    }
+  },
+  "generated_at": "2026-04-30T00:00:00Z",
+  "metric_group_order": [
+    "capability",
+    "robustness",
+    "efficiency",
+    "cost",
+    "latency",
+    "rank",
+    "other"
+  ]
+}
