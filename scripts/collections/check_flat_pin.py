@@ -19,8 +19,15 @@ descriptor by however long the rebuild took, so "created_at < commit date" on
 its own rejects the very commits you are supposed to pin. Lag is reported as
 context and only fails the check when it exceeds --max-lag-hours.
 
-Exit 0 when every required collection is present and the lag is within
-tolerance. Exit 1 otherwise, naming the remedy.
+Containing a collection is not the same as containing all of it: the rebuild
+leaves out records it cannot place (a record re-emitted under an existing uuid
+with different bytes), and a record merged after the rebuild is absent however
+small the lag. So each required collection's index is also compared with the
+aggregate records under `data/<collection>/` at the pin, and any record the
+index leaves out fails the check.
+
+Exit 0 when every required collection is present and complete and the lag is
+within tolerance. Exit 1 otherwise, naming the remedy.
 """
 
 from __future__ import annotations
@@ -139,6 +146,39 @@ def main() -> int:
                 failures.append(
                     f"collection {name!r} is not in the flat index at this pin"
                 )
+                continue
+            try:
+                index_path = hf_hub_download(
+                    repo_id=args.repo, repo_type="dataset",
+                    revision=args.revision, token=token,
+                    filename=f"{BY_COLLECTION}/{name}.jsonl",
+                )
+                with open(index_path, encoding="utf-8") as handle:
+                    indexed = {
+                        json.loads(line).get("legacy_path")
+                        for line in handle if line.strip()
+                    }
+                in_tree = {
+                    entry.path
+                    for entry in api.list_repo_tree(
+                        args.repo, repo_type="dataset", revision=args.revision,
+                        path_in_repo=f"data/{name}", recursive=True, token=token,
+                    )
+                    if entry.path.endswith(".json")
+                }
+            except Exception as exc:
+                failures.append(f"cannot compare {name!r} with data/{name}: {exc}")
+                continue
+            left_out = sorted(in_tree - indexed)
+            print(f"  records under data/{name}: {len(in_tree)}, "
+                  f"left out of the flat index: {len(left_out)}")
+            if left_out:
+                failures.append(
+                    f"the flat index leaves out {len(left_out)} of "
+                    f"{len(in_tree)} record(s) under data/{name} "
+                    f"(first: {left_out[0]}) — the extraction would not "
+                    f"read them"
+                )
 
     if failures:
         print("\nPIN REJECTED:")
@@ -146,7 +186,7 @@ def main() -> int:
             print(f"  - {f}")
         return 1
 
-    print("\nPin OK: required collections are in the flat index at this pin.")
+    print("\nPin OK: required collections are complete in the flat index at this pin.")
     return 0
 
 

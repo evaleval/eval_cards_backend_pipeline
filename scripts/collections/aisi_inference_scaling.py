@@ -26,6 +26,12 @@ changes must carry the regenerated vendor files in the same PR.2):
     uv run python scripts/collections/aisi_inference_scaling.py \
         --revision <EEE_REVISION>
 
+Check the revision first: it must be a datastore flat-rebuild commit whose
+index holds every member record, or the run re-derives the old extract:
+
+    uv run python scripts/collections/check_flat_pin.py \
+        --revision <EEE_REVISION> --require-collection <config> ...
+
 Aggregate records are read from the local `.cache/eee_datastore` snapshot
 when its listing revision matches (else a per-revision sibling dir is
 materialised); sample JSONLs are streamed via `hf_hub_download` (multi-GB;
