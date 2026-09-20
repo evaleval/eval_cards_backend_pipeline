@@ -1,0 +1,219 @@
+# Re-run the AISI inference-scaling collection extractor on a runner.
+#
+# The extractor (scripts/collections/aisi_inference_scaling.py) reassembles the
+# collection from the datastore's per-sample JSONLs: ~10 GB of transcripts for
+# ~750 member records. That is why it was a manual, run-it-on-your-laptop job.
+# Nothing about it actually needs a laptop — the transcripts are parsed and
+# discarded, never persisted — so it runs here instead, on an ephemeral runner
+# with a fast link to the Hub.
+#
+# The output is a PR, never a direct push: canonicalise hard-fails on a
+# manifest/pin mismatch, so the regenerated vendor/collections/** and the
+# EEE_REVISION bump in sync.yml must land together and be reviewed together.
+#
+# Runbook, including how to pick `revision`: scripts/collections/README.md
+
+name: AISI collection extract
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: >-
+          EEE_datastore commit to extract at. MUST be a "cron: flat rebuild"
+          commit that already contains the records you want — a pre-flight
+          check enforces this before anything downloads.
+        required: true
+        type: string
+      open_pr:
+        description: 'Open a PR with the regenerated vendor files + pin bump'
+        required: false
+        type: boolean
+        default: true
+      allow_rate:
+        description: 'Optional --allow-rate override, e.g. NAME=why (one per line)'
+        required: false
+        type: string
+      allow_reconciliation:
+        description: 'Optional --allow-reconciliation override, e.g. CONFIG=why (one per line)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    # The 2026-08-25 laptop run took well over an hour; a runner's link to the
+    # Hub is faster but the sequential parse of ~36k trajectories is not.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Configure resolver dep for CI
+        run: python3 scripts/ci_install_resolver.py
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      # Refuse a pin whose flat index predates the records being extracted.
+      # ensure_snapshot builds its listing from flat/, not data/, so pinning a
+      # commit that merged records minutes ago silently yields a snapshot
+      # without them — the extractor only warns, then spends an hour
+      # re-deriving the corpus it already had. Runs before any bulk download.
+      - name: Pre-flight — pin must be a flat-rebuild commit with the collections in it
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          uv run python scripts/collections/check_flat_pin.py \
+            --revision "$REVISION" \
+            --require-collection aisi-cyber-ctfs \
+            --require-collection aisi-the-last-ones
+
+      - name: Report free disk
+        run: df -h /
+
+      # Only the aggregate tree (~1.2 GB) is cached. The sample JSONLs land in
+      # ~/.cache/huggingface/hub and are ~10 GB — past the cache size limit,
+      # and re-downloaded cheaply on a runner.
+      - name: Cache EEE aggregate snapshot
+        uses: actions/cache@v5
+        with:
+          # _pinned_snapshot_root materialises a sibling dir named
+          # <eee-cache>_<revision[:12]>, so cache the parent rather than
+          # guessing the derived name.
+          path: .cache
+          key: aisi-extract-eee-${{ inputs.revision }}
+
+      - name: Run the extractor
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REVISION: ${{ inputs.revision }}
+          ALLOW_RATE: ${{ inputs.allow_rate }}
+          ALLOW_RECON: ${{ inputs.allow_reconciliation }}
+        run: |
+          set -euo pipefail
+          ARGS=(--revision "$REVISION")
+          while IFS= read -r line; do
+            [ -n "$line" ] && ARGS+=(--allow-rate "$line")
+          done <<< "$ALLOW_RATE"
+          while IFS= read -r line; do
+            [ -n "$line" ] && ARGS+=(--allow-reconciliation "$line")
+          done <<< "$ALLOW_RECON"
+          printf 'running with:'; printf ' %q' "${ARGS[@]}"; printf '\n'
+          uv run python scripts/collections/aisi_inference_scaling.py "${ARGS[@]}"
+
+      # The manifest is the reviewable artefact even when no PR is opened:
+      # member counts, extraction stats, rates, reconciliation, dropped cells.
+      - name: Summarise the extract
+        if: always()
+        run: |
+          set -uo pipefail
+          M=vendor/collections/aisi_inference_scaling/manifest.json
+          [ -f "$M" ] || { echo "no manifest written"; exit 0; }
+          {
+            echo '## AISI extract'
+            echo
+            echo '```'
+            uv run python - "$M" <<'PY'
+          import json, sys, collections
+          m = json.load(open(sys.argv[1]))
+          print("eee_revision            :", m["eee_revision"])
+          print("generated_at            :", m["generated_at"])
+          print("members                 :", len(m["members"]))
+          print("aggregate_only          :", m.get("aggregate_only_benchmarks"))
+          print("expected_drop_count     :", m["expected_drop_count"])
+          by = collections.Counter(x["config"] for x in m["members"])
+          for k, v in sorted(by.items()):
+              print(f"  {v:5d}  {k}")
+          print("cells_dropped           :", len(m.get("cells_dropped") or []))
+          PY
+            echo '```'
+            echo
+            echo '### git diff --stat'
+            echo '```'
+            git diff --stat vendor/ || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload vendor extract
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: aisi-vendor-extract
+          path: vendor/collections/aisi_inference_scaling/
+          if-no-files-found: warn
+
+      # Bump the pin in the same commit as the regenerated vendor files.
+      # canonicalise hard-fails when the manifest's eee_revision and
+      # EEE_REVISION disagree, so these two changes are not separable.
+      - name: Bump EEE_REVISION to match the extract
+        if: inputs.open_pr
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          uv run python - "$REVISION" <<'PY'
+          import datetime, pathlib, re, sys
+          new = sys.argv[1]
+          p = pathlib.Path(".github/workflows/sync.yml")
+          s = p.read_text()
+          m = re.search(r"^  EEE_REVISION: (\S+)$", s, re.M)
+          if m is None:
+              raise SystemExit("EEE_REVISION not found in sync.yml")
+          old = m.group(1)
+          if old == new:
+              print("pin already current; nothing to do")
+              raise SystemExit(0)
+          today = datetime.date.today().isoformat()
+          s = s.replace(
+              f"  EEE_REVISION: {old}",
+              f"  # Prev pin: {old} ({today})\n  EEE_REVISION: {new}",
+          )
+          p.write_text(s)
+          print(f"EEE_REVISION {old} -> {new}")
+          PY
+
+      - name: Open the PR
+        if: inputs.open_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVISION: ${{ inputs.revision }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "extract is byte-identical to what is committed — no PR needed"
+            exit 0
+          fi
+          BRANCH="aisi-extract/$REVISION"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add vendor/collections/aisi_inference_scaling .github/workflows/sync.yml
+          git commit -m "Re-extract the AISI collection at $REVISION"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "Re-extract the AISI inference-scaling collection" \
+            --body "Automated run of \`AISI collection extract\` at \`$REVISION\`.
+
+          Regenerates \`vendor/collections/aisi_inference_scaling/\` and bumps \`EEE_REVISION\`
+          to the same commit — canonicalise hard-fails if those two disagree, so they
+          travel together.
+
+          Check before merging:
+          - the run summary's member counts, especially \`aggregate_only\`
+          - \`cells_dropped\` is empty, or every entry is explained
+          - reconciliation lines in the run log are at their usual exact rates
+          - what moved between the old and new pin (see the runbook)
+
+          Runbook: \`scripts/collections/README.md\`
+          Workflow run: $RUN_URL"
