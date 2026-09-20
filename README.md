@@ -125,6 +125,22 @@ read without GROUP BYs.
 | `EEE_REFRESH_SNAPSHOT` | unset | Set to `1` to force-refetch the EEE snapshot. |
 | `BENCHMARK_METADATA_REFRESH` | unset | Set to `1` to force-refetch the cards. |
 | `ENTITY_REGISTRY_REFRESH` | unset | Set to `1` to force-refetch the registry. |
+| `HF_OPENNESS_PROBE` | `1` | Set to `0` to skip the open-weights backfill (offline bakes, or to pin a snapshot to exactly what the registry states). |
+
+### Open-weights backfill
+
+The entity registry leaves `canonical_models.open_weights` unset for most
+models. Stage A fills the gap from the Hugging Face Hub: a model whose
+weights are published has a model repo, so a resolvable id is evidence of
+open weights. Gated repos count as open — the gate is a terms click, not a
+closed model.
+
+The backfill only ever writes `TRUE`, and only over a `NULL`. A lookup that
+misses leaves the row `NULL`, because a miss does not distinguish a
+proprietary model from one that was renamed, deleted, made private, or
+never spelled the same way upstream. Verdicts are cached under
+`<cache-root>/hf_openness.json`; network failures are not cached and never
+fail the bake.
 
 ## Tests
 

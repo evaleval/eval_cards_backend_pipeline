@@ -875,6 +875,93 @@ def _derive_model_root_id(con) -> None:
     con.execute("DROP TABLE _model_root_updates")
 
 
+def stage_a_backfill_open_weights(
+    con,
+    *,
+    probe=None,
+    hf_token: str | None = None,
+    cache_path: Path | None = None,
+) -> int:
+    """Fill `canonical_models.open_weights` where the registry left it NULL,
+    using the presence of a Hugging Face model repo as evidence.
+
+    The registry curates the flag for a minority of models (3,932 of 8,815
+    set in the 2026-09-20 snapshot); the rest are NULL, which the frontend
+    cannot distinguish from "closed" and so cannot filter on. A model whose
+    weights are published has a repo on the Hub, so a resolvable id is
+    positive evidence of open weights.
+
+    Only ever writes TRUE, and only over a NULL — a curated verdict is never
+    overwritten, and a lookup that misses leaves the row NULL rather than
+    asserting closed (see `sources.hf_openness` for why a miss is not
+    evidence). Returns the number of rows filled.
+
+    Runs after the registry dims are loaded so the backfill flows into the
+    `models` dim and every view built from it. Never raises: an unreachable
+    Hub leaves every row exactly as the registry had it.
+    """
+    try:
+        pending = [
+            row[0]
+            for row in con.execute(
+                "SELECT id FROM canonical_models "
+                "WHERE open_weights IS NULL AND id IS NOT NULL AND id LIKE '%/%'"
+            ).fetchall()
+        ]
+    except Exception:  # noqa: BLE001 - no canonical_models on this connection
+        log.debug("open-weights backfill: canonical_models unavailable", exc_info=True)
+        return 0
+
+    if not pending:
+        return 0
+
+    try:
+        if probe is None:
+            from eval_card_backend.sources.hf_openness import confirm_open_weights
+
+            confirmed = confirm_open_weights(
+                pending, hf_token=hf_token, cache_path=cache_path
+            )
+        else:
+            confirmed = probe.confirm(pending)
+    except Exception as exc:  # noqa: BLE001 - probing must never fail the bake
+        log.warning(
+            "open-weights backfill skipped (%s: %s); %d model(s) keep the "
+            "registry's NULL",
+            type(exc).__name__, exc, len(pending),
+        )
+        return 0
+
+    open_ids = [(model_id,) for model_id, is_open in confirmed.items() if is_open]
+    if not open_ids:
+        log.info("open-weights backfill: no candidates confirmed on the Hub")
+        return 0
+
+    con.execute("DROP TABLE IF EXISTS _open_weight_updates")
+    con.execute("CREATE TEMP TABLE _open_weight_updates (id VARCHAR)")
+    con.executemany("INSERT INTO _open_weight_updates VALUES (?)", open_ids)
+    # The NULL guard is belt-and-braces: `pending` was already filtered to
+    # NULL rows, but it keeps the statement correct if that ever changes.
+    con.execute(
+        "UPDATE canonical_models AS cm "
+        "SET open_weights = TRUE "
+        "FROM _open_weight_updates u "
+        "WHERE cm.id = u.id AND cm.open_weights IS NULL"
+    )
+    filled = con.execute(
+        "SELECT count(*) FROM canonical_models cm "
+        "JOIN _open_weight_updates u ON cm.id = u.id"
+    ).fetchone()[0]
+    con.execute("DROP TABLE _open_weight_updates")
+
+    log.info(
+        "open-weights backfill: %d of %d unset model(s) confirmed open via a "
+        "Hugging Face model repo; the rest stay NULL (unknown, not closed)",
+        filled, len(pending),
+    )
+    return filled
+
+
 def stage_a_load_registry(
     con,
     dim_paths: dict,
