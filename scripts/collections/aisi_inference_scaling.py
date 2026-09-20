@@ -75,6 +75,8 @@ STUDY_SLUG = slug(STUDY_TITLE)
 BENCHMARK_LABELS = {
     "terminalbench": "terminal-bench-2",
     "swebenchpro": "swe-bench-pro",
+    "aisi-cyber-ctfs": "cyber-ctfs",
+    "aisi-the-last-ones": "the-last-ones",
 }
 EEE_REPO = "evaleval/EEE_datastore"
 OUT_DIR = REPO_ROOT / "vendor" / "collections" / "aisi_inference_scaling"
@@ -85,6 +87,12 @@ DEFAULT_EEE_CACHE = REPO_ROOT / ".cache" / "eee_datastore"
 # 88 task ids: a fully crossed 86-task core plus these two sparsely present
 # tasks. Exclude them in this study adapter only; condition-level coverage may
 # still be below 86 and remains provenance rather than an eligibility gate.
+# Scaffold label for the aggregate-only members. The export describes a
+# ReAct-style Inspect agent; it is NOT the paper's S-adaptive scaffold, so it
+# gets its own value on the scaffold axis rather than being folded into one
+# it was not run under.
+_AGG_ONLY_SCAFFOLD = "ReAct"
+
 PAPER_TERMINALBENCH_TASK_COUNT = 86
 PAPER_TERMINALBENCH_EXCLUDED_TASKS = frozenset({
     "filter-js-from-html",
@@ -146,7 +154,47 @@ BENCHMARKS: dict[str, dict] = {
         "aggregate": "record_summary_mean",
         "upstream_rule": None,
     },
+    # ---- aggregate-only members (no per-sample JSONLs) -------------------
+    # The two cyber benchmarks are privately held: AISI shared headline
+    # aggregates only, and no transcripts exist in the datastore for them.
+    # `aggregate_only` routes them past sample streaming entirely — nothing
+    # is fetched, parsed or persisted for these members — and the cell score
+    # is the published figure restated, never re-derived.
+    #
+    # Each published result is one token-budget point, so the thresholds map
+    # onto the collection's existing `token_limit` protocol axis: one cell
+    # per (benchmark, model, threshold), exactly the shape the
+    # trajectory-derived benchmarks already produce. Nothing is discarded and
+    # no threshold is privileged as "the" headline.
+    "aisi-cyber-ctfs": {
+        "outcome": "binary", "metric": "accuracy",
+        "trajectory_outcome": None, "aggregate": "published_aggregate",
+        "upstream_rule": None,
+        "aggregate_only": True,
+        # evaluation_name is "<benchmark_id>.<series>.tokens_<T>".
+        "result_series": "cumulative_success",
+    },
+    "aisi-the-last-ones": {
+        # Single long-horizon cyber-range scenario. `full_completion` is
+        # identically 0.0 for every model at every threshold, so the
+        # measurement that carries signal is the mean progress score - the
+        # "Partial progress" series the paper plots. It is a different
+        # measurement from accuracy and keeps its own metric id, never
+        # blended with it (same rule as healthbench).
+        "outcome": "graded",
+        "metric": "aisi_inference_scaling.mean_progress_score",
+        "trajectory_outcome": None, "aggregate": "published_aggregate",
+        "upstream_rule": None,
+        "aggregate_only": True,
+        "result_series": "partial_progress",
+        "companion_series": "full_completion",
+    },
 }
+
+
+def aggregate_only(config: str) -> bool:
+    """True when the benchmark ships headline aggregates and no transcripts."""
+    return bool(BENCHMARKS.get(config, {}).get("aggregate_only"))
 
 # eval_plan submit-wrapper token → feedback arm.
 WRAPPER_TO_FEEDBACK = {
@@ -879,6 +927,11 @@ class Cell:
     n_summary_records: int | None = None
     base_member: Member | None = None
     contributing: list[Member] = field(default_factory=list)
+    # published_aggregate cells carry no trajectories: the member record
+    # states how many the figure was computed over, and the extra provenance
+    # that would otherwise be derived from rows.
+    n_trajectories_declared: int | None = None
+    published_details: dict = field(default_factory=dict)
 
 
 def build_cells(
@@ -936,6 +989,130 @@ def build_cells(
         ))
     stats["cells_total"] = len(cells)
     return cells, dropped
+
+
+def build_aggregate_only_cells(
+    members: list[Member], stats: Counter
+) -> tuple[list[Cell], list[dict]]:
+    """Restate published aggregates as cells, one per (benchmark, model,
+    token threshold).
+
+    No sample file is opened: these benchmarks are privately held and ship
+    no transcripts, so the published figure IS the measurement. Each of the
+    record's `evaluation_results` whose series matches the benchmark's
+    declared `result_series` becomes one cell on the `token_limit` protocol
+    axis. Results that cannot be placed (no threshold, no score) are
+    itemised in `dropped` rather than dropped silently.
+    """
+    cells: list[Cell] = []
+    dropped: list[dict] = []
+    for m in sorted(members, key=lambda m: m.path):
+        decl = BENCHMARKS.get(m.config, {})
+        series = decl.get("result_series")
+        companion = decl.get("companion_series")
+        companion_by_threshold: dict[int, float] = {}
+        if companion:
+            for er in (m.record.get("evaluation_results") or []):
+                name = er.get("evaluation_name") or ""
+                parts = name.split(".")
+                if len(parts) >= 2 and parts[-2] == companion:
+                    t = _result_token_threshold(er)
+                    sc = (er.get("score_details") or {}).get("score")
+                    if t is not None and sc is not None:
+                        companion_by_threshold[t] = sc
+
+        for er in (m.record.get("evaluation_results") or []):
+            name = er.get("evaluation_name") or ""
+            parts = name.split(".")
+            if series and not (len(parts) >= 2 and parts[-2] == series):
+                continue
+            threshold = _result_token_threshold(er)
+            sd = er.get("score_details") or {}
+            score = sd.get("score")
+            if threshold is None or score is None:
+                stats["aggregate_only_results_unplaceable"] += 1
+                dropped.append({
+                    "benchmark": m.config,
+                    "model": m.record["model_info"]["id"],
+                    "protocol_condition": None,
+                    "n_trajectories": 0,
+                    "reason": "no_token_threshold" if threshold is None
+                              else "no_published_score",
+                    "evaluation_name": name,
+                })
+                continue
+
+            unc = sd.get("uncertainty") or {}
+            se = ((unc.get("standard_error") or {}).get("value"))
+            n_tasks = unc.get("num_samples")
+            det = sd.get("details") or {}
+
+            protocol = {
+                "scaffold": _AGG_ONLY_SCAFFOLD,
+                # The export states context compaction for these runs.
+                "compaction": True,
+                # Scoring is externally verified after the run, so the agent
+                # receives no correctness signal during it.
+                "feedback": "none",
+                "token_limit": threshold,
+                "reasoning_tokens": m.reasoning_tokens,
+                "reasoning_effort": m.reasoning_effort,
+            }
+            published = {
+                "source": "published_aggregate",
+                "token_threshold": str(threshold),
+                "series": series or "",
+            }
+            for k in ("token_budget_cap", "trajectories_per_task",
+                      "evaluated_task_count", "se_definition"):
+                if det.get(k) is not None:
+                    published[k] = str(det[k])
+            if companion and threshold in companion_by_threshold:
+                published[f"{companion}_score"] = str(
+                    companion_by_threshold[threshold]
+                )
+
+            declared_trajectories = _to_int(det.get("trajectory_count"))
+            cells.append(Cell(
+                config=m.config,
+                model_id=m.record["model_info"]["id"],
+                protocol=protocol,
+                protocol_json=canonical_json(protocol),
+                trajectories=[],
+                score=float(score),
+                score_se=float(se) if se is not None else None,
+                n_tasks=int(n_tasks) if n_tasks is not None else 0,
+                aggregate_method="published_aggregate",
+                base_member=m,
+                contributing=[m],
+                n_trajectories_declared=declared_trajectories,
+                published_details=published,
+            ))
+    stats["aggregate_only_cells"] = len(cells)
+    stats["aggregate_only_members"] = len(members)
+    return cells, dropped
+
+
+def _result_token_threshold(er: dict) -> int | None:
+    """Token budget a published result is reported at.
+
+    Prefers the typed `metric_parameters.token_threshold`, falls back to the
+    stringified copy in score_details.details, then to the dotted
+    `evaluation_name` suffix (`....tokens_<T>`).
+    """
+    mc = er.get("metric_config") or {}
+    v = _to_int((mc.get("metric_parameters") or {}).get("token_threshold"))
+    if v is not None:
+        return v
+    v = _to_int(((er.get("score_details") or {}).get("details") or {})
+                .get("token_threshold"))
+    if v is not None:
+        return v
+    name = er.get("evaluation_name") or ""
+    tail = name.rsplit(".", 1)[-1]
+    if tail.startswith("tokens_"):
+        return _to_int(tail.removeprefix("tokens_"))
+    return None
 
 
 def _aggregate_task_mean_score(
@@ -1111,6 +1288,16 @@ def reconcile_record_aggregates(
 # ---------------------------------------------------------------------------
 
 
+# How the cell's standard error was arrived at, by aggregate method.
+_SE_METHODS = {
+    "task_mean_score": "clustered_task_se",
+    "record_summary_mean": "record_summary_se",
+    # Restated from the member record, which documents its own definition in
+    # score_details.details.se_definition.
+    "published_aggregate": "published",
+}
+
+
 def _max_ts(values: list[str | None]) -> str | None:
     best_v, best_s = None, None
     for s in values:
@@ -1148,12 +1335,21 @@ def build_synthetic_records(cells: list[Cell], stats: Counter) -> list[dict]:
                     break
             if source_data is None:
                 source_data = {"dataset_name": c.config, "source_type": "other"}
+            n_traj = (
+                c.n_trajectories_declared
+                if c.n_trajectories_declared is not None
+                else len(c.trajectories)
+            )
             details = {
-                "n_trajectories": str(len(c.trajectories)),
+                "n_trajectories": str(n_traj),
                 "n_tasks": str(c.n_tasks),
                 "aggregation": c.aggregate_method,
                 "protocol_condition": c.protocol_json,
             }
+            # published_aggregate: the figure is restated from the member
+            # record, not recomputed here — say so, and carry the
+            # provenance the rows would otherwise have supplied.
+            details.update(c.published_details)
             if c.n_summary_records is not None:
                 # healthbench: derived from record summaries, trajectory-
                 # weighted (task weighting unrecoverable) — declared so we
@@ -1179,9 +1375,9 @@ def build_synthetic_records(cells: list[Cell], stats: Counter) -> list[dict]:
                     "uncertainty": {
                         "standard_error": (
                             {"value": c.score_se,
-                             "method": "clustered_task_se"
-                                       if c.aggregate_method == "task_mean_score"
-                                       else "record_summary_se"}
+                             "method": _SE_METHODS.get(
+                                 c.aggregate_method, "record_summary_se"
+                             )}
                             if c.score_se is not None else None
                         ),
                         "num_samples": c.n_tasks,
@@ -1190,7 +1386,7 @@ def build_synthetic_records(cells: list[Cell], stats: Counter) -> list[dict]:
                 },
                 "generation_config": gen_cfg,
             })
-            protocol_by_idx.append((c.protocol_json, len(c.trajectories)))
+            protocol_by_idx.append((c.protocol_json, n_traj))
 
         rec = {
             "schema_version": m.record.get("schema_version", "0.3.0"),
@@ -1436,7 +1632,18 @@ def main() -> None:
             f"BENCHMARKS (and collections_curated.yaml) before extracting."
         )
 
-    trajs = stream_trajectories(members, args.revision, hf_token, stats)
+    # Aggregate-only benchmarks ship no transcripts (privately held task
+    # sets). Split them out BEFORE streaming so no sample fetch is ever
+    # attempted for them, and so the row-accounting gates below stay keyed
+    # to the trajectory corpus alone.
+    traj_members = [m for m in members if not aggregate_only(m.config)]
+    agg_members = [m for m in members if aggregate_only(m.config)]
+    if agg_members:
+        print(f"aggregate-only members: {len(agg_members)} record(s) across "
+              f"{sorted({m.config for m in agg_members})} — no sample files "
+              f"will be fetched for these")
+
+    trajs = stream_trajectories(traj_members, args.revision, hf_token, stats)
     if stats["files_download_failed"]:
         raise SystemExit(
             f"{stats['files_download_failed']} sample file(s) failed to "
@@ -1447,11 +1654,15 @@ def main() -> None:
     # Reconciliation deliberately sees the untouched release: it verifies our
     # raw-field reading against upstream record summaries, which include the
     # two sparse tasks that the paper later excludes from its 86-task study.
-    reconciliation = reconcile_record_aggregates(members, trajs)
+    reconciliation = reconcile_record_aggregates(traj_members, trajs)
     trajs = filter_paper_terminalbench_tasks(trajs, stats)
     summarise_terminalbench_outcomes(trajs, stats)
     assign_protocols(trajs, stats)
     cells, dropped_cells = build_cells(trajs, stats)
+    agg_cells, agg_dropped = build_aggregate_only_cells(agg_members, stats)
+    cells = cells + agg_cells
+    dropped_cells = dropped_cells + agg_dropped
+    stats["cells_total"] = len(cells)
     synthetic = build_synthetic_records(cells, stats)
 
     # ---- gates -----------------------------------------------------
@@ -1569,6 +1780,9 @@ def main() -> None:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "expected_drop_count": sum(m.n_results for m in members),
         "score_semantics": BENCHMARKS,
+        "aggregate_only_benchmarks": sorted(
+            {m.config for m in members if aggregate_only(m.config)}
+        ),
         "paper_task_scope": {
             "terminalbench": {
                 "task_count": PAPER_TERMINALBENCH_TASK_COUNT,

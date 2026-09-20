@@ -943,3 +943,197 @@ def test_trajectory_emit_is_byte_identical_across_runs(tmp_path):
     first = emit(traj, tmp_path / "a")
     second = emit(list(reversed(traj)), tmp_path / "b")
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Aggregate-only members (privately held benchmarks, no transcripts)
+# ---------------------------------------------------------------------------
+
+
+def _agg_only_result(series: str, threshold: int, score: float, se: float,
+                     num_samples: int, *, benchmark: str) -> dict:
+    """One published result in the shape the AISI cyber export produces."""
+    return {
+        "evaluation_name": f"{benchmark}.{series}.tokens_{threshold}",
+        "source_data": {
+            "dataset_name": benchmark,
+            "source_type": "url",
+            "url": ["https://arxiv.org/abs/2606.17930"],
+        },
+        "metric_config": {
+            "metric_id": "accuracy",
+            "lower_is_better": False,
+            "score_type": "continuous",
+            "metric_parameters": {"token_threshold": threshold},
+            "min_score": 0.0,
+            "max_score": 1.0,
+        },
+        "score_details": {
+            "score": score,
+            "uncertainty": {
+                "standard_error": {"value": se, "method": "analytic"},
+                "num_samples": num_samples,
+            },
+            "details": {
+                "token_threshold": str(threshold),
+                "token_budget_cap": "50000000",
+                "trajectory_count": "535",
+                "trajectories_per_task": "5",
+                "evaluated_task_count": str(num_samples),
+                "se_definition": "between-task standard error",
+            },
+        },
+        "generation_config": {
+            "generation_args": {"eval_limits": {"token_limit": 50000000}},
+            "additional_details": {"harness": "ReAct-style agent (Inspect)"},
+        },
+    }
+
+
+def _agg_only_member(extractor, benchmark: str, results: list[dict]):
+    return extractor.Member(
+        path=f"data/{benchmark}/anthropic/claude-opus-4-6/record.json",
+        uuid="record",
+        config=benchmark,
+        record={
+            "schema_version": "0.3.0",
+            "evaluation_id": f"{benchmark}/anthropic_claude-opus-4-6/1.0",
+            "retrieved_timestamp": "1.0",
+            "source_metadata": {
+                "source_name": "How Inference Compute Shapes Frontier LLM Evaluation",
+                "source_type": "evaluation_run",
+                "source_organization_name": "UK AI Security Institute",
+                "evaluator_relationship": "third_party",
+            },
+            "eval_library": {"name": "inspect_ai", "version": "unknown"},
+            "model_info": {
+                "name": "anthropic/claude-opus-4-6",
+                "id": "anthropic/claude-opus-4-6",
+                "additional_details": {
+                    "deployment_type": "externally_managed",
+                    "model_availability": "closed_weights",
+                },
+            },
+            "evaluation_results": results,
+        },
+        evaluation_id=f"{benchmark}/anthropic_claude-opus-4-6/1.0",
+        n_results=len(results),
+        feedback=None,
+        reasoning_effort=None,
+        reasoning_tokens=None,
+        generation_config=results[0]["generation_config"],
+        source_data=results[0]["source_data"],
+    )
+
+
+def test_aggregate_only_flag_tracks_declaration():
+    extractor = _load_extractor_module()
+    assert extractor.aggregate_only("aisi-cyber-ctfs")
+    assert extractor.aggregate_only("aisi-the-last-ones")
+    assert not extractor.aggregate_only("terminalbench")
+    assert not extractor.aggregate_only("hle")
+
+
+def test_token_threshold_read_from_each_carrier():
+    extractor = _load_extractor_module()
+    typed = {"metric_config": {"metric_parameters": {"token_threshold": 5_000_000}}}
+    assert extractor._result_token_threshold(typed) == 5_000_000
+    stringy = {"score_details": {"details": {"token_threshold": "1500000"}}}
+    assert extractor._result_token_threshold(stringy) == 1_500_000
+    from_name = {"evaluation_name": "aisi-cyber-ctfs.cumulative_success.tokens_500000"}
+    assert extractor._result_token_threshold(from_name) == 500_000
+    assert extractor._result_token_threshold({"evaluation_name": "x.y"}) is None
+
+
+def test_aggregate_only_cells_restate_every_threshold():
+    """Each published threshold becomes one cell on the token_limit axis —
+    the published score is restated, never recomputed."""
+    extractor = _load_extractor_module()
+    points = [(500_000, 0.4, 0.043596), (1_500_000, 0.530841, 0.044161),
+              (5_000_000, 0.657944, 0.042046), (15_000_000, 0.745794, 0.037715),
+              (50_000_000, 0.811215, 0.033419)]
+    member = _agg_only_member(extractor, "aisi-cyber-ctfs", [
+        _agg_only_result("cumulative_success", t, s, se, 107,
+                         benchmark="aisi-cyber-ctfs")
+        for t, s, se in points
+    ])
+    stats = Counter()
+    cells, dropped = extractor.build_aggregate_only_cells([member], stats)
+
+    assert dropped == []
+    assert len(cells) == len(points)
+    assert [c.protocol["token_limit"] for c in cells] == [t for t, _, _ in points]
+    assert [c.score for c in cells] == [s for _, s, _ in points]
+    assert [c.score_se for c in cells] == [se for _, _, se in points]
+    for c in cells:
+        assert c.trajectories == []            # nothing was streamed
+        assert c.aggregate_method == "published_aggregate"
+        assert c.n_tasks == 107
+        assert c.n_trajectories_declared == 535
+        assert c.protocol["scaffold"] == "ReAct"
+        assert c.protocol["compaction"] is True
+        assert c.protocol["feedback"] == "none"
+        assert c.published_details["source"] == "published_aggregate"
+    assert stats["aggregate_only_cells"] == len(points)
+
+
+def test_aggregate_only_selects_declared_series_and_keeps_companion():
+    """The Last Ones reports two series per threshold; only the declared one
+    becomes the cell score, and the companion rides along as provenance."""
+    extractor = _load_extractor_module()
+    bench = "aisi-the-last-ones"
+    results = [
+        _agg_only_result("full_completion", 1_000_000, 0.0, 0.0, 5, benchmark=bench),
+        _agg_only_result("partial_progress", 1_000_000, 0.19375, 0.022361, 5,
+                         benchmark=bench),
+        _agg_only_result("full_completion", 100_000_000, 0.0, 0.0, 5, benchmark=bench),
+        _agg_only_result("partial_progress", 100_000_000, 0.575, 0.081298, 5,
+                         benchmark=bench),
+    ]
+    cells, dropped = extractor.build_aggregate_only_cells(
+        [_agg_only_member(extractor, bench, results)], Counter()
+    )
+    assert dropped == []
+    assert [c.score for c in cells] == [0.19375, 0.575]
+    assert [c.protocol["token_limit"] for c in cells] == [1_000_000, 100_000_000]
+    assert all(c.published_details["full_completion_score"] == "0.0" for c in cells)
+
+
+def test_aggregate_only_unplaceable_result_is_itemised_not_dropped():
+    extractor = _load_extractor_module()
+    bad = _agg_only_result("cumulative_success", 500_000, 0.4, 0.01, 107,
+                           benchmark="aisi-cyber-ctfs")
+    bad["evaluation_name"] = "aisi-cyber-ctfs.cumulative_success.no_threshold"
+    bad["metric_config"].pop("metric_parameters")
+    bad["score_details"]["details"].pop("token_threshold")
+    stats = Counter()
+    cells, dropped = extractor.build_aggregate_only_cells(
+        [_agg_only_member(extractor, "aisi-cyber-ctfs", [bad])], stats
+    )
+    assert cells == []
+    assert len(dropped) == 1
+    assert dropped[0]["reason"] == "no_token_threshold"
+    assert stats["aggregate_only_results_unplaceable"] == 1
+
+
+def test_aggregate_only_synthetic_record_declares_its_provenance():
+    extractor = _load_extractor_module()
+    member = _agg_only_member(extractor, "aisi-cyber-ctfs", [
+        _agg_only_result("cumulative_success", 50_000_000, 0.811215, 0.033419,
+                         107, benchmark="aisi-cyber-ctfs")
+    ])
+    cells, _ = extractor.build_aggregate_only_cells([member], Counter())
+    records = extractor.build_synthetic_records(cells, Counter())
+
+    assert len(records) == 1
+    result = records[0]["record"]["evaluation_results"][0]
+    details = result["score_details"]["details"]
+    assert details["aggregation"] == "published_aggregate"
+    assert details["source"] == "published_aggregate"
+    assert details["token_threshold"] == "50000000"
+    # the declared trajectory count, not the (empty) streamed one
+    assert details["n_trajectories"] == "535"
+    se = result["score_details"]["uncertainty"]["standard_error"]
+    assert se["method"] == "published"
+    assert se["value"] == 0.033419
+    assert records[0]["protocols"][0][1] == 535
