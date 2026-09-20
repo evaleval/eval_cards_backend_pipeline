@@ -1067,6 +1067,10 @@ def build_aggregate_only_cells(
                       "evaluated_task_count", "se_definition"):
                 if det.get(k) is not None:
                     published[k] = str(det[k])
+            # `num_samples` counts trajectories on a single-task benchmark,
+            # so the record's own task count labels `n_tasks`.
+            if det.get("evaluated_task_count") is not None:
+                published["n_tasks"] = str(det["evaluated_task_count"])
             if companion and threshold in companion_by_threshold:
                 published[f"{companion}_score"] = str(
                     companion_by_threshold[threshold]
