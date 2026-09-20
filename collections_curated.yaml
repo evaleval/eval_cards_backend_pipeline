@@ -59,9 +59,11 @@ uk-aisi-inference-scaling:
     # The two cyber benchmarks are privately held: AISI shared headline
     # aggregates only and the datastore carries no transcripts for them, so
     # there is no per-attempt outcome to declare and nothing to recompute.
-    # `published_aggregate` restates the record's own figure. Each published
-    # result is one token-budget point and lands on the `token_limit` axis,
-    # so no threshold is privileged as the headline.
+    # `published_aggregate` restates the record's own figure. A record's
+    # results are points on one inference-scaling curve read off the same
+    # runs, not runs under different settings: the cell sits at the run's
+    # configured token cap, scored at the last published point, and the
+    # curve is carried in the details.
     aisi-cyber-ctfs: {metric: accuracy, trajectory_outcome: null, aggregate: published_aggregate, aggregate_only: true, result_series: cumulative_success}
     # full_completion is identically 0.0 for every model at every threshold;
     # mean progress (the paper's plotted "Partial progress") is the series
