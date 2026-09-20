@@ -1045,36 +1045,45 @@ def test_token_threshold_read_from_each_carrier():
     assert extractor._result_token_threshold({"evaluation_name": "x.y"}) is None
 
 
-def test_aggregate_only_cells_restate_every_threshold():
-    """Each published threshold becomes one cell on the token_limit axis —
-    the published score is restated, never recomputed."""
+def test_aggregate_only_record_is_one_cell_at_the_run_cap():
+    """A record's thresholds are points on one curve read off the same runs,
+    not run settings: one cell at the configured token cap, scored at the
+    last published point, with every point kept in the curve."""
     extractor = _load_extractor_module()
     points = [(500_000, 0.4, 0.043596), (1_500_000, 0.530841, 0.044161),
               (5_000_000, 0.657944, 0.042046), (15_000_000, 0.745794, 0.037715),
               (50_000_000, 0.811215, 0.033419)]
-    member = _agg_only_member(extractor, "aisi-cyber-ctfs", [
+    results = [
         _agg_only_result("cumulative_success", t, s, se, 107,
                          benchmark="aisi-cyber-ctfs")
         for t, s, se in points
-    ])
+    ]
+    # A run capped above its last published point keeps the true cap.
+    for r in results:
+        r["generation_config"]["generation_args"]["eval_limits"]["token_limit"] = 100_000_000
+    member = _agg_only_member(extractor, "aisi-cyber-ctfs", list(reversed(results)))
     stats = Counter()
     cells, dropped = extractor.build_aggregate_only_cells([member], stats)
 
     assert dropped == []
-    assert len(cells) == len(points)
-    assert [c.protocol["token_limit"] for c in cells] == [t for t, _, _ in points]
-    assert [c.score for c in cells] == [s for _, s, _ in points]
-    assert [c.score_se for c in cells] == [se for _, _, se in points]
-    for c in cells:
-        assert c.trajectories == []            # nothing was streamed
-        assert c.aggregate_method == "published_aggregate"
-        assert c.n_tasks == 107
-        assert c.n_trajectories_declared == 535
-        assert c.protocol["scaffold"] == "ReAct"
-        assert c.protocol["compaction"] is True
-        assert c.protocol["feedback"] == "none"
-        assert c.published_details["source"] == "published_aggregate"
-    assert stats["aggregate_only_cells"] == len(points)
+    assert len(cells) == 1
+    c = cells[0]
+    assert c.protocol["token_limit"] == 100_000_000
+    assert c.published_details["token_threshold"] == "50000000"
+    assert (c.score, c.score_se) == (0.811215, 0.033419)
+    assert c.trajectories == []            # nothing was streamed
+    assert c.aggregate_method == "published_aggregate"
+    assert c.n_tasks == 107
+    assert c.n_trajectories_declared == 535
+    assert c.protocol["scaffold"] == "ReAct"
+    assert c.protocol["compaction"] is True
+    assert c.protocol["feedback"] == "none"
+    assert c.published_details["source"] == "published_aggregate"
+    curve = json.loads(c.published_details["published_curve"])
+    assert [(p["token_threshold"], p["score"], p["standard_error"])
+            for p in curve] == points
+    assert stats["aggregate_only_cells"] == 1
+    assert stats["aggregate_only_curve_points"] == len(points)
 
 
 def test_aggregate_only_selects_declared_series_and_keeps_companion():
@@ -1090,13 +1099,21 @@ def test_aggregate_only_selects_declared_series_and_keeps_companion():
         _agg_only_result("partial_progress", 100_000_000, 0.575, 0.081298, 5,
                          benchmark=bench),
     ]
+    for r in results:                       # one task, five trajectories
+        r["score_details"]["details"]["evaluated_task_count"] = "1"
     cells, dropped = extractor.build_aggregate_only_cells(
         [_agg_only_member(extractor, bench, results)], Counter()
     )
     assert dropped == []
-    assert [c.score for c in cells] == [0.19375, 0.575]
-    assert [c.protocol["token_limit"] for c in cells] == [1_000_000, 100_000_000]
-    assert all(c.published_details["full_completion_score"] == "0.0" for c in cells)
+    assert [c.score for c in cells] == [0.575]
+    assert cells[0].published_details["token_threshold"] == "100000000"
+    assert cells[0].published_details["full_completion_score"] == "0.0"
+    # num_samples (5 trajectories) is restated; n_tasks is the record's own.
+    assert cells[0].n_tasks == 5
+    assert cells[0].published_details["n_tasks"] == "1"
+    curve = json.loads(cells[0].published_details["published_curve"])
+    assert [(p["token_threshold"], p["score"], p["full_completion_score"])
+            for p in curve] == [(1_000_000, 0.19375, 0.0), (100_000_000, 0.575, 0.0)]
 
 
 def test_aggregate_only_unplaceable_result_is_itemised_not_dropped():

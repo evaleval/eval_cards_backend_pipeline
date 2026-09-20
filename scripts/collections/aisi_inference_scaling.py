@@ -161,11 +161,11 @@ BENCHMARKS: dict[str, dict] = {
     # is fetched, parsed or persisted for these members — and the cell score
     # is the published figure restated, never re-derived.
     #
-    # Each published result is one token-budget point, so the thresholds map
-    # onto the collection's existing `token_limit` protocol axis: one cell
-    # per (benchmark, model, threshold), exactly the shape the
-    # trajectory-derived benchmarks already produce. Nothing is discarded and
-    # no threshold is privileged as "the" headline.
+    # Each record publishes one inference-scaling curve: the same runs read
+    # at cumulative token thresholds. The thresholds are not run settings, so
+    # they are not protocol points: one cell per (benchmark, model) at the
+    # run's configured token cap, scored at the last published point, with
+    # the full curve carried in the details.
     "aisi-cyber-ctfs": {
         "outcome": "binary", "metric": "accuracy",
         "trajectory_outcome": None, "aggregate": "published_aggregate",
@@ -994,15 +994,20 @@ def build_cells(
 def build_aggregate_only_cells(
     members: list[Member], stats: Counter
 ) -> tuple[list[Cell], list[dict]]:
-    """Restate published aggregates as cells, one per (benchmark, model,
-    token threshold).
+    """Restate published aggregates as cells, one per (benchmark, model).
 
     No sample file is opened: these benchmarks are privately held and ship
-    no transcripts, so the published figure IS the measurement. Each of the
-    record's `evaluation_results` whose series matches the benchmark's
-    declared `result_series` becomes one cell on the `token_limit` protocol
-    axis. Results that cannot be placed (no threshold, no score) are
-    itemised in `dropped` rather than dropped silently.
+    no transcripts, so the published figure IS the measurement.
+
+    The record's results are points on ONE inference-scaling curve, read off
+    the same runs at cumulative token thresholds (the paper's S(t)); they are
+    not runs under different settings. A protocol point is a combination of
+    run settings, so the cell sits at the record's configured token cap, as
+    every trajectory-derived cell does, and its score is the curve's last
+    published point. The whole curve rides along in the details, the
+    counterpart of what trajectories supply for the other benchmarks.
+    Results that cannot be placed (no threshold, no score) are itemised in
+    `dropped` rather than dropped silently.
     """
     cells: list[Cell] = []
     dropped: list[dict] = []
@@ -1021,14 +1026,14 @@ def build_aggregate_only_cells(
                     if t is not None and sc is not None:
                         companion_by_threshold[t] = sc
 
+        points: list[tuple[int, dict]] = []
         for er in (m.record.get("evaluation_results") or []):
             name = er.get("evaluation_name") or ""
             parts = name.split(".")
             if series and not (len(parts) >= 2 and parts[-2] == series):
                 continue
             threshold = _result_token_threshold(er)
-            sd = er.get("score_details") or {}
-            score = sd.get("score")
+            score = (er.get("score_details") or {}).get("score")
             if threshold is None or score is None:
                 stats["aggregate_only_results_unplaceable"] += 1
                 dropped.append({
@@ -1041,57 +1046,83 @@ def build_aggregate_only_cells(
                     "evaluation_name": name,
                 })
                 continue
+            points.append((threshold, er))
+        if not points:
+            continue
+        points.sort(key=lambda p: p[0])
+        stats["aggregate_only_curve_points"] += len(points)
 
-            unc = sd.get("uncertainty") or {}
-            se = ((unc.get("standard_error") or {}).get("value"))
-            n_tasks = unc.get("num_samples")
-            det = sd.get("details") or {}
+        curve = []
+        for t, er in points:
+            psd = er.get("score_details") or {}
+            pse = ((psd.get("uncertainty") or {})
+                   .get("standard_error") or {}).get("value")
+            point = {"token_threshold": t, "score": psd.get("score"),
+                     "standard_error": pse}
+            if companion and t in companion_by_threshold:
+                point[f"{companion}_score"] = companion_by_threshold[t]
+            curve.append(point)
 
-            protocol = {
-                "scaffold": _AGG_ONLY_SCAFFOLD,
-                # The export states context compaction for these runs.
-                "compaction": True,
-                # Scoring is externally verified after the run, so the agent
-                # receives no correctness signal during it.
-                "feedback": "none",
-                "token_limit": threshold,
-                "reasoning_tokens": m.reasoning_tokens,
-                "reasoning_effort": m.reasoning_effort,
-            }
-            published = {
-                "source": "published_aggregate",
-                "token_threshold": str(threshold),
-                "series": series or "",
-            }
-            for k in ("token_budget_cap", "trajectories_per_task",
-                      "evaluated_task_count", "se_definition"):
-                if det.get(k) is not None:
-                    published[k] = str(det[k])
-            # `num_samples` counts trajectories on a single-task benchmark,
-            # so the record's own task count labels `n_tasks`.
-            if det.get("evaluated_task_count") is not None:
-                published["n_tasks"] = str(det["evaluated_task_count"])
-            if companion and threshold in companion_by_threshold:
-                published[f"{companion}_score"] = str(
-                    companion_by_threshold[threshold]
-                )
+        threshold, er = points[-1]
+        sd = er.get("score_details") or {}
+        score = sd.get("score")
+        unc = sd.get("uncertainty") or {}
+        se = ((unc.get("standard_error") or {}).get("value"))
+        n_tasks = unc.get("num_samples")
+        det = sd.get("details") or {}
+        run_cap = _to_int(
+            ((((er.get("generation_config") or {}).get("generation_args") or {})
+              .get("eval_limits") or {}).get("token_limit"))
+        )
 
-            declared_trajectories = _to_int(det.get("trajectory_count"))
-            cells.append(Cell(
-                config=m.config,
-                model_id=m.record["model_info"]["id"],
-                protocol=protocol,
-                protocol_json=canonical_json(protocol),
-                trajectories=[],
-                score=float(score),
-                score_se=float(se) if se is not None else None,
-                n_tasks=int(n_tasks) if n_tasks is not None else 0,
-                aggregate_method="published_aggregate",
-                base_member=m,
-                contributing=[m],
-                n_trajectories_declared=declared_trajectories,
-                published_details=published,
-            ))
+        protocol = {
+            "scaffold": _AGG_ONLY_SCAFFOLD,
+            # The export states context compaction for these runs.
+            "compaction": True,
+            # Scoring is externally verified after the run, so the agent
+            # receives no correctness signal during it.
+            "feedback": "none",
+            # The run's configured cap. The score is read at
+            # `token_threshold`, which a record may publish below its cap.
+            "token_limit": run_cap if run_cap is not None else threshold,
+            "reasoning_tokens": m.reasoning_tokens,
+            "reasoning_effort": m.reasoning_effort,
+        }
+        published = {
+            "source": "published_aggregate",
+            "token_threshold": str(threshold),
+            "series": series or "",
+            "published_curve": canonical_json(curve),
+        }
+        for k in ("token_budget_cap", "trajectories_per_task",
+                  "evaluated_task_count", "se_definition"):
+            if det.get(k) is not None:
+                published[k] = str(det[k])
+        # `num_samples` counts trajectories on a single-task benchmark,
+        # so the record's own task count labels `n_tasks`.
+        if det.get("evaluated_task_count") is not None:
+            published["n_tasks"] = str(det["evaluated_task_count"])
+        if companion and threshold in companion_by_threshold:
+            published[f"{companion}_score"] = str(
+                companion_by_threshold[threshold]
+            )
+
+        declared_trajectories = _to_int(det.get("trajectory_count"))
+        cells.append(Cell(
+            config=m.config,
+            model_id=m.record["model_info"]["id"],
+            protocol=protocol,
+            protocol_json=canonical_json(protocol),
+            trajectories=[],
+            score=float(score),
+            score_se=float(se) if se is not None else None,
+            n_tasks=int(n_tasks) if n_tasks is not None else 0,
+            aggregate_method="published_aggregate",
+            base_member=m,
+            contributing=[m],
+            n_trajectories_declared=declared_trajectories,
+            published_details=published,
+        ))
     stats["aggregate_only_cells"] = len(cells)
     stats["aggregate_only_members"] = len(members)
     return cells, dropped
