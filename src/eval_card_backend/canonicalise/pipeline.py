@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -439,6 +440,16 @@ def run(
                 taxonomy_seed_dir=Path(taxonomy_seed_dir) if taxonomy_seed_dir else None,
             )
             log.info("  registry dims loaded: %s", sorted(dim_paths))
+            # Backfill the registry's unset open_weights from the Hub before
+            # any dim is built from canonical_models. Opt out with
+            # HF_OPENNESS_PROBE=0 (offline runs, or to pin a bake to exactly
+            # what the registry states).
+            if os.environ.get("HF_OPENNESS_PROBE", "1") != "0":
+                stages.stage_a_backfill_open_weights(
+                    con,
+                    hf_token=settings.hf_token,
+                    cache_path=Path(cache_root) / "hf_openness.json",
+                )
         elif letter == "B":
             n_exploded = stages.stage_b_explode_evaluation_results(con)
             n_synth_collisions = stages.stage_b_count_synth_id_collisions(con)

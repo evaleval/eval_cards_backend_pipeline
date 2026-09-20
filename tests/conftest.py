@@ -27,6 +27,12 @@ import pytest
 for _rev_var in ("EEE_REVISION", "ENTITY_REGISTRY_REVISION", "BENCHMARK_METADATA_REVISION"):
     os.environ.pop(_rev_var, None)
 
+# Keep the suite hermetic: the open-weights backfill reaches the Hugging Face
+# Hub, and a pipeline run under test must not depend on network reachability
+# (or on what the Hub happens to say today). The backfill's own behaviour is
+# covered against an injected double in test_open_weights_backfill.py.
+os.environ.setdefault("HF_OPENNESS_PROBE", "0")
+
 
 @pytest.fixture(scope="session")
 def _taxonomy_seed_stub(tmp_path_factory) -> Path:
