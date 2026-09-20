@@ -40,6 +40,41 @@ from eval_card_backend.sources.registry import read_parquet_arg
 _AUTO_RENAME_RE = re.compile(r"(.+)_\d+")
 
 
+def instance_file_path_sql(file_path: str, record_path: str) -> str:
+    """SQL resolving an upstream sample-file pointer to one repo-relative path.
+
+    Upstream `detailed_evaluation_results.file_path` arrives in three shapes,
+    all of them seen in production:
+
+        <uuid>_samples.jsonl                       bare filename
+        ./<uuid>_samples.jsonl                     dot-relative
+        data/<config>/<org>/<model>/<uuid>_samples.jsonl    already rooted
+
+    The first two only mean anything next to the record that declared them,
+    so they are resolved against that record's directory — `source_record_path`
+    is the repo-relative path of the source JSON, carried since Stage A. All
+    three then share one shape that addresses the EEE repo from its root, which
+    is what `instance_file_url` and every downstream consumer needs.
+
+    Returns NULL when the pointer is absent, or when a relative pointer has no
+    usable record path to resolve against — a half-resolved path would 404 just
+    as silently as the raw one, so emit nothing rather than guess.
+
+    `file_path` and `record_path` are SQL expressions, not values.
+    """
+    return f"""CASE
+                WHEN {file_path} IS NULL THEN NULL
+                WHEN {file_path} LIKE '%/%'
+                 AND {file_path} NOT LIKE './%'
+                    THEN {file_path}
+                WHEN {record_path} IS NULL
+                  OR {record_path} NOT LIKE '%/%' THEN NULL
+                ELSE regexp_replace({record_path}, '/[^/]*$', '')
+                     || '/'
+                     || regexp_replace({file_path}, '^\\./', '')
+            END"""
+
+
 def explicit_projection_sql(con, relation: str, alias: str | None = None) -> str:
     """Comma-separated column list of `relation` (a table name or a
     parenthesised subquery), in declared order and with every name quoted.
@@ -2070,8 +2105,11 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             -- JSON this row was exploded from; Stage J builds the HF URL).
             j.source_record_path,
 
-            -- instance pointer
-            j.detailed_evaluation_results.file_path                                      AS instance_file_path,
+            -- instance pointer, normalised to one repo-relative shape
+            -- (see `instance_file_path_sql`); Stage J builds the HF URL.
+            {instance_file_path_sql(
+                "j.detailed_evaluation_results.file_path", "j.source_record_path"
+            )}                                                                           AS instance_file_path,
             j.detailed_evaluation_results.format                                         AS instance_file_format,
             j.detailed_evaluation_results.checksum                                       AS instance_checksum,
             j.detailed_evaluation_results.hash_algorithm                                 AS instance_hash_algorithm,
@@ -5638,6 +5676,17 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             rep_instance_file_format AS instance_file_format,
             rep_instance_rows        AS instance_rows,
 
+            -- Fetchable URL for the per-instance sample file, built from the
+            -- repo-relative path Stage A normalised. Same repo + revision the
+            -- `eee_record_url` deep-link uses, so a snapshot's record links
+            -- and its sample links always address the same upstream state.
+            CASE
+                WHEN rep_instance_file_path IS NOT NULL
+                THEN 'https://huggingface.co/datasets/{eee_repo}/resolve/{eee_rev}/'
+                     || rep_instance_file_path
+                ELSE NULL
+            END AS instance_file_url,
+
             -- Merged-view columns (spec P2/P3). `score_canonical` is on the
             -- renamed metric's registry scale; raw `score` is never
             -- overwritten. Flagged rows get NULL (never guessed);
@@ -6994,9 +7043,12 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 CAST(COUNT(DISTINCT erv.instance_file_path)
                      FILTER (WHERE erv.instance_file_path IS NOT NULL) AS BIGINT)
                     AS url_count,
-                ARRAY_AGG(DISTINCT erv.instance_file_path
-                          ORDER BY erv.instance_file_path)
-                    FILTER (WHERE erv.instance_file_path IS NOT NULL)
+                -- `instance_data.sample_urls` is consumed as a link list,
+                -- so aggregate the fetchable URL rather than the
+                -- repo-relative path it is built from.
+                ARRAY_AGG(DISTINCT erv.instance_file_url
+                          ORDER BY erv.instance_file_url)
+                    FILTER (WHERE erv.instance_file_url IS NOT NULL)
                     AS sample_urls_full,
                 CAST(COUNT(DISTINCT erv.model_key)
                      FILTER (WHERE erv.instance_file_path IS NOT NULL) AS INTEGER)

@@ -130,6 +130,7 @@ def test_view_columns_match_spec(tmp_path, monkeypatch):
         "first_party_only", "has_variant_divergence", "has_cross_party_divergence",
         "evalcards_annotations",
         "instance_file_path", "instance_file_format", "instance_rows",
+        "instance_file_url",
         # Family / composite columns surface
         # on the view so frontend filters don't need a dim join.
         "composite_slug", "family_id", "is_slice", "parent_benchmark_id",
