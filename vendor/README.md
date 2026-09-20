@@ -21,7 +21,9 @@ records' exploded fragment rows and injects the synthetic results pre-Stage C.
 Unlike the verified-evaluator join below (which degrades silently to FALSE),
 this adapter **hard-fails** when its inputs are inconsistent — an EEE pin bump
 that includes collection data changes must carry the extractor re-run and the
-regenerated `vendor/collections/**` in the same PR.
+regenerated `vendor/collections/**` in the same PR. Before extracting, check the
+revision with `scripts/collections/check_flat_pin.py`: it must be a datastore
+flat-rebuild commit whose index holds every member record.
 
 ## `is_verified_evaluator.parquet` / `evaluator_affiliation.parquet`
 

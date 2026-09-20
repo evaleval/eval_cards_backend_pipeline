@@ -117,6 +117,18 @@ jobs:
           path: .cache/entity_registry
           key: entity-registry-${{ steps.registry-rev.outputs.sha }}
 
+      # The open-weights backfill looks every unset model id up on the Hub
+      # (~2,100 calls) when it has no verdict cache, which exhausts the
+      # token's API quota on each run. Keep its verdict file between runs.
+      # Only this file: the stage cache around it stays uncached (above).
+      - name: Cache open-weights verdicts
+        uses: actions/cache@v5
+        with:
+          path: .cache/canonicalise/hf_openness.json
+          key: hf-openness-${{ github.run_id }}
+          restore-keys: |
+            hf-openness-
+
       - name: Run tests
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
