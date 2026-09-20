@@ -67,7 +67,7 @@ uk-aisi-inference-scaling:
     # mean progress (the paper's plotted "Partial progress") is the series
     # that carries signal, and is its own measurement — never blended with
     # accuracy.
-    aisi-the-last-ones: {metric: aisi_inference_scaling.mean_progress_score, trajectory_outcome: null, aggregate: published_aggregate, aggregate_only: true, result_series: partial_progress, companion_series: full_completion}
+    aisi-the-last-ones: {metric: aisi-mean-progress-score, trajectory_outcome: null, aggregate: published_aggregate, aggregate_only: true, result_series: partial_progress, companion_series: full_completion}
   # Collection-level: the five paper benchmarks ship transcripts. Gates the
   # collection_context sidecar, which only fires for task_mean_score
   # benchmarks and so never reaches the aggregate-only pair.

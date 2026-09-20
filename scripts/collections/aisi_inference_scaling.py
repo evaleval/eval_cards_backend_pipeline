@@ -182,7 +182,7 @@ BENCHMARKS: dict[str, dict] = {
         # measurement from accuracy and keeps its own metric id, never
         # blended with it (same rule as healthbench).
         "outcome": "graded",
-        "metric": "aisi_inference_scaling.mean_progress_score",
+        "metric": "aisi-mean-progress-score",
         "trajectory_outcome": None, "aggregate": "published_aggregate",
         "upstream_rule": None,
         "aggregate_only": True,
