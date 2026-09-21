@@ -7,11 +7,14 @@
 # they mark a quarter of the corpus down for knobs it never had.
 #
 # RESOLUTION ORDER (see stage_j_scoring_mode in canonicalise/stages.py):
-#   1. the record's own `output_type` — authoritative, never overridden here
-#   2. a reward model's `model_type`
-#   3. this file, keyed by (composite_slug, benchmark_id)
-#   4. NULL — unknown, which consumers must treat as "cannot say", never as
-#      "generative". Guessing here is worse than abstaining.
+#   1. the record's own `output_type`, authoritative and never overridden
+#      here. A record that reports it at all is the whole answer: if the
+#      value is one we do not recognise the row stays unknown rather than
+#      falling back to this file, which has stopped describing it.
+#   2. this file, keyed by (composite_slug, benchmark_id), for records that
+#      report no output_type at all
+#   3. NULL, unknown, which consumers must treat as "cannot say" and never
+#      as "generative". Guessing here is worse than abstaining.
 #
 # Values: log_prob | generative.
 #
@@ -19,8 +22,9 @@
 # choice by generating the answer letter, and is generative. Every entry below
 # is read out of the harness's own config dump, not deduced from the title.
 #
-# REGENERATING: scripts/derive_scoring_modes.py re-reads the dumps and rewrites
-# the entries, so this stays checkable rather than becoming folklore.
+# CHECKING: scripts/derive_scoring_modes.py re-reads the dumps and reports what
+# they say, with --check for CI. It does not write this file: edits are made by
+# hand from what it reports, so this stays checkable rather than folklore.
 
 version: 1
 
@@ -64,12 +68,17 @@ sources:
         harness_tasks: leaderboard_math_*
         num_fewshot: 4
 
-# Sources whose records already carry the answer, listed so nobody adds a
-# duplicate entry for them here:
-#   swissai-apertus-evals  generation_config.additional_details.output_type
+# Sources that state their own scoring, listed so nobody adds a duplicate
+# entry for them here:
+#   swissai-apertus-evals  generation_config.additional_details.output_type,
+#                          which step 1 above reads
 #   reward-bench           model_info.additional_details.model_type
 #                          (Seq. Classifier / Custom Classifier / DPO are
-#                           log-prob; Generative / Generative RM are not)
+#                           log-prob; Generative / Generative RM are not).
+#                          NOT resolved today: eval_results_view's model_info
+#                          struct does not carry additional_details, so that
+#                          path needs its own change. Do not paper over it
+#                          with an entry here.
 #
 # Same harness family, NOT yet checked against their dumps — deliberately
 # absent rather than guessed: open-medical-llm, lexam, delta_nc, lingoly_*.
