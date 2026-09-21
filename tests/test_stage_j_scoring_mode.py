@@ -7,7 +7,8 @@ undisclosed, they are ABSENT. Around a quarter of the corpus is scored that
 way, and without this column every one of those rows reads as a source that
 failed to document its setup.
 
-Builds a minimal `eval_results_view` and runs the real stage against it.
+Builds a minimal `eval_results_view` and runs the real stage against it, and
+for byte identity the real view emit, which is where the total sort lives.
 """
 from __future__ import annotations
 
@@ -19,7 +20,10 @@ import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
-from eval_card_backend.canonicalise.stages import stage_j_scoring_mode
+from eval_card_backend.canonicalise.stages import (
+    stage_j_emit_view_parquets,
+    stage_j_scoring_mode,
+)
 from eval_card_backend.sources.scoring_modes import load_scoring_modes
 
 
@@ -296,31 +300,78 @@ def test_ignores_an_entry_with_a_bad_mode(tmp_path):
     assert mod.load_scoring_modes(path) == [("a-source", "good", "log_prob")]
 
 
-def test_two_runs_on_the_same_fixture_are_identical(tmp_path):
-    """The warehouse's promise is a byte-identical re-bake, so this step has
-    to be a pure function of the rows and the checked-in mapping: same order,
-    same values, same parquet."""
-    rows = [
-        ("hf-open-llm-v2", "bbh", None),
-        ("hf-open-llm-v2", "ifeval", None),
-        ("hf-open-llm-v2", "bbh", "generate_until"),
-        ("hf-open-llm-v2", "bbh", "something_new"),
-        ("some-source", "some-benchmark", None),
-        ("some-source", "some-benchmark", "loglikelihood"),
-    ]
+#: The view columns the production emit sorts `eval_results_view` by, plus
+#: the struct the scoring-mode step reads.
+_EMIT_SHAPED_VIEW = """
+    CREATE TABLE eval_results_view(
+        composite_slug VARCHAR, benchmark_id VARCHAR, metric_summary_id VARCHAR,
+        model_key VARCHAR, protocol_condition VARCHAR, judge_condition VARCHAR,
+        split VARCHAR, generation_config STRUCT(additional_details VARCHAR)
+    )
+"""
 
-    def bake(name: str) -> tuple[list, bytes]:
+_EMIT_ROWS = [
+    # (composite_slug, benchmark_id, metric_summary_id, model_key, output_type)
+    ("hf-open-llm-v2", "bbh", "acc", "model-a", None),
+    ("hf-open-llm-v2", "ifeval", "acc", "model-b", None),
+    ("hf-open-llm-v2", "bbh", "acc", "model-c", "generate_until"),
+    ("hf-open-llm-v2", "bbh", "acc", "model-d", "something_new"),
+    ("some-source", "some-benchmark", "f1", "model-e", None),
+    ("some-source", "some-benchmark", "f1", "model-f", "loglikelihood"),
+]
+
+
+def _emit_fixture(con, order: list[int]) -> None:
+    con.execute(_EMIT_SHAPED_VIEW)
+    for composite_slug, benchmark_id, metric, model_key, output_type in (
+        _EMIT_ROWS[i] for i in order
+    ):
+        details = (
+            "NULL" if output_type is None
+            else f"""'{{"output_type": "{output_type}"}}'"""
+        )
+        con.execute(
+            f"INSERT INTO eval_results_view VALUES ('{composite_slug}', "
+            f"'{benchmark_id}', '{metric}', '{model_key}', 'p', 'j', 'test', "
+            f"{{'additional_details': {details}}})"
+        )
+    # The emit writes every view table and re-joins the facts; empty ones are
+    # enough to reach the statement under test.
+    con.execute("CREATE TABLE models_view(model_key VARCHAR)")
+    con.execute("CREATE TABLE evals_view(evaluation_id VARCHAR)")
+    con.execute("CREATE TABLE merged_evals_view(evaluation_id VARCHAR)")
+    con.execute(
+        """
+        CREATE TABLE fact_results(
+            composite_slug VARCHAR, model_key VARCHAR, benchmark_id VARCHAR,
+            metric_key VARCHAR, slice_key VARCHAR, fact_id VARCHAR
+        )
+        """
+    )
+    con.execute("CREATE TABLE fact_headline(fact_id VARCHAR, is_headline BOOLEAN)")
+
+
+def test_the_emitted_view_is_byte_identical_whatever_the_row_order(tmp_path):
+    """The warehouse's promise is a byte-identical re-bake, and rows do not
+    arrive in a guaranteed order. Runs the production emit, which is where
+    the total sort lives, over the same rows inserted two different ways."""
+    outputs = []
+    for run, order in enumerate([[0, 1, 2, 3, 4, 5], [4, 2, 5, 0, 3, 1]]):
         con = duckdb.connect()
-        _view(con, rows)
+        _emit_fixture(con, order)
         stage_j_scoring_mode(con)
-        out = tmp_path / name
-        con.execute(f"COPY eval_results_view TO '{out}' (FORMAT PARQUET)")
-        return con.execute("SELECT * FROM eval_results_view").fetchall(), out.read_bytes()
+        out_dir = tmp_path / f"run{run}"
+        stage_j_emit_view_parquets(con, out_dir, "2026-09-21T00:00:00Z")
+        outputs.append((out_dir / "eval_results_view.parquet").read_bytes())
 
-    first, first_bytes = bake("first.parquet")
-    second, second_bytes = bake("second.parquet")
-    assert first == second
-    assert first_bytes == second_bytes
+    assert outputs[0] == outputs[1]
+    modes = duckdb.connect().execute(
+        f"SELECT scoring_mode FROM read_parquet('{tmp_path / 'run0'}/eval_results_view.parquet') "
+        "ORDER BY model_key"
+    ).fetchall()
+    assert [m[0] for m in modes] == [
+        "log_prob", "generative", "generative", None, None, "log_prob",
+    ]
 
 
 def test_the_mapping_ships_inside_the_package():
