@@ -3947,14 +3947,52 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
         -- pointer is a moving label without one. MIN picks the
         -- model's earliest known snapshot, which is "when the family
         -- first shipped."
-        leaf_release AS (
+        --
+        -- Guarded against cutoff-shaped leaf dates: a few registry
+        -- drafts were synced with the family's KNOWLEDGE CUTOFF in
+        -- `release_date` (`openai/gpt-5-chat` carried GPT-5's
+        -- 2024-09-30 cutoff), and because this is a MIN, one such leaf
+        -- backdates the whole family — GPT-5 shipped 2025-08-07 but
+        -- every card read "2024-09-30". A leaf date that merely echoes
+        -- a cutoff the family canonical itself declares is not
+        -- evidence of a release, so drop it before aggregating. When
+        -- that leaves nothing, the COALESCE below falls through to the
+        -- family canonical's own date, which is the curated value.
+        family_cutoffs AS (
+            SELECT DISTINCT
+                um.model_key,
+                UNNEST(TRY_CAST(
+                    from_json(
+                        json_extract(fam.metadata, '$.knowledge_cutoffs'),
+                        '["VARCHAR"]'
+                    ) AS VARCHAR[]
+                )) AS cutoff
+            FROM used_models um
+            JOIN canonical_models fam ON fam.id = um.model_key
+            WHERE json_extract(fam.metadata, '$.knowledge_cutoffs') IS NOT NULL
+        ),
+        -- Split out of `leaf_release` so the cutoff anti-join is not a
+        -- non-inner join against the lateral UNNEST, which DuckDB
+        -- rejects as a correlated join.
+        leaf_dates AS (
             SELECT
                 um.model_key,
-                MIN(leaf_cm.release_date) AS leaf_release_date
+                leaf_cm.release_date AS leaf_release_date
             FROM used_models um,
                  UNNEST(um.resolved_leaf_ids) AS t(leaf_id)
             LEFT JOIN canonical_models leaf_cm ON leaf_cm.id = t.leaf_id
-            GROUP BY um.model_key
+        ),
+        leaf_release AS (
+            SELECT
+                ld.model_key,
+                MIN(ld.leaf_release_date) FILTER (
+                    WHERE fc.cutoff IS NULL
+                ) AS leaf_release_date
+            FROM leaf_dates ld
+            LEFT JOIN family_cutoffs fc
+                   ON fc.model_key = ld.model_key
+                  AND fc.cutoff = ld.leaf_release_date
+            GROUP BY ld.model_key
         )
         SELECT
             TIMESTAMP '{sid}' AS snapshot_id,
