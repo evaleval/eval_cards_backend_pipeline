@@ -12,9 +12,10 @@ sampled dumps disagree about a benchmark: a mapping that is only usually true
 is worse than none, because consumers cannot see the exception.
 
 `--check` only ever says the file is vouched for when the sample was large
-enough to vouch for it: every expected benchmark derived, no entry on file that
-the dumps did not produce, and no output type the harness has renamed under us.
-Silence from a sample that read nothing is not agreement.
+enough to vouch for it: every expected benchmark derived from its own floor of
+separate dumps, no entry on file that the dumps did not produce, and no output
+type the harness has renamed under us. Silence from a sample that read nothing
+is not agreement.
 
     uv run python scripts/derive_scoring_modes.py            # report
     uv run python scripts/derive_scoring_modes.py --check    # CI: diff vs file
@@ -60,8 +61,10 @@ GENERATIVE_OUTPUT_TYPES = {"generate_until", "generate", "generation"}
 # has not seen the leaderboard, and its silence about the rest is not evidence.
 EXPECTED_BENCHMARKS = frozenset(TASK_PREFIX_TO_BENCHMARK.values())
 
-# Below this many usable dumps the sample cannot settle a per-task constant,
-# so `--check` refuses to call the file vouched for.
+# The claim is that a task's configuration is constant across an independent
+# sample, so the floor is per benchmark: this many separate dumps have to have
+# reported each one. A whole-sample count would let nine dumps of unrelated
+# tasks carry one dump that decided all six.
 MIN_USABLE_DUMPS = 10
 
 
@@ -72,6 +75,8 @@ class Derivation(NamedTuple):
     dumps_read: int
     #: benchmark -> output_type values the harness reports that we cannot read.
     unreadable_output_types: dict[str, set[str]]
+    #: benchmark -> how many distinct dumps reported a mode for it.
+    contributing_dumps: dict[str, int]
 
 
 def benchmark_for_task(task: str) -> str | None:
@@ -109,6 +114,7 @@ def sample_dumps(limit: int, seed: int) -> list[str]:
 def derive(limit: int, seed: int) -> Derivation:
     observed: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
     unreadable: dict[str, set[str]] = defaultdict(set)
+    contributors: dict[str, set[str]] = defaultdict(set)
     dumps_read = 0
 
     for name in sample_dumps(limit, seed):
@@ -132,6 +138,7 @@ def derive(limit: int, seed: int) -> Derivation:
                 # That is the harness moving under the mapping, not noise.
                 unreadable[benchmark].add(str(config.get("output_type")))
                 continue
+            contributors[benchmark].add(name)
             observed[benchmark]["mode"].add(mode)
             observed[benchmark]["tasks"].add(task)
             few = config.get("num_fewshot")
@@ -155,7 +162,12 @@ def derive(limit: int, seed: int) -> Derivation:
             "harness_tasks": shared,
             "num_fewshot": few[0] if len(few) == 1 else few,
         }
-    return Derivation(entries, dumps_read, dict(unreadable))
+    return Derivation(
+        entries,
+        dumps_read,
+        dict(unreadable),
+        {benchmark: len(names) for benchmark, names in contributors.items()},
+    )
 
 
 def _common_prefix(values: list[str]) -> str:
@@ -181,12 +193,25 @@ def objections(
     An empty list is the only thing that means agreement. The comparison is
     over the expected key set rather than over whatever the run happened to
     derive, because a run that downloaded nothing derives nothing and would
-    otherwise agree with anything.
+    otherwise agree with anything. The dump floor applies to each benchmark
+    separately, because what is being claimed is that a task's configuration
+    is constant across an independent sample.
     """
     found: list[str] = []
     if derivation.dumps_read < min_dumps:
         found.append(
             f"only {derivation.dumps_read} usable dump(s), below the floor of {min_dumps}"
+        )
+
+    thin = {
+        benchmark: derivation.contributing_dumps.get(benchmark, 0)
+        for benchmark in EXPECTED_BENCHMARKS
+        if derivation.contributing_dumps.get(benchmark, 0) < min_dumps
+    }
+    if thin:
+        found.append(
+            "vouched for by too few separate dumps (floor "
+            f"{min_dumps}): {dict(sorted(thin.items()))}"
         )
 
     derived = set(derivation.entries)
@@ -234,7 +259,11 @@ def main() -> int:
     derivation = derive(args.limit, args.seed)
     print(f"read {derivation.dumps_read} dumps; derived {len(derivation.entries)} benchmarks")
     for benchmark, entry in derivation.entries.items():
-        print(f"  {benchmark:14s} {entry['mode']:10s} {entry['harness_tasks']}")
+        seen_in = derivation.contributing_dumps.get(benchmark, 0)
+        print(
+            f"  {benchmark:14s} {entry['mode']:10s} {entry['harness_tasks']:26s}"
+            f" ({seen_in} dumps)"
+        )
 
     found = objections(derivation, read_mapping(MAPPING_PATH), args.min_dumps)
     if found:
