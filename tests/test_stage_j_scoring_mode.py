@@ -164,6 +164,51 @@ def test_a_malformed_shape_degrades_to_no_mapping(tmp_path, caplog, shape, body)
     assert len(caplog.records) == 1, shape
 
 
+@pytest.mark.parametrize("shape, body", [
+    # `1` and `"1"` are distinct YAML keys that str() would file as one.
+    ("numeric and quoted source keys",
+     'sources:\n  1:\n    benchmarks:\n      bbh: {mode: log_prob}\n'
+     '  "1":\n    benchmarks:\n      bbh: {mode: generative}\n'),
+    # YAML 1.1: a bare `yes` or `on` is a boolean, and every one of them
+    # would land under "True".
+    ("boolean source key",
+     "sources:\n  yes:\n    benchmarks:\n      bbh: {mode: log_prob}\n"),
+    ("boolean benchmark key",
+     "sources:\n  a-source:\n    benchmarks:\n      on: {mode: log_prob}\n"),
+    ("numeric benchmark key",
+     "sources:\n  a-source:\n    benchmarks:\n      1: {mode: log_prob}\n"),
+])
+def test_a_key_that_is_not_a_string_degrades_to_no_mapping(tmp_path, caplog, shape, body):
+    """Keys are read, never coerced. Coercing them lets two distinct keys
+    become one (source, benchmark) with two answers, and the fallback lookup
+    is a scalar subquery: two answers there end the bake."""
+    import eval_card_backend.sources.scoring_modes as mod
+
+    path = tmp_path / "scoring_modes.yaml"
+    path.write_text(body)
+    with caplog.at_level(logging.WARNING, logger=mod.__name__):
+        assert mod.load_scoring_modes(path) == [], shape
+    assert len(caplog.records) == 1, shape
+
+
+def test_the_stage_survives_a_mapping_that_answers_a_key_twice(caplog, monkeypatch):
+    """Belt and braces for the lookup the loader now protects: an optional
+    side table must not be able to end a bake, whatever is in it."""
+    import eval_card_backend.canonicalise.stages as mod
+
+    monkeypatch.setattr(mod, "load_scoring_modes", lambda: [
+        ("a-source", "bbh", "log_prob"),
+        ("a-source", "bbh", "generative"),
+        ("a-source", "gpqa", "log_prob"),
+    ])
+    con = duckdb.connect()
+    _view(con, [("a-source", "bbh", None), ("a-source", "gpqa", None)])
+    with caplog.at_level(logging.WARNING, logger=mod.__name__):
+        stage_j_scoring_mode(con)
+    assert _modes(con) == [None, "log_prob"]
+    assert any("more than once" in r.getMessage() for r in caplog.records)
+
+
 @pytest.mark.parametrize("bad", ["5", "logprob", "[log_prob]", "{a: b}", "null"])
 def test_a_bad_mode_costs_only_its_own_entry(tmp_path, bad):
     """Unlike a wrong shape, a mode we cannot read is one bad cell in a table

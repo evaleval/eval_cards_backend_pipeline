@@ -6230,6 +6230,32 @@ def _log_cells_without_aggregate(con, top_n: int = 20) -> None:
         log.warning("  ... and %d more group(s)", len(rows) - top_n)
 
 
+def _drop_ambiguous_scoring_mode_keys(con) -> None:
+    """Remove any (source, benchmark) the mapping answers twice.
+
+    The loader already refuses a file that does this, so nothing should reach
+    here. It is dropped rather than picked between because the fallback is a
+    scalar lookup: two answers make it raise, and an optional side table has
+    no business ending a bake.
+    """
+    ambiguous = con.execute(
+        """
+        DELETE FROM scoring_mode_map
+        WHERE (composite_slug, benchmark_id) IN (
+            SELECT composite_slug, benchmark_id FROM scoring_mode_map
+            GROUP BY 1, 2 HAVING count(*) > 1
+        )
+        RETURNING composite_slug, benchmark_id
+        """
+    ).fetchall()
+    for composite_slug, benchmark_id in sorted(set(ambiguous)):
+        log.warning(
+            "stage J: scoring mode mapping answers %s/%s more than once; "
+            "those rows stay unknown",
+            composite_slug, benchmark_id,
+        )
+
+
 def _log_unrecognised_output_types(con, reported: str) -> None:
     """Name every `output_type` we could not read, once each.
 
@@ -6299,6 +6325,7 @@ def stage_j_scoring_mode(con) -> None:
         con.executemany(
             "INSERT INTO scoring_mode_map VALUES (?, ?, ?)", entries
         )
+        _drop_ambiguous_scoring_mode_keys(con)
 
     con.execute("ALTER TABLE eval_results_view ADD COLUMN scoring_mode VARCHAR")
 

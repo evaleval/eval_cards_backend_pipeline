@@ -40,18 +40,21 @@ OUTPUT_TYPE_MODES: dict[str, str] = {
 }
 
 
-def _not_a_mapping(target: Path, what: str, value: object) -> list[tuple[str, str, str]]:
+def _malformed(target: Path, complaint: str) -> list[tuple[str, str, str]]:
     """Warn once and give up on the whole file.
 
     A wrong shape is not a wrong cell: it says the file is not the table we
     think it is, so nothing in it can be trusted. A typo'd mode below costs
     one entry; this costs the mapping.
     """
-    log.warning(
-        "scoring modes: %s has %s as %s, expected a mapping; mapping skipped",
-        target, what, type(value).__name__,
-    )
+    log.warning("scoring modes: %s %s; mapping skipped", target, complaint)
     return []
+
+
+def _not_a_mapping(target: Path, what: str, value: object) -> list[tuple[str, str, str]]:
+    return _malformed(
+        target, f"has {what} as {type(value).__name__}, expected a mapping"
+    )
 
 
 def load_scoring_modes(path: Path | None = None) -> list[tuple[str, str, str]]:
@@ -80,13 +83,36 @@ def load_scoring_modes(path: Path | None = None) -> list[tuple[str, str, str]]:
         return _not_a_mapping(target, "`sources`", sources)
 
     rows: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for composite_slug, source in sources.items():
+        # Keys are read, never coerced. YAML 1.1 turns a bare `yes` or `on`
+        # into a boolean, and str() would file it under "True" next to any
+        # other such key; a quoted "1" beside a bare 1 collapses the same way.
+        # Two rows under one key make the fallback lookup ambiguous.
+        if not isinstance(composite_slug, str):
+            return _malformed(
+                target,
+                f"names a source with the {type(composite_slug).__name__} key "
+                f"{composite_slug!r}, expected a string",
+            )
         if not isinstance(source, dict):
             return _not_a_mapping(target, f"source {composite_slug!r}", source)
         benchmarks = source.get("benchmarks")
         if not isinstance(benchmarks, dict):
             return _not_a_mapping(target, f"{composite_slug!r}'s `benchmarks`", benchmarks)
         for benchmark_id, entry in benchmarks.items():
+            if not isinstance(benchmark_id, str):
+                return _malformed(
+                    target,
+                    f"names a benchmark under {composite_slug!r} with the "
+                    f"{type(benchmark_id).__name__} key {benchmark_id!r}, "
+                    f"expected a string",
+                )
+            if (composite_slug, benchmark_id) in seen:
+                return _malformed(
+                    target, f"gives {composite_slug}/{benchmark_id} more than once"
+                )
+            seen.add((composite_slug, benchmark_id))
             if not isinstance(entry, dict):
                 return _not_a_mapping(
                     target, f"entry {composite_slug!r}/{benchmark_id!r}", entry
@@ -100,7 +126,7 @@ def load_scoring_modes(path: Path | None = None) -> list[tuple[str, str, str]]:
                     composite_slug, benchmark_id, mode, sorted(VALID_MODES),
                 )
                 continue
-            rows.append((str(composite_slug), str(benchmark_id), mode))
+            rows.append((composite_slug, benchmark_id, mode))
 
     log.info("scoring modes: %d (source, benchmark) entries loaded from %s", len(rows), target.name)
     return rows
