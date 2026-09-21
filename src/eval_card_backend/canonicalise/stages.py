@@ -6230,6 +6230,29 @@ def _log_cells_without_aggregate(con, top_n: int = 20) -> None:
         log.warning("  ... and %d more group(s)", len(rows) - top_n)
 
 
+def _log_unrecognised_output_types(con, reported: str) -> None:
+    """Name every `output_type` we could not read, once each.
+
+    A harness that renames its output types leaves those rows unknown, and
+    silence about it is how a mapping becomes folklore. One line per distinct
+    value, not per row: a rename hits tens of thousands of rows at once.
+    """
+    rows = con.execute(
+        f"""
+        SELECT {reported} AS reported, count(*) AS n
+        FROM eval_results_view erv
+        WHERE {reported} <> ''
+          AND scoring_mode IS NULL
+        GROUP BY 1 ORDER BY n DESC, 1
+        """
+    ).fetchall()
+    for reported_value, n in rows:
+        log.warning(
+            "stage J: output_type %r is not one of %s; %d row(s) stay unknown",
+            reported_value, sorted(OUTPUT_TYPE_MODES), n,
+        )
+
+
 def stage_j_scoring_mode(con) -> None:
     """Add `scoring_mode` to `eval_results_view`: generative or log_prob.
 
@@ -6247,6 +6270,12 @@ def stage_j_scoring_mode(con) -> None:
          harnesses that keep it outside the record — HF Open LLM v2 carries it
          only in the leaderboard's result dumps
       3. NULL, meaning "cannot say"
+
+    A record that reports `output_type` at all is answered by that field and
+    by nothing else. When the value is one we do not recognise the row stays
+    NULL instead of dropping to step 2: the source has taken the mapping's
+    job back, and a benchmark-wide table that no longer describes the row
+    must not answer for it. Only an absent or blank field reaches step 2.
 
     NULL is a real answer here and consumers must keep it distinct from
     "generative". Guessing the mode from a benchmark's name is not available
@@ -6276,24 +6305,31 @@ def stage_j_scoring_mode(con) -> None:
     output_type_cases = " ".join(
         f"WHEN '{raw}' THEN '{mode}'" for raw, mode in sorted(OUTPUT_TYPE_MODES.items())
     )
+    reported = (
+        "lower(trim(COALESCE("
+        "json_extract_string(erv.generation_config.additional_details, '$.output_type')"
+        ", '')))"
+    )
     con.execute(
         f"""
         UPDATE eval_results_view AS erv
-        SET scoring_mode = COALESCE(
-            -- (1) the source said so itself
-            CASE lower(trim(COALESCE(
-                json_extract_string(erv.generation_config.additional_details, '$.output_type'),
-                ''
-            ))) {output_type_cases} ELSE NULL END,
-            -- (2) the harness-derived fallback
-            (
+        SET scoring_mode = CASE
+            -- (1) the source said so itself, and that is the whole answer:
+            -- a value we cannot read leaves the row NULL rather than
+            -- letting the benchmark-wide table overrule the record.
+            WHEN {reported} <> ''
+                THEN CASE {reported} {output_type_cases} ELSE NULL END
+            -- (2) the harness-derived fallback, for records that are silent
+            ELSE (
                 SELECT m.mode FROM scoring_mode_map m
                 WHERE m.composite_slug = erv.composite_slug
                   AND m.benchmark_id   = erv.benchmark_id
             )
-        )
+        END
         """
     )
+
+    _log_unrecognised_output_types(con, reported)
 
     counts = con.execute(
         """

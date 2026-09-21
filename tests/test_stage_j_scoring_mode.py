@@ -11,6 +11,7 @@ Builds a minimal `eval_results_view` and runs the real stage against it.
 """
 from __future__ import annotations
 
+import logging
 import textwrap
 
 import pytest
@@ -95,6 +96,40 @@ def test_unknown_stays_null_rather_than_guessing():
     ])
     stage_j_scoring_mode(con)
     assert _modes(con) == [None, None, None]
+
+
+def test_a_present_record_output_type_is_final_even_when_unrecognised():
+    """A mapped benchmark that starts reporting its own output_type has taken
+    the mapping's job back. If we cannot read what it now says the answer is
+    "cannot say": the older benchmark-wide table is no longer describing that
+    row and must not answer for it."""
+    con = duckdb.connect()
+    _view(con, [
+        ("hf-open-llm-v2", "bbh", "something_new"),
+        ("hf-open-llm-v2", "bbh", ""),
+        ("hf-open-llm-v2", "bbh", None),
+        ("hf-open-llm-v2", "bbh", "generate_until"),
+    ])
+    stage_j_scoring_mode(con)
+    assert _modes(con) == [None, "log_prob", "log_prob", "generative"]
+
+
+def test_an_unreadable_output_type_is_named_once_per_value(caplog):
+    """A harness renaming its output types hits tens of thousands of rows at
+    once, so the log says it once per value rather than once per row."""
+    con = duckdb.connect()
+    _view(con, [
+        ("some-source", "some-benchmark", "something_new"),
+        ("some-source", "other-benchmark", "something_new"),
+        ("some-source", "some-benchmark", "another_new"),
+        ("some-source", "some-benchmark", "generate_until"),
+    ])
+    with caplog.at_level(logging.WARNING, logger="eval_card_backend.canonicalise.stages"):
+        stage_j_scoring_mode(con)
+    named = [r.getMessage() for r in caplog.records if "output_type" in r.getMessage()]
+    assert len(named) == 2
+    assert "'something_new'" in named[0] and "2 row(s)" in named[0]
+    assert "'another_new'" in named[1] and "1 row(s)" in named[1]
 
 
 def test_survives_a_missing_mapping_file(tmp_path, monkeypatch):
