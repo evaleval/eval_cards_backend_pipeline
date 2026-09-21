@@ -18,7 +18,7 @@ env:
   # Pin the registry resolver source for reproducible CI builds. Bump
   # when registry semantics change and we want CI to pick them up.
   # Prev pin: f80fee23b0a0b5dcb5d1409caa8b55c8a55670bd (2026-09-16)
-  RESOLVER_REF: 5d539272d4f9273d2e2324063a962f8f14e20a59
+  RESOLVER_REF: 1a15a89f131a0f5611d309b10d4d228b09e5ed65
   # Pin upstream HF dataset revisions (commit SHAs) so CI runs the
   # pipeline against a KNOWN upstream state. This isolates pipeline code
   # changes from upstream data changes — new data won't flow in until
@@ -33,7 +33,7 @@ env:
   # notes/collections-spec.md and scripts/collections/.
   EEE_REVISION: 73761dc1d250913a9326fdc213f7ac2d23d390b6
   # Prev pin: df33e65f9dd04308d457f9dcf0cbb6bfb48c06bd (2026-09-16)
-  ENTITY_REGISTRY_REVISION: 108b926ab5b34c5ca4e8a80708b61c1af20f6478
+  ENTITY_REGISTRY_REVISION: 5f795ebcff6c8e2f31df491a38bd84b07a159f77
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
 
 jobs:
