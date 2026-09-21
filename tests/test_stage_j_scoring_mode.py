@@ -13,7 +13,10 @@ for byte identity the real view emit, which is where the total sort lives.
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 import textwrap
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -374,16 +377,43 @@ def test_the_emitted_view_is_byte_identical_whatever_the_row_order(tmp_path):
     ]
 
 
-def test_the_mapping_ships_inside_the_package():
-    """An installed wheel has no repo root to read from. If the table lives
-    outside the package it goes missing there, and the only symptom is every
-    row quietly reading as unknown."""
+def test_the_mapping_path_is_inside_the_package():
+    """An installed wheel has no repo root to read from, so the table has to
+    be resolved relative to the module. This is the path, not the artifact;
+    the wheel itself is checked below."""
     import eval_card_backend
     from eval_card_backend.sources.scoring_modes import DEFAULT_SCORING_MODES_PATH
 
     package_root = Path(eval_card_backend.__file__).resolve().parent
     assert DEFAULT_SCORING_MODES_PATH.is_relative_to(package_root)
     assert DEFAULT_SCORING_MODES_PATH.exists()
+
+
+def test_the_built_wheel_carries_the_mapping(tmp_path):
+    """Being inside the source package is not the same as being in the
+    artifact. A build config that dropped YAML would ship a wheel with no
+    table, and the only symptom is every row quietly reading as unknown.
+
+    Skipped rather than failed when no build backend is reachable: this
+    asserts what the packaging does, not that a machine can package.
+    """
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("no uv on PATH to build a wheel with")
+
+    built = subprocess.run(
+        [uv, "build", "--wheel", "--offline", "--out-dir", str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+    )
+    if built.returncode != 0:
+        pytest.skip(f"wheel build unavailable here: {built.stderr.strip()[-300:]}")
+
+    wheels = list(tmp_path.glob("*.whl"))
+    assert len(wheels) == 1, wheels
+    members = zipfile.ZipFile(wheels[0]).namelist()
+    assert "eval_card_backend/registry/scoring_modes.yaml" in members
 
 
 def test_shipped_mapping_is_loadable_and_covers_hf_open_llm_v2():
