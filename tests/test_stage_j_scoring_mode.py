@@ -198,6 +198,33 @@ def test_ignores_an_entry_with_a_bad_mode(tmp_path):
     assert mod.load_scoring_modes(path) == [("a-source", "good", "log_prob")]
 
 
+def test_two_runs_on_the_same_fixture_are_identical(tmp_path):
+    """The warehouse's promise is a byte-identical re-bake, so this step has
+    to be a pure function of the rows and the checked-in mapping: same order,
+    same values, same parquet."""
+    rows = [
+        ("hf-open-llm-v2", "bbh", None),
+        ("hf-open-llm-v2", "ifeval", None),
+        ("hf-open-llm-v2", "bbh", "generate_until"),
+        ("hf-open-llm-v2", "bbh", "something_new"),
+        ("some-source", "some-benchmark", None),
+        ("some-source", "some-benchmark", "loglikelihood"),
+    ]
+
+    def bake(name: str) -> tuple[list, bytes]:
+        con = duckdb.connect()
+        _view(con, rows)
+        stage_j_scoring_mode(con)
+        out = tmp_path / name
+        con.execute(f"COPY eval_results_view TO '{out}' (FORMAT PARQUET)")
+        return con.execute("SELECT * FROM eval_results_view").fetchall(), out.read_bytes()
+
+    first, first_bytes = bake("first.parquet")
+    second, second_bytes = bake("second.parquet")
+    assert first == second
+    assert first_bytes == second_bytes
+
+
 def test_the_mapping_ships_inside_the_package():
     """An installed wheel has no repo root to read from. If the table lives
     outside the package it goes missing there, and the only symptom is every
