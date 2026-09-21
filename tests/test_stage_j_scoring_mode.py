@@ -164,6 +164,59 @@ def test_a_malformed_shape_degrades_to_no_mapping(tmp_path, caplog, shape, body)
     assert len(caplog.records) == 1, shape
 
 
+def test_an_unreadable_file_degrades_to_no_mapping(tmp_path, caplog):
+    """The promise is about the file, not only about its syntax. A byte that
+    does not decode fails before the parser ever sees it."""
+    import eval_card_backend.sources.scoring_modes as mod
+
+    path = tmp_path / "scoring_modes.yaml"
+    path.write_bytes(b"sources:\n  a-\xff:\n")
+    with caplog.at_level(logging.WARNING, logger=mod.__name__):
+        assert mod.load_scoring_modes(path) == []
+    assert len(caplog.records) == 1
+
+
+def test_a_directory_at_the_mapping_path_degrades_to_no_mapping(tmp_path, caplog):
+    import eval_card_backend.sources.scoring_modes as mod
+
+    path = tmp_path / "scoring_modes.yaml"
+    path.mkdir()
+    with caplog.at_level(logging.WARNING, logger=mod.__name__):
+        assert mod.load_scoring_modes(path) == []
+    assert len(caplog.records) == 1
+
+
+def test_a_repeated_benchmark_key_degrades_to_no_mapping(tmp_path, caplog):
+    """PyYAML takes the last one, so a second `bbh` would change the mode
+    with nothing to show for it. Silently changing a benchmark's answer is
+    the failure this file exists to prevent."""
+    import eval_card_backend.sources.scoring_modes as mod
+
+    path = tmp_path / "scoring_modes.yaml"
+    path.write_text(textwrap.dedent("""
+        sources:
+          a-source:
+            benchmarks:
+              bbh: {mode: log_prob}
+              bbh: {mode: generative}
+    """))
+    with caplog.at_level(logging.WARNING, logger=mod.__name__):
+        assert mod.load_scoring_modes(path) == []
+    assert len(caplog.records) == 1
+
+
+def test_an_empty_sources_map_is_the_mapping_switched_off(tmp_path, caplog):
+    """Not malformed and not worth a warning: every row falls through to
+    unknown, which is where the warehouse was before this file existed."""
+    import eval_card_backend.sources.scoring_modes as mod
+
+    path = tmp_path / "scoring_modes.yaml"
+    path.write_text("version: 1\nsources: {}\n")
+    with caplog.at_level(logging.WARNING, logger=mod.__name__):
+        assert mod.load_scoring_modes(path) == []
+    assert caplog.records == []
+
+
 @pytest.mark.parametrize("shape, body", [
     # `1` and `"1"` are distinct YAML keys that str() would file as one.
     ("numeric and quoted source keys",

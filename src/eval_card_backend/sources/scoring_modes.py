@@ -40,6 +40,34 @@ OUTPUT_TYPE_MODES: dict[str, str] = {
 }
 
 
+class _NoDuplicateKeys(yaml.SafeLoader):
+    """SafeLoader that refuses a repeated mapping key.
+
+    PyYAML takes the last one. Two `bbh:` entries under one source would
+    therefore change a benchmark's mode with nothing to show for it, which is
+    the failure this whole file exists to prevent.
+    """
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    # Membership by equality rather than a set: a key can be unhashable here,
+    # and the shape check rejects those later anyway.
+    seen: list = []
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        seen.append(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_NoDuplicateKeys.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
 def _malformed(target: Path, complaint: str) -> list[tuple[str, str, str]]:
     """Warn once and give up on the whole file.
 
@@ -60,10 +88,13 @@ def _not_a_mapping(target: Path, what: str, value: object) -> list[tuple[str, st
 def load_scoring_modes(path: Path | None = None) -> list[tuple[str, str, str]]:
     """Return (composite_slug, benchmark_id, mode) rows.
 
-    A malformed or missing file yields an empty mapping and a warning rather
-    than an exception: an unknown scoring mode degrades to "cannot say", which
-    every consumer already handles, whereas failing the bake over a fallback
-    table would take the whole warehouse down with it.
+    A malformed, unreadable or missing file yields an empty mapping and a
+    warning rather than an exception: an unknown scoring mode degrades to
+    "cannot say", which every consumer already handles, whereas failing the
+    bake over a fallback table would take the whole warehouse down with it.
+
+    A file with `sources: {}` is not malformed. It is the mapping switched
+    off on purpose, so it loads to nothing without complaint.
     """
     target = path or DEFAULT_SCORING_MODES_PATH
     if not target.exists():
@@ -71,9 +102,14 @@ def load_scoring_modes(path: Path | None = None) -> list[tuple[str, str, str]]:
         return []
 
     try:
-        payload = yaml.safe_load(target.read_text())
-    except yaml.YAMLError as exc:
-        log.warning("scoring modes: %s is not valid YAML (%s); mapping skipped", target, exc)
+        payload = yaml.load(target.read_text(), Loader=_NoDuplicateKeys)
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        # Not just a parse: the path can be a directory, and bad bytes fail
+        # at the decode. Both used to end the bake from inside the stage.
+        log.warning(
+            "scoring modes: %s could not be read as the mapping (%s: %s); mapping skipped",
+            target, type(exc).__name__, exc,
+        )
         return []
 
     if not isinstance(payload, dict):
