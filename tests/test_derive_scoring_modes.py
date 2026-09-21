@@ -138,13 +138,35 @@ def test_derive_counts_a_dump_once_per_benchmark_it_reports(tmp_path, monkeypatc
         path.write_text(json.dumps(dumps[name]))
         return str(path)
 
-    monkeypatch.setattr(script, "sample_dumps", lambda limit, seed: list(dumps))
+    monkeypatch.setattr(script, "sample_dumps", lambda *args: list(dumps))
     monkeypatch.setattr(script, "hf_hub_download", _download)
 
     derivation = script.derive(limit=3, seed=1)
     assert derivation.dumps_read == 3
     # Two tasks in one dump are one dump, and c.json vouches for nothing.
     assert derivation.contributing_dumps == {"bbh": 2, "ifeval": 1}
+
+
+def test_the_revision_reaches_both_the_listing_and_the_downloads(tmp_path, monkeypatch):
+    """A seed fixes which files are drawn, not what is there to draw from.
+    Pinning only the listing would still let a file change underneath."""
+    asked: dict[str, object] = {}
+
+    class _Api:
+        def list_repo_files(self, repo, repo_type, revision=None):
+            asked["listing"] = revision
+            return ["a.json"]
+
+    def _download(repo, name, repo_type=None, revision=None):
+        asked["download"] = revision
+        path = tmp_path / name
+        path.write_text(json.dumps({"configs": {}}))
+        return str(path)
+
+    monkeypatch.setattr(script, "HfApi", _Api)
+    monkeypatch.setattr(script, "hf_hub_download", _download)
+    script.derive(limit=1, seed=7, revision="deadbeef")
+    assert asked == {"listing": "deadbeef", "download": "deadbeef"}
 
 
 def test_a_mangled_entry_on_file_does_not_read_as_a_mode():
@@ -171,7 +193,7 @@ def test_sampling_does_not_depend_on_the_listing_order(rotation, monkeypatch):
     rotated = files[rotation:] + files[:rotation]
 
     class _Api:
-        def list_repo_files(self, repo, repo_type):
+        def list_repo_files(self, repo, repo_type, revision=None):
             return list(rotated)
 
     monkeypatch.setattr(script, "HfApi", _Api)

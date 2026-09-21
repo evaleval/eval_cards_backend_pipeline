@@ -17,8 +17,15 @@ separate dumps, no entry on file that the dumps did not produce, and no output
 type the harness has renamed under us. Silence from a sample that read nothing
 is not agreement.
 
+The seed fixes which files are drawn, not what is there to draw from. Without
+`--revision` both the listing and the downloads follow the dataset's moving
+HEAD, so the run detects drift but its own sample cannot be repeated; pass a
+revision and record it whenever a sample is meant to stand as provenance. The
+run prints which of the two it did.
+
     uv run python scripts/derive_scoring_modes.py            # report
     uv run python scripts/derive_scoring_modes.py --check    # CI: diff vs file
+    uv run python scripts/derive_scoring_modes.py --revision <sha>
 
 Never edit the mapping by hand from a benchmark's name. helm_* runs multiple
 choice by generating the answer letter and is generative; only the dumps know.
@@ -100,26 +107,28 @@ def mode_for_output_type(output_type: str | None) -> str | None:
     return None
 
 
-def sample_dumps(limit: int, seed: int) -> list[str]:
+def sample_dumps(limit: int, seed: int, revision: str | None = None) -> list[str]:
     # Sorted before sampling and drawn from a generator of our own: the API
     # makes no promise about listing order, and seeding the global RNG would
-    # make the sample depend on whatever else has drawn from it.
+    # make the sample depend on whatever else has drawn from it. The seed
+    # only fixes the draw; what it draws from is fixed by `revision`.
     api = HfApi()
     files = sorted(
-        f for f in api.list_repo_files(RESULTS_REPO, repo_type="dataset") if f.endswith(".json")
+        f for f in api.list_repo_files(RESULTS_REPO, repo_type="dataset", revision=revision)
+        if f.endswith(".json")
     )
     return random.Random(seed).sample(files, min(limit, len(files)))
 
 
-def derive(limit: int, seed: int) -> Derivation:
+def derive(limit: int, seed: int, revision: str | None = None) -> Derivation:
     observed: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
     unreadable: dict[str, set[str]] = defaultdict(set)
     contributors: dict[str, set[str]] = defaultdict(set)
     dumps_read = 0
 
-    for name in sample_dumps(limit, seed):
+    for name in sample_dumps(limit, seed, revision):
         try:
-            path = hf_hub_download(RESULTS_REPO, name, repo_type="dataset")
+            path = hf_hub_download(RESULTS_REPO, name, repo_type="dataset", revision=revision)
             payload = json.loads(Path(path).read_text())
         except Exception as exc:  # a single unreadable dump must not end the run
             print(f"  skipped {name}: {type(exc).__name__}", file=sys.stderr)
@@ -250,13 +259,20 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=25, help="dumps to sample")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
+        "--revision", default=None,
+        help="dataset revision to list and download at; without one the run "
+             "follows the moving HEAD and its sample cannot be repeated",
+    )
+    parser.add_argument(
         "--min-dumps", type=int, default=MIN_USABLE_DUMPS,
         help="usable dumps below which the sample cannot vouch for the file",
     )
     parser.add_argument("--check", action="store_true", help="exit non-zero if the file is stale")
     args = parser.parse_args()
 
-    derivation = derive(args.limit, args.seed)
+    pinned_at = args.revision or "HEAD (unpinned: this sample cannot be repeated)"
+    print(f"{RESULTS_REPO} at {pinned_at}, seed {args.seed}")
+    derivation = derive(args.limit, args.seed, args.revision)
     print(f"read {derivation.dumps_read} dumps; derived {len(derivation.entries)} benchmarks")
     for benchmark, entry in derivation.entries.items():
         seen_in = derivation.contributing_dumps.get(benchmark, 0)

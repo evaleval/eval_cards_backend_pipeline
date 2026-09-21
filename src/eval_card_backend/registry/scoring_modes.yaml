@@ -42,7 +42,10 @@ sources:
   # configs[<task>].output_type). The harness config is fixed per task, so the
   # mapping is a property of the benchmark rather than of any one model —
   # verified identical across 25 independently sampled model dumps on
-  # 2026-09-21 (950 task configs, zero disagreements).
+  # 2026-09-21 (950 task configs, zero disagreements). That sample was drawn
+  # from the dataset's HEAD of the day and no revision was recorded, so it
+  # cannot be replayed; pass --revision to the derivation script and note the
+  # sha here for any sample that is meant to stand as provenance.
   #
   # This covers 17,684 of the 26,526 hf-open-llm-v2 rows in the warehouse,
   # every one of which previously counted as a reproducibility gap for not
