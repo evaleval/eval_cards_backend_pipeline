@@ -11,6 +11,11 @@ warehouse uses, and reports what it found. It FAILS rather than writing when
 sampled dumps disagree about a benchmark: a mapping that is only usually true
 is worse than none, because consumers cannot see the exception.
 
+`--check` only ever says the file is vouched for when the sample was large
+enough to vouch for it: every expected benchmark derived, no entry on file that
+the dumps did not produce, and no output type the harness has renamed under us.
+Silence from a sample that read nothing is not agreement.
+
     uv run python scripts/derive_scoring_modes.py            # report
     uv run python scripts/derive_scoring_modes.py --check    # CI: diff vs file
 
@@ -25,6 +30,7 @@ import random
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 from huggingface_hub import HfApi, hf_hub_download
@@ -50,6 +56,23 @@ TASK_PREFIX_TO_BENCHMARK = {
 LOG_PROB_OUTPUT_TYPES = {"multiple_choice", "loglikelihood", "loglikelihood_rolling"}
 GENERATIVE_OUTPUT_TYPES = {"generate_until", "generate", "generation"}
 
+# What a complete derivation looks like. A sample that produced anything else
+# has not seen the leaderboard, and its silence about the rest is not evidence.
+EXPECTED_BENCHMARKS = frozenset(TASK_PREFIX_TO_BENCHMARK.values())
+
+# Below this many usable dumps the sample cannot settle a per-task constant,
+# so `--check` refuses to call the file vouched for.
+MIN_USABLE_DUMPS = 10
+
+
+class Derivation(NamedTuple):
+    """What one sampling run saw."""
+
+    entries: dict[str, dict[str, object]]
+    dumps_read: int
+    #: benchmark -> output_type values the harness reports that we cannot read.
+    unreadable_output_types: dict[str, set[str]]
+
 
 def benchmark_for_task(task: str) -> str | None:
     # Longest prefix wins so `leaderboard_mmlu_pro` never lands under a
@@ -73,14 +96,19 @@ def mode_for_output_type(output_type: str | None) -> str | None:
 
 
 def sample_dumps(limit: int, seed: int) -> list[str]:
+    # Sorted before sampling and drawn from a generator of our own: the API
+    # makes no promise about listing order, and seeding the global RNG would
+    # make the sample depend on whatever else has drawn from it.
     api = HfApi()
-    files = [f for f in api.list_repo_files(RESULTS_REPO, repo_type="dataset") if f.endswith(".json")]
-    random.seed(seed)
-    return random.sample(files, min(limit, len(files)))
+    files = sorted(
+        f for f in api.list_repo_files(RESULTS_REPO, repo_type="dataset") if f.endswith(".json")
+    )
+    return random.Random(seed).sample(files, min(limit, len(files)))
 
 
-def derive(limit: int, seed: int) -> tuple[dict[str, dict[str, object]], int]:
+def derive(limit: int, seed: int) -> Derivation:
     observed: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
+    unreadable: dict[str, set[str]] = defaultdict(set)
     dumps_read = 0
 
     for name in sample_dumps(limit, seed):
@@ -100,6 +128,9 @@ def derive(limit: int, seed: int) -> tuple[dict[str, dict[str, object]], int]:
                 continue
             mode = mode_for_output_type(config.get("output_type"))
             if mode is None:
+                # A task we recognise, reporting an output type we do not.
+                # That is the harness moving under the mapping, not noise.
+                unreadable[benchmark].add(str(config.get("output_type")))
                 continue
             observed[benchmark]["mode"].add(mode)
             observed[benchmark]["tasks"].add(task)
@@ -124,7 +155,7 @@ def derive(limit: int, seed: int) -> tuple[dict[str, dict[str, object]], int]:
             "harness_tasks": shared,
             "num_fewshot": few[0] if len(few) == 1 else few,
         }
-    return entries, dumps_read
+    return Derivation(entries, dumps_read, dict(unreadable))
 
 
 def _common_prefix(values: list[str]) -> str:
@@ -135,27 +166,81 @@ def _common_prefix(values: list[str]) -> str:
     return first[:i]
 
 
+def mode_on_file(on_file: dict, benchmark: str) -> object:
+    entry = on_file.get(benchmark)
+    return entry.get("mode") if isinstance(entry, dict) else None
+
+
+def objections(
+    derivation: Derivation,
+    on_file: dict,
+    min_dumps: int = MIN_USABLE_DUMPS,
+) -> list[str]:
+    """Every reason this run does not vouch for the checked-in mapping.
+
+    An empty list is the only thing that means agreement. The comparison is
+    over the expected key set rather than over whatever the run happened to
+    derive, because a run that downloaded nothing derives nothing and would
+    otherwise agree with anything.
+    """
+    found: list[str] = []
+    if derivation.dumps_read < min_dumps:
+        found.append(
+            f"only {derivation.dumps_read} usable dump(s), below the floor of {min_dumps}"
+        )
+
+    derived = set(derivation.entries)
+    if derived != set(EXPECTED_BENCHMARKS):
+        found.append(
+            f"derived {sorted(derived)}, expected {sorted(EXPECTED_BENCHMARKS)}"
+        )
+    if derived != set(on_file):
+        found.append(
+            f"file holds {sorted(on_file)}, the dumps produced {sorted(derived)}"
+        )
+
+    for benchmark in sorted(derived & set(on_file)):
+        was, now = mode_on_file(on_file, benchmark), derivation.entries[benchmark]["mode"]
+        if was != now:
+            found.append(f"{benchmark}: file says {was!r}, dumps say {now!r}")
+
+    for benchmark, values in sorted(derivation.unreadable_output_types.items()):
+        found.append(f"{benchmark}: unreadable output_type(s) {sorted(values)}")
+
+    return found
+
+
+def read_mapping(path: Path) -> dict:
+    current = yaml.safe_load(path.read_text()) if path.exists() else {}
+    if not isinstance(current, dict):
+        return {}
+    sources = current.get("sources")
+    source = sources.get(COMPOSITE_SLUG) if isinstance(sources, dict) else None
+    benchmarks = source.get("benchmarks") if isinstance(source, dict) else None
+    return benchmarks if isinstance(benchmarks, dict) else {}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=25, help="dumps to sample")
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--min-dumps", type=int, default=MIN_USABLE_DUMPS,
+        help="usable dumps below which the sample cannot vouch for the file",
+    )
     parser.add_argument("--check", action="store_true", help="exit non-zero if the file is stale")
     args = parser.parse_args()
 
-    entries, dumps_read = derive(args.limit, args.seed)
-    print(f"read {dumps_read} dumps; derived {len(entries)} benchmarks")
-    for benchmark, entry in entries.items():
+    derivation = derive(args.limit, args.seed)
+    print(f"read {derivation.dumps_read} dumps; derived {len(derivation.entries)} benchmarks")
+    for benchmark, entry in derivation.entries.items():
         print(f"  {benchmark:14s} {entry['mode']:10s} {entry['harness_tasks']}")
 
-    current = yaml.safe_load(MAPPING_PATH.read_text()) if MAPPING_PATH.exists() else {}
-    on_file = ((current.get("sources") or {}).get(COMPOSITE_SLUG) or {}).get("benchmarks") or {}
-    drift = {
-        b: (on_file.get(b, {}).get("mode"), e["mode"])
-        for b, e in entries.items()
-        if on_file.get(b, {}).get("mode") != e["mode"]
-    }
-    if drift:
-        print(f"\nDRIFT vs {MAPPING_PATH.name}: {drift}", file=sys.stderr)
+    found = objections(derivation, read_mapping(MAPPING_PATH), args.min_dumps)
+    if found:
+        print(f"\n{MAPPING_PATH.name} is NOT vouched for by this run:", file=sys.stderr)
+        for objection in found:
+            print(f"  {objection}", file=sys.stderr)
         return 1 if args.check else 0
     print(f"\n{MAPPING_PATH.name} agrees with the dumps.")
     return 0
