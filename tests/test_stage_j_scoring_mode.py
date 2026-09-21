@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -195,6 +196,18 @@ def test_ignores_an_entry_with_a_bad_mode(tmp_path):
               typo: {mode: logprob}
     """))
     assert mod.load_scoring_modes(path) == [("a-source", "good", "log_prob")]
+
+
+def test_the_mapping_ships_inside_the_package():
+    """An installed wheel has no repo root to read from. If the table lives
+    outside the package it goes missing there, and the only symptom is every
+    row quietly reading as unknown."""
+    import eval_card_backend
+    from eval_card_backend.sources.scoring_modes import DEFAULT_SCORING_MODES_PATH
+
+    package_root = Path(eval_card_backend.__file__).resolve().parent
+    assert DEFAULT_SCORING_MODES_PATH.is_relative_to(package_root)
+    assert DEFAULT_SCORING_MODES_PATH.exists()
 
 
 def test_shipped_mapping_is_loadable_and_covers_hf_open_llm_v2():

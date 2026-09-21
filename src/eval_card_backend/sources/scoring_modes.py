@@ -18,11 +18,14 @@ from pathlib import Path
 
 import yaml
 
-from eval_card_backend.config import REPO_ROOT
-
 log = logging.getLogger(__name__)
 
-DEFAULT_SCORING_MODES_PATH = REPO_ROOT / "scoring_modes.yaml"
+# Package data, like the other checked-in lookup tables under `registry/`:
+# resolved next to the module rather than from the repo root so an installed
+# wheel carries it and cannot silently classify every row as unknown.
+DEFAULT_SCORING_MODES_PATH = (
+    Path(__file__).resolve().parent.parent / "registry" / "scoring_modes.yaml"
+)
 
 VALID_MODES = frozenset({"log_prob", "generative"})
 

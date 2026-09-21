@@ -1,4 +1,4 @@
-"""Re-derive `scoring_modes.yaml` from the harness's own result dumps.
+"""Re-derive `registry/scoring_modes.yaml` from the harness's own result dumps.
 
 The HF Open LLM Leaderboard v2 does not put `output_type` in the EEE record —
 it lives in the leaderboard's per-model dumps (HF dataset
@@ -30,7 +30,7 @@ import yaml
 from huggingface_hub import HfApi, hf_hub_download
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MAPPING_PATH = REPO_ROOT / "scoring_modes.yaml"
+MAPPING_PATH = REPO_ROOT / "src" / "eval_card_backend" / "registry" / "scoring_modes.yaml"
 
 RESULTS_REPO = "open-llm-leaderboard/results"
 COMPOSITE_SLUG = "hf-open-llm-v2"
