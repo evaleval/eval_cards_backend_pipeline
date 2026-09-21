@@ -34,6 +34,10 @@ from eval_card_backend.canonicalise import taxonomy
 from eval_card_backend.config import EEE_DATASET_REPO
 from eval_card_backend.sources import collections as collections_src
 from eval_card_backend.sources.registry import read_parquet_arg
+from eval_card_backend.sources.scoring_modes import (
+    OUTPUT_TYPE_MODES,
+    load_scoring_modes,
+)
 
 
 # DuckDB's duplicate-column suffix: `a` selected twice becomes `a`, `a_1`.
@@ -6224,6 +6228,146 @@ def _log_cells_without_aggregate(con, top_n: int = 20) -> None:
         )
     if len(rows) > top_n:
         log.warning("  ... and %d more group(s)", len(rows) - top_n)
+
+
+def _drop_ambiguous_scoring_mode_keys(con) -> None:
+    """Remove any (source, benchmark) the mapping answers twice.
+
+    The loader already refuses a file that does this, so nothing should reach
+    here. It is dropped rather than picked between because the fallback is a
+    scalar lookup: two answers make it raise, and an optional side table has
+    no business ending a bake.
+    """
+    ambiguous = con.execute(
+        """
+        DELETE FROM scoring_mode_map
+        WHERE (composite_slug, benchmark_id) IN (
+            SELECT composite_slug, benchmark_id FROM scoring_mode_map
+            GROUP BY 1, 2 HAVING count(*) > 1
+        )
+        RETURNING composite_slug, benchmark_id
+        """
+    ).fetchall()
+    for composite_slug, benchmark_id in sorted(set(ambiguous)):
+        log.warning(
+            "stage J: scoring mode mapping answers %s/%s more than once; "
+            "those rows stay unknown",
+            composite_slug, benchmark_id,
+        )
+
+
+def _log_unrecognised_output_types(con, reported: str) -> None:
+    """Name every `output_type` we could not read, once each.
+
+    A harness that renames its output types leaves those rows unknown, and
+    silence about it is how a mapping becomes folklore. One line per distinct
+    value, not per row: a rename hits tens of thousands of rows at once.
+    """
+    rows = con.execute(
+        f"""
+        SELECT {reported} AS reported, count(*) AS n
+        FROM eval_results_view erv
+        WHERE {reported} <> ''
+          AND scoring_mode IS NULL
+        GROUP BY 1 ORDER BY n DESC, 1
+        """
+    ).fetchall()
+    for reported_value, n in rows:
+        log.warning(
+            "stage J: output_type %r is not one of %s; %d row(s) stay unknown",
+            reported_value, sorted(OUTPUT_TYPE_MODES), n,
+        )
+
+
+def stage_j_scoring_mode(con) -> None:
+    """Add `scoring_mode` to `eval_results_view`: generative or log_prob.
+
+    This decides which setup fields can exist for a run at all. A log-prob
+    result scores the model's likelihood over fixed answer choices — nothing
+    is sampled and nothing is generated — so temperature and max_tokens are
+    not undisclosed, they are ABSENT. Roughly a quarter of the corpus is
+    scored this way, and without this column every one of those rows reads as
+    a source that failed to document its setup.
+
+    Resolution order, strongest evidence first:
+
+      1. the record's own `output_type`, wherever the source reports it
+      2. `scoring_modes.yaml`, keyed by (composite_slug, benchmark_id), for
+         harnesses that keep it outside the record — HF Open LLM v2 carries it
+         only in the leaderboard's result dumps
+      3. NULL, meaning "cannot say"
+
+    A record that reports `output_type` at all is answered by that field and
+    by nothing else. When the value is one we do not recognise the row stays
+    NULL instead of dropping to step 2: the source has taken the mapping's
+    job back, and a benchmark-wide table that no longer describes the row
+    must not answer for it. Only an absent or blank field reaches step 2.
+
+    NULL is a real answer here and consumers must keep it distinct from
+    "generative". Guessing the mode from a benchmark's name is not available
+    as a fallback: helm_* runs multiple choice by GENERATING the answer
+    letter, so the name says nothing.
+
+    Runs as a post-step rather than a column inside the view's SELECT: the
+    mapping is a small side table joined on two keys, and threading it
+    through that statement would bury it.
+    """
+    entries = load_scoring_modes()
+
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE scoring_mode_map(
+            composite_slug VARCHAR, benchmark_id VARCHAR, mode VARCHAR
+        )
+        """
+    )
+    if entries:
+        con.executemany(
+            "INSERT INTO scoring_mode_map VALUES (?, ?, ?)", entries
+        )
+        _drop_ambiguous_scoring_mode_keys(con)
+
+    con.execute("ALTER TABLE eval_results_view ADD COLUMN scoring_mode VARCHAR")
+
+    output_type_cases = " ".join(
+        f"WHEN '{raw}' THEN '{mode}'" for raw, mode in sorted(OUTPUT_TYPE_MODES.items())
+    )
+    reported = (
+        "lower(trim(COALESCE("
+        "json_extract_string(erv.generation_config.additional_details, '$.output_type')"
+        ", '')))"
+    )
+    con.execute(
+        f"""
+        UPDATE eval_results_view AS erv
+        SET scoring_mode = CASE
+            -- (1) the source said so itself, and that is the whole answer:
+            -- a value we cannot read leaves the row NULL rather than
+            -- letting the benchmark-wide table overrule the record.
+            WHEN {reported} <> ''
+                THEN CASE {reported} {output_type_cases} ELSE NULL END
+            -- (2) the harness-derived fallback, for records that are silent
+            ELSE (
+                SELECT m.mode FROM scoring_mode_map m
+                WHERE m.composite_slug = erv.composite_slug
+                  AND m.benchmark_id   = erv.benchmark_id
+            )
+        END
+        """
+    )
+
+    _log_unrecognised_output_types(con, reported)
+
+    counts = con.execute(
+        """
+        SELECT COALESCE(scoring_mode, 'unknown') AS mode, count(*) AS n
+        FROM eval_results_view GROUP BY 1 ORDER BY n DESC
+        """
+    ).fetchall()
+    log.info(
+        "stage J: scoring_mode resolved — %s",
+        ", ".join(f"{mode}={n}" for mode, n in counts),
+    )
 
 
 def stage_j_models_view(con, snapshot_id: str) -> None:

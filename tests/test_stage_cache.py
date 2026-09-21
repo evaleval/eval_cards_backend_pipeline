@@ -166,6 +166,20 @@ def test_restore_refuses_a_cache_from_a_different_schema(tmp_path):
         cache.restore_through(con, "A")
 
 
+def test_restore_refuses_a_version_12_cache(tmp_path):
+    """Pins the transition, not just the mechanism. Stage J's cached
+    `eval_results_view` gained `scoring_mode`, so a cache stamped 12 no
+    longer describes the tables this pipeline restores. Every other test here
+    derives its expectation from the constant, which means putting the
+    constant back would leave them all green."""
+    con, cache = _seed_cache(tmp_path)
+    (cache.dir / "_cache_schema.json").write_text(
+        json.dumps({"cache_schema_version": 12})
+    )
+    with pytest.raises(RuntimeError, match="Re-run from Stage A"):
+        cache.restore_through(con, "A")
+
+
 def test_restore_refuses_a_cache_with_no_fingerprint(tmp_path):
     """A cache written before the fingerprint existed carries an unknown
     column shape, so it is stale by definition rather than trusted."""
