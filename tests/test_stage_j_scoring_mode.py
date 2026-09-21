@@ -141,6 +141,46 @@ def test_survives_a_missing_mapping_file(tmp_path, monkeypatch):
     assert mod.load_scoring_modes() == []
 
 
+@pytest.mark.parametrize("shape, body", [
+    ("root is a list", "- a\n- b\n"),
+    ("sources is a list", "version: 1\nsources:\n  - a-source\n"),
+    ("sources is a string", "version: 1\nsources: a-source\n"),
+    ("sources is empty", "version: 1\nsources:\n"),
+    ("a source is a scalar", "sources:\n  a-source: log_prob\n"),
+    ("benchmarks is a list", "sources:\n  a-source:\n    benchmarks:\n      - bbh\n"),
+    ("an entry is a scalar", "sources:\n  a-source:\n    benchmarks:\n      bbh: log_prob\n"),
+])
+def test_a_malformed_shape_degrades_to_no_mapping(tmp_path, caplog, shape, body):
+    """Valid YAML in the wrong shape has to degrade exactly like unparseable
+    YAML does. A wrong shape says the file is not the table we think it is,
+    so it costs the mapping rather than one entry, and it says so once."""
+    import eval_card_backend.sources.scoring_modes as mod
+
+    path = tmp_path / "scoring_modes.yaml"
+    path.write_text(body)
+    with caplog.at_level(logging.WARNING, logger=mod.__name__):
+        assert mod.load_scoring_modes(path) == [], shape
+    assert len(caplog.records) == 1, shape
+
+
+@pytest.mark.parametrize("bad", ["5", "logprob", "[log_prob]", "{a: b}", "null"])
+def test_a_bad_mode_costs_only_its_own_entry(tmp_path, bad):
+    """Unlike a wrong shape, a mode we cannot read is one bad cell in a table
+    that is otherwise exactly what it claims to be."""
+    import eval_card_backend.sources.scoring_modes as mod
+
+    path = tmp_path / "scoring_modes.yaml"
+    path.write_text(textwrap.dedent(f"""
+        version: 1
+        sources:
+          a-source:
+            benchmarks:
+              good: {{mode: log_prob}}
+              bad: {{mode: {bad}}}
+    """))
+    assert mod.load_scoring_modes(path) == [("a-source", "good", "log_prob")]
+
+
 def test_ignores_an_entry_with_a_bad_mode(tmp_path):
     """A typo withholds that one entry, loudly, and leaves the rest."""
     import eval_card_backend.sources.scoring_modes as mod

@@ -37,6 +37,20 @@ OUTPUT_TYPE_MODES: dict[str, str] = {
 }
 
 
+def _not_a_mapping(target: Path, what: str, value: object) -> list[tuple[str, str, str]]:
+    """Warn once and give up on the whole file.
+
+    A wrong shape is not a wrong cell: it says the file is not the table we
+    think it is, so nothing in it can be trusted. A typo'd mode below costs
+    one entry; this costs the mapping.
+    """
+    log.warning(
+        "scoring modes: %s has %s as %s, expected a mapping; mapping skipped",
+        target, what, type(value).__name__,
+    )
+    return []
+
+
 def load_scoring_modes(path: Path | None = None) -> list[tuple[str, str, str]]:
     """Return (composite_slug, benchmark_id, mode) rows.
 
@@ -51,16 +65,31 @@ def load_scoring_modes(path: Path | None = None) -> list[tuple[str, str, str]]:
         return []
 
     try:
-        payload = yaml.safe_load(target.read_text()) or {}
+        payload = yaml.safe_load(target.read_text())
     except yaml.YAMLError as exc:
         log.warning("scoring modes: %s is not valid YAML (%s); mapping skipped", target, exc)
         return []
 
+    if not isinstance(payload, dict):
+        return _not_a_mapping(target, "its root", payload)
+    sources = payload.get("sources")
+    if not isinstance(sources, dict):
+        return _not_a_mapping(target, "`sources`", sources)
+
     rows: list[tuple[str, str, str]] = []
-    for composite_slug, source in (payload.get("sources") or {}).items():
-        for benchmark_id, entry in ((source or {}).get("benchmarks") or {}).items():
-            mode = (entry or {}).get("mode")
-            if mode not in VALID_MODES:
+    for composite_slug, source in sources.items():
+        if not isinstance(source, dict):
+            return _not_a_mapping(target, f"source {composite_slug!r}", source)
+        benchmarks = source.get("benchmarks")
+        if not isinstance(benchmarks, dict):
+            return _not_a_mapping(target, f"{composite_slug!r}'s `benchmarks`", benchmarks)
+        for benchmark_id, entry in benchmarks.items():
+            if not isinstance(entry, dict):
+                return _not_a_mapping(
+                    target, f"entry {composite_slug!r}/{benchmark_id!r}", entry
+                )
+            mode = entry.get("mode")
+            if not isinstance(mode, str) or mode not in VALID_MODES:
                 # Naming the bad entry matters more than guessing past it: a
                 # typo here silently withholds the fact for a whole source.
                 log.warning(
@@ -68,7 +97,7 @@ def load_scoring_modes(path: Path | None = None) -> list[tuple[str, str, str]]:
                     composite_slug, benchmark_id, mode, sorted(VALID_MODES),
                 )
                 continue
-            rows.append((str(composite_slug), str(benchmark_id), str(mode)))
+            rows.append((str(composite_slug), str(benchmark_id), mode))
 
     log.info("scoring modes: %d (source, benchmark) entries loaded from %s", len(rows), target.name)
     return rows
