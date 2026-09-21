@@ -37,7 +37,9 @@ def _setup_inputs(con):
         SELECT * FROM (VALUES
             ('allenai/olmo-3-32b',        'OLMo-3 32B',     CAST(NULL AS VARCHAR), 'allenai',   CAST(NULL AS VARCHAR), 'transformer', 32.0, '[]', CAST(NULL AS VARCHAR), 'allenai',   true,  CAST(NULL AS VARCHAR), '[]', '{}', 'reviewed', '', '', CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)),
             ('allenai/olmo-3-1125-32b',   'OLMo-3 32B (1125)', CAST(NULL AS VARCHAR), 'allenai', CAST(NULL AS VARCHAR), 'transformer', 32.0, '[{"id": "allenai/olmo-3-32b", "relationship": "variant", "axis": "version"}]', 'allenai/olmo-3-32b', 'allenai', true, '2025-11-25', '[]', '{}', 'reviewed', '', '', CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), 'allenai/olmo-3-32b'),
-            ('anthropic/claude-opus-4-5', 'Claude Opus 4.5', CAST(NULL AS VARCHAR), 'anthropic', CAST(NULL AS VARCHAR), 'transformer', CAST(NULL AS DOUBLE), '[]', CAST(NULL AS VARCHAR), 'anthropic', false, '2025-10-15', '[]', '{}', 'reviewed', '', '', CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR))
+            ('anthropic/claude-opus-4-5', 'Claude Opus 4.5', CAST(NULL AS VARCHAR), 'anthropic', CAST(NULL AS VARCHAR), 'transformer', CAST(NULL AS DOUBLE), '[]', CAST(NULL AS VARCHAR), 'anthropic', false, '2025-10-15', '[]', '{}', 'reviewed', '', '', CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)),
+            ('openai/gpt-5',              'GPT-5',          CAST(NULL AS VARCHAR), 'openai',    'gpt-5', CAST(NULL AS VARCHAR), CAST(NULL AS DOUBLE), '[]', CAST(NULL AS VARCHAR), 'openai', false, '2025-08-07', '[]', '{"knowledge_cutoffs": ["2024-09-30"], "release_dates": ["2025-08-07"]}', 'reviewed', '', '', CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)),
+            ('openai/gpt-5-chat',         'GPT-5 Chat',     CAST(NULL AS VARCHAR), 'openai',    'gpt-5', CAST(NULL AS VARCHAR), CAST(NULL AS DOUBLE), '[]', 'openai/gpt-5', 'openai', false, '2024-09-30', '[]', '{}', 'draft', '', '', CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), 'openai/gpt-5')
         ) t(id, display_name, developer, org_id, family, architecture, params_billions, parents, root_model_id, lineage_origin_org_id, open_weights, release_date, tags, metadata, review_status, created_at, updated_at, input_modalities, output_modalities, parent_model_id);
         """
     )
@@ -46,7 +48,8 @@ def _setup_inputs(con):
         CREATE TABLE canonical_orgs AS
         SELECT * FROM (VALUES
             ('allenai',   'Allen AI',   CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), 'allenai',   'lab', '[]', '{}', 'reviewed', '', ''),
-            ('anthropic', 'Anthropic',  CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), 'anthropic', 'lab', '[]', '{}', 'reviewed', '', '')
+            ('anthropic', 'Anthropic',  CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), 'anthropic', 'lab', '[]', '{}', 'reviewed', '', ''),
+            ('openai',    'OpenAI',     CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), 'openai',    'lab', '[]', '{}', 'reviewed', '', '')
         ) t(id, display_name, parent_org_id, website, hf_org, kind, tags, metadata, review_status, created_at, updated_at);
         """
     )
@@ -55,7 +58,9 @@ def _setup_inputs(con):
         CREATE TABLE fact_results AS
         SELECT * FROM (VALUES
             ('allenai/olmo-3-32b',        'allenai/Olmo-3-1125-32B',     'allenai/olmo-3-32b',        'allenai/olmo-3-1125-32b'),
-            ('anthropic/claude-opus-4-5', 'anthropic/claude-opus-4-5',   'anthropic/claude-opus-4-5', 'anthropic/claude-opus-4-5')
+            ('anthropic/claude-opus-4-5', 'anthropic/claude-opus-4-5',   'anthropic/claude-opus-4-5', 'anthropic/claude-opus-4-5'),
+            ('openai/gpt-5',              'openai/gpt-5',                'openai/gpt-5',              'openai/gpt-5'),
+            ('openai/gpt-5',              'openai/gpt-5-chat',           'openai/gpt-5',              'openai/gpt-5-chat')
         ) t(model_aggregation_key, model_raw, model_id, model_leaf_id);
         """
     )
@@ -83,14 +88,38 @@ def _run_models_stage(con):
             WHERE model_aggregation_key IS NOT NULL
             GROUP BY model_aggregation_key
         ),
-        leaf_release AS (
+        family_cutoffs AS (
+            SELECT DISTINCT
+                um.model_key,
+                UNNEST(TRY_CAST(
+                    from_json(
+                        json_extract(fam.metadata, '$.knowledge_cutoffs'),
+                        '["VARCHAR"]'
+                    ) AS VARCHAR[]
+                )) AS cutoff
+            FROM used_models um
+            JOIN canonical_models fam ON fam.id = um.model_key
+            WHERE json_extract(fam.metadata, '$.knowledge_cutoffs') IS NOT NULL
+        ),
+        leaf_dates AS (
             SELECT
                 um.model_key,
-                MIN(leaf_cm.release_date) AS leaf_release_date
+                leaf_cm.release_date AS leaf_release_date
             FROM used_models um,
                  UNNEST(um.resolved_leaf_ids) AS t(leaf_id)
             LEFT JOIN canonical_models leaf_cm ON leaf_cm.id = t.leaf_id
-            GROUP BY um.model_key
+        ),
+        leaf_release AS (
+            SELECT
+                ld.model_key,
+                MIN(ld.leaf_release_date) FILTER (
+                    WHERE fc.cutoff IS NULL
+                ) AS leaf_release_date
+            FROM leaf_dates ld
+            LEFT JOIN family_cutoffs fc
+                   ON fc.model_key = ld.model_key
+                  AND fc.cutoff = ld.leaf_release_date
+            GROUP BY ld.model_key
         )
         SELECT
             um.model_key,
@@ -142,3 +171,38 @@ def test_leaf_release_date_falls_back_to_family_when_leaf_has_none():
     assert family_date == "2025-10-15"
     assert leaf_date == "2025-10-15"
     assert release_date == "2025-10-15"
+
+
+def test_leaf_date_echoing_a_knowledge_cutoff_is_ignored():
+    """The GPT-5 case: the `openai/gpt-5-chat` leaf was synced with
+    GPT-5's knowledge cutoff (2024-09-30) in `release_date`. MIN would
+    hand that to the whole family and every GPT-5 card would read
+    2024-09-30 instead of the 2025-08-07 ship date. A leaf date that
+    only echoes a cutoff the family itself declares carries no release
+    evidence, so it must not reach the aggregate."""
+    con = duckdb.connect()
+    _setup_inputs(con)
+    _run_models_stage(con)
+    row = con.execute(
+        "SELECT release_date, family_release_date, leaf_release_date "
+        "FROM models WHERE model_key = 'openai/gpt-5'"
+    ).fetchone()
+    release_date, family_date, leaf_date = row
+    assert family_date == "2025-08-07"
+    # 2024-09-30 was dropped; the surviving leaf is gpt-5's own date.
+    assert leaf_date == "2025-08-07"
+    assert release_date == "2025-08-07"
+
+
+def test_cutoff_guard_does_not_drop_a_genuine_dated_snapshot():
+    """Guard-rail on the guard: the Olmo snapshot date must still win.
+    Only values the family lists as a knowledge cutoff are filtered —
+    a family with no `knowledge_cutoffs` metadata is untouched."""
+    con = duckdb.connect()
+    _setup_inputs(con)
+    _run_models_stage(con)
+    leaf_date = con.execute(
+        "SELECT leaf_release_date FROM models "
+        "WHERE model_key = 'allenai/olmo-3-32b'"
+    ).fetchone()[0]
+    assert leaf_date == "2025-11-25"
