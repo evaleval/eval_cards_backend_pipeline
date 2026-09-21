@@ -70,12 +70,16 @@ VALIDATED: dict[tuple[str, str], str] = {
     # the same org's data is uploaded by a coalition member (decision 2026-08-20).
     ("evijit", "Terminal-Bench"):
         "Terminal-Bench established first-party (StevenDillmann); TB 2.0 batch coalition-uploaded.",
+    ("evijit", "UK AI Security Institute"):
+        "AISI established first-party; cyber aggregates of the same inference-scaling study, coalition-uploaded (PRs #218/#220).",
     ("jboat", "Stanford CRFM"):
         "CRFM established first-party (yifanmai); CRFM-run mmlu-winogrande-afr batch.",
     ("karthikchundi", "Stanford CRFM / Tatsu Lab"):
         "CRFM established first-party (yifanmai); alpaca_eval batch.",
     ("evijit", "Exgentic"):
         "On HF org Exgentic (same test as Elron); Exgentic's own leaderboard data.",
+    ("ymetz", "Swiss AI Initiative"):
+        "On HF orgs swiss-ai and apertus-ai; submitted Swiss AI's own Apertus evaluation results.",
     ("jboat", "Institute for Disease Modeling"):
         "On HF org gatesfoundation; IDM is a Gates institute.",
     ("martin-ku-oup", "OUP"):
