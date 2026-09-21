@@ -1,0 +1,75 @@
+# How each result was SCORED: from generated text, or from log-probabilities.
+#
+# This decides which setup fields can even exist for a run. A log-prob result
+# scores the model's likelihood over fixed answer choices — nothing is sampled
+# and nothing is generated, so temperature and max_tokens are not undisclosed,
+# they are ABSENT. Consumers that score reproducibility need the distinction or
+# they mark a quarter of the corpus down for knobs it never had.
+#
+# RESOLUTION ORDER (see stage_j_scoring_mode in canonicalise/stages.py):
+#   1. the record's own `output_type` — authoritative, never overridden here
+#   2. a reward model's `model_type`
+#   3. this file, keyed by (composite_slug, benchmark_id)
+#   4. NULL — unknown, which consumers must treat as "cannot say", never as
+#      "generative". Guessing here is worse than abstaining.
+#
+# Values: log_prob | generative.
+#
+# NEVER add an entry inferred from a benchmark's NAME. helm_* runs multiple
+# choice by generating the answer letter, and is generative. Every entry below
+# is read out of the harness's own config dump, not deduced from the title.
+#
+# REGENERATING: scripts/derive_scoring_modes.py re-reads the dumps and rewrites
+# the entries, so this stays checkable rather than becoming folklore.
+
+version: 1
+
+sources:
+  # HF Open LLM Leaderboard v2 — lm-evaluation-harness.
+  #
+  # The EEE record carries no output_type; it lives only in the leaderboard's
+  # own result dumps (HF dataset open-llm-leaderboard/results, per model, at
+  # configs[<task>].output_type). The harness config is fixed per task, so the
+  # mapping is a property of the benchmark rather than of any one model —
+  # verified identical across 25 independently sampled model dumps on
+  # 2026-09-21 (950 task configs, zero disagreements).
+  #
+  # This covers 17,684 of the 26,526 hf-open-llm-v2 rows in the warehouse,
+  # every one of which previously counted as a reproducibility gap for not
+  # disclosing a temperature it could not have had.
+  hf-open-llm-v2:
+    benchmarks:
+      bbh:
+        mode: log_prob
+        harness_tasks: leaderboard_bbh_*
+        num_fewshot: 3
+      gpqa:
+        mode: log_prob
+        harness_tasks: leaderboard_gpqa_*
+        num_fewshot: 0
+      musr:
+        mode: log_prob
+        harness_tasks: leaderboard_musr_*
+        num_fewshot: 0
+      mmlu-pro:
+        mode: log_prob
+        harness_tasks: leaderboard_mmlu_pro
+        num_fewshot: 5
+      ifeval:
+        mode: generative
+        harness_tasks: leaderboard_ifeval
+        num_fewshot: 0
+      math-level-5:
+        mode: generative
+        harness_tasks: leaderboard_math_*
+        num_fewshot: 4
+
+# Sources whose records already carry the answer, listed so nobody adds a
+# duplicate entry for them here:
+#   swissai-apertus-evals  generation_config.additional_details.output_type
+#   reward-bench           model_info.additional_details.model_type
+#                          (Seq. Classifier / Custom Classifier / DPO are
+#                           log-prob; Generative / Generative RM are not)
+#
+# Same harness family, NOT yet checked against their dumps — deliberately
+# absent rather than guessed: open-medical-llm, lexam, delta_nc, lingoly_*.

@@ -517,6 +517,9 @@ def run(
             stages.stage_j_eval_results_view(
                 con, snapshot_id, eee_revision=settings.eee_revision
             )
+            # Must precede the views that read from eval_results_view, and
+            # the parquet emit at the end of this branch.
+            stages.stage_j_scoring_mode(con)
             stages.stage_j_models_view(con, snapshot_id)
             stages.stage_j_evals_view(con, snapshot_id)
             stages.stage_j_merged_evals_view(con, snapshot_id)
