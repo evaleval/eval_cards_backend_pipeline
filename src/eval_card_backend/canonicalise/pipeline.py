@@ -493,11 +493,13 @@ def run(
             )
             log.info(
                 "Stage E: %d rows in, %d rows out "
-                "(dropped %d no_score, %d sentinel, %d fact_id collision)",
+                "(dropped %d no_score, %d sentinel, %d fact_id collision, "
+                "%d re-emitted observation)",
                 stage_e_stats.pre, stage_e_stats.post,
                 stage_e_stats.n_dropped_no_score,
                 stage_e_stats.n_dropped_sentinel,
                 stage_e_stats.n_dropped_dedup,
+                stage_e_stats.n_dropped_content_dedup,
             )
         elif letter == "F":
             log.info("Stage F: group signals …")
@@ -566,17 +568,18 @@ def run(
                 "results_exploded missing; synthesised_id_collisions = None"
             )
     # When Stage E was restored from cache rather than re-run, recover row
-    # counts from the cached tables. Sentinel and dedup breakdowns are
-    # re-derived: the sentinel predicate is pure SQL against
-    # `fact_results_staging`, and dedup count = pre - no_score - sentinel
-    # - post. This keeps `snapshot_meta.row_counts` accurate across
-    # `--from-stage F+` reruns instead of zeroing out two real signals.
+    # counts from the cached tables. Sentinel and both dedup breakdowns are
+    # re-derived: the sentinel predicate and fact-id survivor count are pure
+    # SQL against `fact_results_staging`; the remaining pre/post delta is the
+    # content dedup. This keeps `snapshot_meta.row_counts` accurate across
+    # `--from-stage F+` reruns instead of zeroing out real signals.
     if stage_e_stats is None:
         pre_count = _table_count(con, "fact_results_staging")
         post_count = _table_count(con, "fact_results_signaled")
         n_no_score = None
         n_sentinel = None
         n_dedup = None
+        n_content_dedup = None
         if pre_count is not None:
             try:
                 n_no_score = con.execute(
@@ -588,10 +591,18 @@ def run(
                     f"AND ({stages._SENTINEL_DROP_PREDICATE})"
                 ).fetchone()[0]
                 if post_count is not None:
-                    n_dedup = max(
-                        0,
-                        pre_count - n_no_score - n_sentinel - post_count,
-                    )
+                    pre_dedup = pre_count - n_no_score - n_sentinel
+                    fact_id_survivors = con.execute(
+                        f"""
+                        SELECT COUNT(DISTINCT fact_id)
+                             + COUNT(*) FILTER (WHERE fact_id IS NULL)
+                        FROM fact_results_staging
+                        WHERE score IS NOT NULL
+                          AND NOT ({stages._SENTINEL_DROP_PREDICATE})
+                        """
+                    ).fetchone()[0]
+                    n_dedup = max(0, pre_dedup - fact_id_survivors)
+                    n_content_dedup = max(0, fact_id_survivors - post_count)
             except duckdb.CatalogException:
                 log.warning(
                     "fact_results_staging missing; Stage E breakdowns = None"
@@ -601,6 +612,9 @@ def run(
             n_dropped_no_score=n_no_score if n_no_score is not None else 0,
             n_dropped_sentinel=n_sentinel if n_sentinel is not None else 0,
             n_dropped_dedup=n_dedup if n_dedup is not None else 0,
+            n_dropped_content_dedup=(
+                n_content_dedup if n_content_dedup is not None else 0
+            ),
             post=post_count if post_count is not None else 0,
         )
     if not chosen:
@@ -792,6 +806,9 @@ def _build_snapshot_meta(
             "dropped_rows_no_score": stage_e_stats.n_dropped_no_score,
             "dropped_rows_sentinel": stage_e_stats.n_dropped_sentinel,
             "dropped_rows_dedup": stage_e_stats.n_dropped_dedup,
+            "dropped_rows_content_dedup": (
+                stage_e_stats.n_dropped_content_dedup
+            ),
             "dropped_eee_records_stage_a": sum(eee._drop_counter.values()),
             "cards": n_cards,
             "comparability_groups_metric_unit_inconsistent": n_unit_inconsistent,

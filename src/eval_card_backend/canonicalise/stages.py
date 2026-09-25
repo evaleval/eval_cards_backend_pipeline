@@ -251,6 +251,7 @@ class StageEStats(NamedTuple):
     n_dropped_no_score: int     # score IS NULL
     n_dropped_sentinel: int     # score = -1 sentinel
     n_dropped_dedup: int        # fact_id collisions
+    n_dropped_content_dedup: int  # same observation re-emitted in a new record
     post: int                   # final fact_results_signaled count
 
 log = logging.getLogger(__name__)
@@ -1900,6 +1901,12 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
             -- BFCL-v3.
             resolve_structured_benchmark_subset(
                 j.evaluation_name, j.source_config)                                      AS benchmark_subset,
+            -- The source's own name for the result. Two results of one
+            -- record can resolve to the same benchmark, metric and value
+            -- (BFCL's web_search channels); Stage E's observation key needs
+            -- the native name to keep them apart. Dropped from the emitted
+            -- facts, so the fact schema is unchanged.
+            j.evaluation_name                                                            AS evaluation_name,
             (resolve_structured_benchmark_subset(
                 j.evaluation_name, j.source_config) IS NOT NULL)                         AS is_part,
             -- The same question with the third answer kept: `whole`, `part`,
@@ -2631,7 +2638,7 @@ _SENTINEL_DROP_PREDICATE = """
 
 
 def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageEStats:
-    """Compute per-row signals + apply two drop policies, in this order:
+    """Compute per-row signals + apply drop policies, in this order:
 
     1. **No-score drop** — `score IS NULL`. The row carries no measurement.
     2. **Sentinel drop** — `score = -1` on a metric whose declared scale
@@ -2644,6 +2651,13 @@ def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageESt
     3. **fact_id dedup** — multiple records may collide on
        `(snapshot_id, fact_id)`; keep the latest by `retrieved_timestamp`,
        tie-breaking on `evaluation_id` for determinism.
+    4. **observation-content dedup** — a source may emit a fresh record id
+       for the same observation on every scrape.  Collapse only rows whose
+       source/reporter, raw model, benchmark/metric identity, value,
+       evaluation conditions, stated evaluation time, uncertainty and sample
+       size all match.  Retrieval and record bookkeeping are deliberately not
+       part of this identity.  As above, keep the latest retrieval and use a
+       total deterministic tie-break.
 
     Per-row signals computed: reproducibility gap, provenance source-type
     collapse, variant_key, score_scale_anomaly, reporting completeness.
@@ -2755,7 +2769,7 @@ def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageESt
                 _completeness.partial_fields                       AS completeness_partial_fields
             FROM scored
         ),
-        ranked AS (
+        fact_id_ranked AS (
             -- Dedup on (snapshot_id, fact_id): same fact_id appearing more
             -- than once is real upstream (multi-run reports of one eval);
             -- keep the latest by retrieved_timestamp, break ties on
@@ -2796,14 +2810,108 @@ def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageESt
                      )
                 END AS _dedup_rank
             FROM signaled
+        ),
+        fact_id_deduped AS (
+            SELECT * EXCLUDE (_dedup_rank)
+            FROM fact_id_ranked
+            WHERE _dedup_rank = 1
+        ),
+        content_keyed AS (
+            SELECT *, struct_pack(
+                -- Reporter. source_config is load-bearing: observations from
+                -- different leaderboards are independent even when every
+                -- other field agrees. org_raw protects multi-reporter configs.
+                source_config                 := source_config,
+                reporting_org                 := org_raw,
+                evaluator_relationship       := evaluator_relationship,
+                source_type                   := source_type,
+
+                -- Model and benchmark identity. Raw benchmark spelling is
+                -- substantive in configs whose broad canonical fallback can
+                -- cover several measurements (notably Artificial Analysis).
+                model_raw                     := model_raw,
+                inference_platform            := inference_platform,
+                evaluation_name               := evaluation_name,
+                benchmark_raw                 := benchmark_raw,
+                benchmark_id                  := benchmark_id,
+                benchmark_subset              := benchmark_subset,
+                slice_key                     := slice_key,
+                slice_name                    := slice_name,
+                aggregate_level               := aggregate_level,
+                observation_role              := observation_role,
+                collection_id                 := collection_id,
+
+                -- Metric identity. Declared bounds, unit and direction are
+                -- left out: a re-scrape restates them (Artificial Analysis
+                -- derives bounds from observed values each run) without
+                -- changing the observation; the surviving row keeps the
+                -- latest declaration.
+                metric_raw                    := metric_raw,
+                metric_id                     := metric_id,
+                metric_key                    := metric_key,
+                metric_qualifier              := metric_qualifier,
+                split                         := split,
+
+                -- Measurement and the source-stated eval time. The same value
+                -- re-reported for the same (model, benchmark, metric, split)
+                -- under the same conditions is one observation; uncertainty
+                -- fields are left out because re-scrapes restate them with
+                -- rounding drift. retrieved_timestamp is intentionally
+                -- absent: it says when we scraped the row, not when the
+                -- evaluation ran.
+                score                         := score,
+                n_samples                     := n_samples,
+                evaluation_timestamp          := evaluation_timestamp,
+
+                -- Evaluation conditions that change what was measured. The
+                -- typed generation_args struct and its additional details
+                -- stay in the key: a submission's filter or reasoning
+                -- variants can share a value and are still distinct runs.
+                generation_args               := generation_args_json,
+                generation_details            := generation_additional_details,
+                agent_scaffold                 := agent_scaffold_raw,
+                harness_raw                   := harness_raw,
+                harness_id                    := harness_id,
+                eval_library_name             := eval_library_name,
+                eval_library_version          := eval_library_version,
+                protocol_condition            := protocol_condition,
+                judge_condition               := judge_condition,
+                instance_checksum             := instance_checksum,
+                instance_hash_algorithm       := instance_hash_algorithm,
+                instance_rows                 := instance_rows
+            ) AS _observation_key
+            FROM fact_id_deduped
+        ),
+        content_ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY _observation_key
+                ORDER BY retrieved_timestamp DESC NULLS LAST,
+                         evaluation_id DESC NULLS LAST,
+                         evaluation_result_id DESC NULLS LAST,
+                         source_record_path DESC NULLS LAST,
+                         fact_id DESC NULLS LAST
+            ) AS _content_dedup_rank
+            FROM content_keyed
         )
-        SELECT * EXCLUDE (_dedup_rank) FROM ranked WHERE _dedup_rank = 1
+        SELECT * EXCLUDE (_observation_key, _content_dedup_rank, evaluation_name)
+        FROM content_ranked
+        WHERE _content_dedup_rank = 1
         """
     )
     _apply_composite_partitions(con, strict=strict_composites)
     post = con.execute("SELECT count(*) FROM fact_results_signaled").fetchone()[0]
     pre_dedup = pre - n_dropped_no_score - n_dropped_sentinel
-    n_dropped_dedup = pre_dedup - post
+    fact_id_survivors = con.execute(
+        f"""
+        SELECT COUNT(DISTINCT fact_id)
+             + COUNT(*) FILTER (WHERE fact_id IS NULL)
+        FROM fact_results_staging
+        WHERE score IS NOT NULL
+          AND NOT ({_SENTINEL_DROP_PREDICATE})
+        """
+    ).fetchone()[0]
+    n_dropped_dedup = pre_dedup - fact_id_survivors
+    n_dropped_content_dedup = fact_id_survivors - post
     if n_dropped_sentinel:
         log.warning(
             "Stage E: dropped %d row(s) on the score=-1 sentinel policy "
@@ -2816,11 +2924,18 @@ def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageESt
             "retrieved_timestamp.",
             n_dropped_dedup,
         )
+    if n_dropped_content_dedup:
+        log.warning(
+            "Stage E: dropped %d re-emitted observation(s) by content; kept "
+            "latest by retrieved_timestamp.",
+            n_dropped_content_dedup,
+        )
     return StageEStats(
         pre=pre,
         n_dropped_no_score=n_dropped_no_score,
         n_dropped_sentinel=n_dropped_sentinel,
         n_dropped_dedup=n_dropped_dedup,
+        n_dropped_content_dedup=n_dropped_content_dedup,
         post=post,
     )
 

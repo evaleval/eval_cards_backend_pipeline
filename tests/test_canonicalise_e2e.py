@@ -915,6 +915,146 @@ def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
     assert snap["row_counts"]["dropped_rows_no_score"] == 0
 
 
+def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatch):
+    """Fresh record ids do not make identical observations independent.
+
+    The content key must still retain changed values, source configs, and
+    generation conditions. Equal-timestamp ties have a deterministic winner.
+    """
+    pytest.importorskip("duckdb")
+
+    eee_root = tmp_path / "eee"
+    reg_root = tmp_path / "reg"
+    cards_root = tmp_path / "cards"
+    warehouse = tmp_path / "warehouse"
+    _write_registry_fixture(reg_root)
+    seed_root = tmp_path / "seed"
+    _write_minimal_seed_fixture(seed_root)
+    _write_cards_fixture(cards_root)
+
+    def _record(
+        evaluation_id: str,
+        retrieved: str,
+        score: float,
+        *,
+        temperature: float = 0.0,
+    ) -> dict:
+        return {
+            "evaluation_id": evaluation_id,
+            "schema_version": "0.2.2",
+            "retrieved_timestamp": retrieved,
+            "evaluation_timestamp": "2026-04-29T00:00:00Z",
+            "model_info": {
+                "developer": "openai", "name": "GPT-4o",
+                "id": "openai/gpt-4o", "inference_platform": "openai-api",
+            },
+            "source_metadata": {
+                "source_name": "OpenAI", "source_type": "documentation",
+                "source_organization_name": "OpenAI",
+                "evaluator_relationship": "first_party",
+            },
+            "eval_library": {"name": "minibench", "version": "1.0"},
+            "evaluation_results": [{
+                "evaluation_name": "minibench",
+                "source_data": {
+                    "dataset_name": "minibench", "source_type": "other",
+                },
+                "metric_config": {
+                    "metric_id": "minibench.acc", "metric_name": "accuracy",
+                    "evaluation_description": "Accuracy on minibench",
+                    "lower_is_better": False,
+                },
+                "score_details": {"score": score},
+                "generation_config": {
+                    "generation_args": {
+                        "temperature": temperature, "max_tokens": 1024,
+                    }
+                },
+            }],
+        }
+
+    records = [
+        # Same source/content under fresh ids: only the latest retrieval stays.
+        ("minibench", "same-old.json", json.dumps(_record(
+            "same_old", "2026-04-30T00:00:00Z", 0.8,
+        ))),
+        ("minibench", "same-new.json", json.dumps(_record(
+            "same_new", "2026-05-03T00:00:00Z", 0.8,
+        ))),
+        # A different value and a different generation config both stay.
+        ("minibench", "different-value.json", json.dumps(_record(
+            "different_value", "2026-05-01T00:00:00Z", 0.9,
+        ))),
+        ("minibench", "different-generation.json", json.dumps(_record(
+            "different_generation", "2026-05-01T00:00:00Z", 0.8,
+            temperature=0.7,
+        ))),
+        # Equal retrieval timestamps use the documented total ordering.
+        ("minibench", "tie-a.json", json.dumps(_record(
+            "tie_a", "2026-05-02T00:00:00Z", 0.7,
+        ))),
+        ("minibench", "tie-z.json", json.dumps(_record(
+            "tie_z", "2026-05-02T00:00:00Z", 0.7,
+        ))),
+        # Two results of ONE record under different source-native names are
+        # two observations even when they resolve alike and share a value.
+        ("minibench", "two-channels.json", json.dumps({
+            **_record("two_channels", "2026-05-04T00:00:00Z", 0.6),
+            "evaluation_results": [
+                {**_record("x", "x", 0.6)["evaluation_results"][0],
+                 "evaluation_name": "minibench.channel_a"},
+                {**_record("x", "x", 0.6)["evaluation_results"][0],
+                 "evaluation_name": "minibench.channel_b"},
+            ],
+        })),
+        # Identical content from another source_config is independent.
+        ("other-source", "other.json", json.dumps(_record(
+            "other_source", "2026-05-03T00:00:00Z", 0.8,
+        ))),
+    ]
+    write_eee_datastore(eee_root, records)
+
+    monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
+    monkeypatch.setenv("BENCHMARK_METADATA_LOCAL_DIR", str(cards_root))
+    monkeypatch.delenv("EEE_REFRESH_SNAPSHOT", raising=False)
+    monkeypatch.delenv("BENCHMARK_METADATA_REFRESH", raising=False)
+
+    from eval_card_backend.canonicalise import pipeline
+    from eval_card_backend.config import Settings
+
+    out_dir = pipeline.run(
+        Settings.from_env(),
+        snapshot_id="2026-05-03T00:00:00Z",
+        warehouse_dir=str(warehouse),
+        registry_local_dir=str(reg_root),
+        taxonomy_seed_dir=str(seed_root),
+        cache_root=str(tmp_path / "cache"),
+    )
+
+    import duckdb
+
+    fact_path = out_dir / "fact_results.parquet"
+    rows = duckdb.connect().execute(
+        f"SELECT source_config, evaluation_id, score, temperature "
+        f"FROM read_parquet('{fact_path}') "
+        f"ORDER BY source_config, score, temperature"
+    ).fetchall()
+    assert rows == [
+        ("minibench", "two_channels", 0.6, 0.0),
+        ("minibench", "two_channels", 0.6, 0.0),
+        ("minibench", "tie_z", 0.7, 0.0),
+        ("minibench", "same_new", 0.8, 0.0),
+        ("minibench", "different_generation", 0.8, 0.7),
+        ("minibench", "different_value", 0.9, 0.0),
+        ("other-source", "other_source", 0.8, 0.0),
+    ]
+
+    snap = json.loads((out_dir / "snapshot_meta.json").read_text())
+    assert snap["row_counts"]["fact_results"] == 7
+    assert snap["row_counts"]["dropped_rows_dedup"] == 0
+    assert snap["row_counts"]["dropped_rows_content_dedup"] == 2
+
+
 def test_metric_name_pre_step_end_to_end(tmp_path, monkeypatch):
     """Stage C tries a record's own metric_name as a registry alias before
     keyword extraction, but only when the description has nothing more
