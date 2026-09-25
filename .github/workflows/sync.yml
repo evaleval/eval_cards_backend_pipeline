@@ -17,23 +17,23 @@ env:
   HF_TARGET_DATASET: evaleval/card_backend
   # Pin the registry resolver source for reproducible CI builds. Bump
   # when registry semantics change and we want CI to pick them up.
-  # Prev pin: f80fee23b0a0b5dcb5d1409caa8b55c8a55670bd (2026-09-16)
-  RESOLVER_REF: 1a15a89f131a0f5611d309b10d4d228b09e5ed65
+  # Prev pin: 1a15a89f131a0f5611d309b10d4d228b09e5ed65 (2026-09-21)
+  RESOLVER_REF: d3f2248108de432b3d3ba8669f653510e4b07d4b
   # Pin upstream HF dataset revisions (commit SHAs) so CI runs the
   # pipeline against a KNOWN upstream state. This isolates pipeline code
   # changes from upstream data changes — new data won't flow in until
   # these SHAs are bumped deliberately. Pinned to snapshot last validated
   # on: 2026-08-13. To accept new upstream data, bump the SHA (or remove
   # the var to track latest HEAD).
-  # Prev pin: 9512953f9d71e2991e67246e0864a54bf61b2939 (2026-09-16)
+  # Prev pin: 73761dc1d250913a9326fdc213f7ac2d23d390b6 (2026-09-20)
   # RUNBOOK: an EEE pin bump that includes collection data changes (e.g.
   # the AISI inference-scaling batch) must carry the collection-extractor
   # re-run and the regenerated vendor/collections/** in the SAME PR —
   # canonicalise hard-fails on a manifest/pin mismatch. See
   # notes/collections-spec.md and scripts/collections/.
-  EEE_REVISION: 73761dc1d250913a9326fdc213f7ac2d23d390b6
-  # Prev pin: df33e65f9dd04308d457f9dcf0cbb6bfb48c06bd (2026-09-16)
-  ENTITY_REGISTRY_REVISION: 5f795ebcff6c8e2f31df491a38bd84b07a159f77
+  EEE_REVISION: d27319f8c989785144aaeff5db6fea11dae5221c
+  # Prev pin: 5f795ebcff6c8e2f31df491a38bd84b07a159f77 (2026-09-21)
+  ENTITY_REGISTRY_REVISION: 9405e27e6b7a96fe9721b8b33a80fd349fabf6b9
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
 
 jobs:

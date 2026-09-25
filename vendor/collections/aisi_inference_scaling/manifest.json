@@ -2,7 +2,7 @@
   "collection_id": "uk-aisi-inference-scaling",
   "study_slug": "how-inference-compute-shapes-frontier-llm-evaluation",
   "extractor": "scripts/collections/aisi_inference_scaling.py",
-  "eee_revision": "73761dc1d250913a9326fdc213f7ac2d23d390b6",
+  "eee_revision": "d27319f8c989785144aaeff5db6fea11dae5221c",
   "generated_at": "2026-09-20T18:58:24.519237+00:00",
   "expected_drop_count": 646,
   "score_semantics": {
