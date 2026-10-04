@@ -203,4 +203,60 @@ warehouse snapshot tree to `evaleval/card_backend` on HF. Override via
 the `HF_TARGET_DATASET` env at the workflow level. The `HF_TOKEN` secret
 must be set on the repo.
 
+### Upstream revisions: follow or pin
+
+Each run reads the head of `evaleval/EEE_datastore` and of
+`evaleval/entity-registry-data`, resolved to commit shas by
+`scripts/ci_resolve_revisions.sh` and shown in the run summary. To hold
+either one at a known commit, set a repo variable (Settings > Secrets and
+variables > Actions > Variables, or `gh variable set`):
+
+| Repo variable | Holds | Empty or absent |
+| --- | --- | --- |
+| `EEE_REVISION` | commit sha of `evaleval/EEE_datastore` | follow head |
+| `ENTITY_REGISTRY_REVISION` | commit sha of `evaleval/entity-registry-data` | follow head |
+
+A value that is not a 40-character lowercase hex sha fails the run. To
+unpin, delete the variable (`gh variable delete EEE_REVISION`). The
+resolver package and the seed YAMLs are not set separately: they are
+checked out at the registry repo commit that the selected registry data
+names in its `manifest.json` (`seed_git_sha`). The benchmark cards and the
+private collection stay pinned in `sync.yml`.
+
+### Publishing and the shrink guard
+
+Before uploading, `scripts/ci_publish_warehouse.py` compares the new
+snapshot with the published `warehouse/latest/snapshot_meta.json` on
+`eee_records`, `fact_results` and the number of configs. If any is below
+90% of the published value, or the published file cannot be read, nothing
+is uploaded and the run fails. For a shrink that is intended, start the
+workflow by hand with `allow_shrink` on; that snapshot becomes the new
+baseline. Starting it by hand with `publish` off runs everything and only
+prints the comparison (`--check-only`).
+
+### Alert issue
+
+`.github/workflows/sync-alert.yml` keeps one open issue labelled
+`sync-alert` as the thread for pipeline trouble. It comments there when a
+run on `main` fails, when a run succeeds but rejected upstream records at
+load time (`stage_a_drops` in `snapshot_meta.json`), and when the published
+snapshot is more than 36 hours old. The next clean run on `main` comments
+"recovered" and closes the issue. To replay it against a past run, start
+the workflow by hand with `run_id`; that is a dry run that only prints
+what it would post unless `write` is on.
+
+### Rollback
+
+1. Revert the offending commit on `main` and start the workflow by hand.
+2. If the bad input is upstream data, pin instead: set the variables above
+   to the last good commits and start the workflow by hand. The values
+   hardcoded before runs followed head were `EEE_REVISION`
+   `0fe996f1b578d43d7e4d16be814c961b6f778445` and
+   `ENTITY_REGISTRY_REVISION` `9405e27e6b7a96fe9721b8b33a80fd349fabf6b9`
+   (resolver `d3f2248108de432b3d3ba8669f653510e4b07d4b`, which that
+   registry commit selects by itself).
+3. If `warehouse/latest` is bad in the meantime, point the frontend
+   Space's `SNAPSHOT_URL` at the last good dated folder
+   (`warehouse/<snapshot_id>`); dated folders are never overwritten.
+
 
