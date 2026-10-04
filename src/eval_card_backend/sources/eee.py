@@ -79,7 +79,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _drop_counter: Counter[tuple[str, str]] = Counter()
-_drop_first_seen: set[tuple[str, str]] = set()
+_drop_first_seen: dict[tuple[str, str], str] = {}
 
 
 def reset_drop_counter() -> None:
@@ -102,11 +102,25 @@ def log_drop_summary() -> None:
         log.warning("  config=%s: %d dropped (%s)", cfg, total, breakdown)
 
 
+def drop_breakdown() -> list[dict]:
+    """Per-(config, reason) drop counts with the first path seen for each,
+    sorted for a stable `snapshot_meta.json`."""
+    return [
+        {
+            "config": cfg,
+            "reason": reason,
+            "count": count,
+            "first_path": _drop_first_seen.get((cfg, reason)),
+        }
+        for (cfg, reason), count in sorted(_drop_counter.items())
+    ]
+
+
 def _record_drop(config: str, reason: str, path: str, detail: str | None = None) -> None:
     key = (config, reason)
     _drop_counter[key] += 1
     if key not in _drop_first_seen:
-        _drop_first_seen.add(key)
+        _drop_first_seen[key] = path
         suffix = f": {detail}" if detail else ""
         log.warning(
             "Stage A: %s on %s (first occurrence; subsequent counted)%s",

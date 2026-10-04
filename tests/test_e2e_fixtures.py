@@ -369,6 +369,34 @@ def test_fixture_07_no_score_dropped_with_counter(tmp_path, monkeypatch):
     assert "ev_07" not in df["evaluation_id"].tolist()
 
 
+def test_stage_a_drops_breakdown_for_bad_record(tmp_path, monkeypatch):
+    """The per-(config, reason) breakdown sits next to the scalar count and
+    names the first rejected record."""
+    out = _run_pipeline_per_config(tmp_path, monkeypatch, "fixtures_clean")
+    snap = json.loads((out / "snapshot_meta.json").read_text())
+
+    drops = snap["stage_a_drops"]
+    assert len(drops) == 1
+    drop = drops[0]
+    assert set(drop) == {"config", "reason", "count", "first_path"}
+    assert drop["config"] == "fixtures_clean"
+    assert drop["reason"] == "validation_error"
+    assert drop["count"] == 1
+    assert drop["first_path"].startswith("data/fixtures_clean/")
+    assert drop["first_path"].endswith(".json")
+    assert (
+        sum(d["count"] for d in drops)
+        == snap["row_counts"]["dropped_eee_records_stage_a"]
+    )
+
+
+def test_stage_a_drops_empty_for_clean_run(tmp_path, monkeypatch):
+    out = _run_pipeline_per_config(tmp_path, monkeypatch, "fixtures_xparty")
+    snap = json.loads((out / "snapshot_meta.json").read_text())
+    assert snap["row_counts"]["dropped_eee_records_stage_a"] == 0
+    assert snap["stage_a_drops"] == []
+
+
 # ---------------------------------------------------------------------------
 # Cross-fixture invariants
 # ---------------------------------------------------------------------------

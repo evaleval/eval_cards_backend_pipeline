@@ -875,6 +875,7 @@ def _build_snapshot_meta(
             "comparability_groups_metric_unit_inconsistent": n_unit_inconsistent,
             "synthesised_id_collisions": n_synth_collisions,
         },
+        "stage_a_drops": eee.drop_breakdown(),
     }
 
 
