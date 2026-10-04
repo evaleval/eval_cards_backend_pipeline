@@ -27,10 +27,12 @@ on:
 permissions:
   contents: read
 
-# One run at a time per ref, so two runs never publish over each other and a
-# branch run never displaces a queued main run.
+# Every run that publishes shares one group, whatever its ref, so the shrink
+# guard's compare-then-upload never overlaps another publisher. Only a manual
+# run with publish off gets a per-ref group, so it never queues behind or
+# displaces a publishing run.
 concurrency:
-  group: sync-pipeline-${{ github.ref }}
+  group: ${{ github.event_name == 'workflow_dispatch' && !inputs.publish && format('sync-pipeline-check-{0}', github.ref) || 'sync-pipeline-publish' }}
   cancel-in-progress: false
 
 # Upstream revisions. The EEE datastore and the entity registry data are
