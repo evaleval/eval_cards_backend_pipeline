@@ -10,10 +10,12 @@
 #   failure, timed_out, startup_failure, action_required
 #       comment: run link, event, failed steps, upstream revisions (when the
 #       run got far enough to write them) and the end of the failed job log
+#   success, but the publish step did not succeed (a run with publish off)
+#       nothing: such a run says nothing about the published snapshot
+#   success, snapshot-meta artifact missing, unreadable or inconsistent
+#       comment; the issue stays open
 #   success, Stage A dropped records
 #       comment with the breakdown; the issue stays open
-#   success, snapshot-meta artifact missing or unreadable
-#       comment; the issue stays open
 #   success, nothing dropped
 #       if an issue is open and this is the newest completed Sync Pipeline
 #       run on main: comment "recovered" and close it
@@ -21,13 +23,13 @@
 #       nothing
 #   --staleness
 #       comment when the snapshot_id of the published
-#       warehouse/latest/snapshot_meta.json is older than 36 hours, at most
-#       once per UTC day
+#       warehouse/latest/snapshot_meta.json is older than 36 hours, or when
+#       that file cannot be fetched or parsed; at most once per UTC day each
 #
 # Every comment starts with a hidden marker
-# `<!-- sync-alert:<kind>:<run id or date> -->`; when the open issue already
-# has a comment with that marker nothing is posted, so re-deliveries and
-# replays do not duplicate.
+# `<!-- sync-alert:<kind>:<run id or date> -->`; when any issue with the
+# label, open or closed, already has a comment with that marker nothing is
+# posted, so re-deliveries and replays do not duplicate.
 #
 # --dry-run makes the same read calls, prints the action and the comment
 # body, and writes nothing.
@@ -37,6 +39,8 @@ set -euo pipefail
 
 REPO="${GITHUB_REPOSITORY:-evaleval/eval_cards_backend_pipeline}"
 WORKFLOW_FILE="sync.yml"
+# Must match the name of the publishing step in sync.yml.
+PUBLISH_STEP_NAME="Publish warehouse snapshot to HF dataset"
 LABEL="sync-alert"
 ISSUE_TITLE="Sync Pipeline alert"
 HF_TARGET_DATASET="${HF_TARGET_DATASET:-evaleval/card_backend}"
@@ -76,18 +80,23 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 body_file="$tmp/body.md"
 
-open_issue() {
-  gh issue list -R "$REPO" --label "$LABEL" --state open --limit 1 --json number \
-    | jq -r '.[0].number // empty'
-}
-
 comments_file="$tmp/comments.txt"
+open_issue=""
 
-# Called as a plain statement so a failed read stops the script instead of
-# reading as "no such comment".
-fetch_comments() {
-  gh api --paginate "repos/${REPO}/issues/$1/comments?per_page=100" \
-    | jq -r '.[].body' > "$comments_file"
+# Read every issue carrying the label, open or closed, and all of their
+# comments. Sets $open_issue (newest open one, or empty) and fills
+# $comments_file. Called as a plain statement so a failed read stops the
+# script instead of reading as "no such comment".
+load_thread() {
+  local issues="$tmp/issues.tsv" number
+  gh api --paginate "repos/${REPO}/issues?labels=${LABEL}&state=all&per_page=100" \
+    | jq -r '.[] | select(has("pull_request") | not) | "\(.number)\t\(.state)"' > "$issues"
+  open_issue="$(awk -F '\t' '$2 == "open" { print $1; exit }' "$issues")"
+  : > "$comments_file"
+  while IFS=$'\t' read -r number _; do
+    gh api --paginate "repos/${REPO}/issues/${number}/comments?per_page=100" \
+      | jq -r '.[].body' >> "$comments_file"
+  done < "$issues"
 }
 
 has_marker() {
@@ -98,13 +107,11 @@ has_marker() {
 # the issue first when none is open.
 post() {
   local marker="$1" summary="$2" issue
-  issue="$(open_issue)"
-  if [ -n "$issue" ]; then
-    fetch_comments "$issue"
-    if has_marker "$marker"; then
-      echo "ACTION: none (issue #${issue} already has ${marker})"
-      return 0
-    fi
+  load_thread
+  issue="$open_issue"
+  if has_marker "$marker"; then
+    echo "ACTION: none (a ${LABEL} issue already has ${marker})"
+    return 0
   fi
   if [ "$dry_run" = 1 ]; then
     if [ -n "$issue" ]; then
@@ -199,13 +206,42 @@ handle_failure() {
   post "$marker" "run ${run_id} ${conclusion}"
 }
 
+# Print the Stage A drop count of a snapshot_meta.json, or "unreadable".
+# A present stage_a_drops must be a list of entries with positive integer
+# counts that add up to the scalar count; only a snapshot written before the
+# breakdown existed (no such field) is judged on the scalar alone.
+drop_count() {
+  jq -r '
+    def count: type == "number" and . >= 0 and . == floor;
+    .row_counts.dropped_eee_records_stage_a as $scalar
+    | if ($scalar | count | not) then "unreadable"
+      elif has("stage_a_drops") | not then $scalar
+      elif (.stage_a_drops | type) == "array"
+        and all(.stage_a_drops[]; type == "object" and (.count | count) and .count > 0)
+        and (([.stage_a_drops[].count] | add // 0) == $scalar)
+      then $scalar
+      else "unreadable" end' "$1" 2>/dev/null || echo "unreadable"
+}
+
 handle_success() {
   local event="$1" url="$2"
-  local meta
-  meta="$(fetch_snapshot_meta)"
 
-  if [ -z "$meta" ] || ! jq -e '(.stage_a_drops | type == "array")
-      or (.row_counts.dropped_eee_records_stage_a | type == "number")' "$meta" >/dev/null 2>&1; then
+  local published
+  published="$(gh api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" \
+    | jq -r --arg step "$PUBLISH_STEP_NAME" \
+      '[.jobs[] | (.steps // [])[] | select(.name == $step and .conclusion == "success")] | length')"
+  if [ "$published" = "0" ]; then
+    echo "ACTION: none (run ${run_id} succeeded without publishing)"
+    return 0
+  fi
+
+  local meta n_drops="unreadable"
+  meta="$(fetch_snapshot_meta)"
+  if [ -n "$meta" ]; then
+    n_drops="$(drop_count "$meta")"
+  fi
+
+  if [ "$n_drops" = "unreadable" ]; then
     local marker="<!-- sync-alert:artifact:${run_id} -->"
     {
       echo "$marker"
@@ -220,12 +256,6 @@ handle_success() {
     return 0
   fi
 
-  # Snapshots written before the breakdown existed carry only the count.
-  local n_drops
-  n_drops="$(jq -r 'if (.stage_a_drops | type) == "array"
-      then ([.stage_a_drops[].count] | add // 0)
-      else .row_counts.dropped_eee_records_stage_a end' "$meta")"
-
   if [ "$n_drops" != "0" ]; then
     local marker="<!-- sync-alert:drops:${run_id} -->"
     {
@@ -236,7 +266,7 @@ handle_success() {
       echo "- Event: \`${event}\`"
       echo "- Upstream revisions: $(revisions_line "$meta")"
       echo
-      if jq -e '.stage_a_drops | type == "array"' "$meta" >/dev/null; then
+      if jq -e 'has("stage_a_drops")' "$meta" >/dev/null; then
         echo "| Config | Reason | Count | First record |"
         echo "| --- | --- | --- | --- |"
         jq -r '.stage_a_drops[] | "| \(.config) | \(.reason) | \(.count) | `\(.first_path)` |"' "$meta"
@@ -251,7 +281,8 @@ handle_success() {
   fi
 
   local issue
-  issue="$(open_issue)"
+  load_thread
+  issue="$open_issue"
   if [ -z "$issue" ]; then
     echo "ACTION: none (run ${run_id} succeeded with no drops; no open issue)"
     return 0
@@ -267,15 +298,14 @@ handle_success() {
   local marker="<!-- sync-alert:recovered:${run_id} -->"
   {
     echo "$marker"
-    echo "**Recovered**: Sync Pipeline run succeeded with no dropped records."
+    echo "**Recovered**: Sync Pipeline run published with no dropped records."
     echo
     echo "- Run: ${url}"
     echo "- Event: \`${event}\`"
     echo "- Upstream revisions: $(revisions_line "$meta")"
   } > "$body_file"
-  fetch_comments "$issue"
   if has_marker "$marker"; then
-    echo "ACTION: none (issue #${issue} already has ${marker})"
+    echo "ACTION: none (a ${LABEL} issue already has ${marker})"
   elif [ "$dry_run" = 1 ]; then
     echo "ACTION (dry run): comment 'recovered' on issue #${issue} and close it"
     echo "----- body -----"
@@ -318,23 +348,39 @@ handle_run() {
 handle_staleness() {
   local meta="$tmp/published_meta.json"
   local url="${HF_ENDPOINT}/datasets/${HF_TARGET_DATASET}/resolve/main/warehouse/latest/snapshot_meta.json"
-  curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
-    --retry-connrefused --max-time 60 "$url" > "$meta"
-  local snapshot_id now age_hours
-  snapshot_id="$(jq -r '.snapshot_id // empty' "$meta")"
+  local snapshot_id="" now today age_hours="" problem=""
   now="${SYNC_ALERT_NOW:-$(date -u +%s)}"
-  if ! age_hours="$(jq -er --argjson now "$now" \
+  today="$(jq -rn --argjson now "$now" '$now | strftime("%Y-%m-%d")')"
+  if ! curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
+      --retry-connrefused --max-time 60 "$url" > "$meta" 2> "$tmp/curl.err"; then
+    problem="the file could not be fetched ($(tail -n 1 "$tmp/curl.err" | cut -c1-200))"
+  elif ! age_hours="$(jq -er --argjson now "$now" \
       '(($now - (.snapshot_id | fromdateiso8601)) / 3600) | floor' "$meta" 2>/dev/null)"; then
-    echo "FATAL: cannot read a snapshot_id timestamp from ${url} (got '${snapshot_id}')" >&2
-    exit 1
+    problem="it holds no snapshot_id timestamp"
   fi
+  if [ -n "$problem" ]; then
+    # Freshness cannot be established, which is itself worth a daily alert.
+    local marker="<!-- sync-alert:stale-unreadable:${today} -->"
+    {
+      echo "$marker"
+      echo "**Published snapshot metadata cannot be read**"
+      echo
+      echo "- File: ${url}"
+      echo "- Problem: ${problem}"
+      echo "- Checked on ${today} (UTC)."
+      echo
+      echo "The age of the published snapshot could not be checked."
+    } > "$body_file"
+    echo "Published snapshot metadata is unreadable: ${problem}"
+    post "$marker" "published snapshot metadata is unreadable"
+    return 0
+  fi
+  snapshot_id="$(jq -r '.snapshot_id' "$meta")"
   echo "Published snapshot ${snapshot_id} is ${age_hours}h old (limit ${STALE_AFTER_HOURS}h)"
   if [ "$age_hours" -le "$STALE_AFTER_HOURS" ]; then
     echo "ACTION: none (published snapshot is fresh)"
     return 0
   fi
-  local today
-  today="$(jq -rn --argjson now "$now" '$now | strftime("%Y-%m-%d")')"
   local marker="<!-- sync-alert:stale:${today} -->"
   {
     echo "$marker"

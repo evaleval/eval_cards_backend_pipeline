@@ -240,8 +240,10 @@ prints the comparison (`--check-only`).
 `sync-alert` as the thread for pipeline trouble. It comments there when a
 run on `main` fails, when a run succeeds but rejected upstream records at
 load time (`stage_a_drops` in `snapshot_meta.json`), and when the published
-snapshot is more than 36 hours old. The next clean run on `main` comments
-"recovered" and closes the issue. To replay it against a past run, start
+snapshot is more than 36 hours old or its metadata cannot be read. The
+next clean run on `main` that actually publishes comments "recovered" and
+closes the issue; a run with `publish` off never does. To replay it
+against a past run, start
 the workflow by hand with `run_id`; that is a dry run that only prints
 what it would post unless `write` is on.
 
