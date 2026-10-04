@@ -799,6 +799,9 @@ def _build_snapshot_meta(
             "models_view.parquet",
             "evals_view.parquet",
             "merged_evals_view.parquet",
+            "comparison_evals.parquet",
+            "comparison_metrics.parquet",
+            "comparison_scores.parquet",
         ]
         sidecars = [
             "manifest.json", "headline.json", "hierarchy.json",

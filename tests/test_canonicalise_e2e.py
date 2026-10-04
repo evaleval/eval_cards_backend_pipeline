@@ -278,6 +278,12 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     assert "eval_results_view.parquet" in snap["tables"]
     assert "models_view.parquet" in snap["tables"]
     assert "evals_view.parquet" in snap["tables"]
+    for table in (
+        "comparison_evals.parquet", "comparison_metrics.parquet",
+        "comparison_scores.parquet",
+    ):
+        assert table in snap["tables"]
+    assert all((out_dir / t).exists() for t in snap["tables"])
     assert set(snap["sidecars"]) == {
         "manifest.json", "headline.json", "hierarchy.json",
         "benchmark_index.json", "peer-ranks.json", "collections.json",

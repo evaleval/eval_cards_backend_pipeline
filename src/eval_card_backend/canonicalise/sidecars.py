@@ -35,7 +35,9 @@ from pathlib import Path
 
 import duckdb
 
-from eval_card_backend.canonicalise import evalcard_tags, hierarchy_dedup, hierarchy_hotfixes
+from eval_card_backend.canonicalise import (
+    comparison_tables, evalcard_tags, hierarchy_dedup, hierarchy_hotfixes,
+)
 from eval_card_backend.config import IGNORED_CONFIGS
 from eval_card_backend.signals.reproducibility import (
     AGENTIC_REPRODUCIBILITY_FIELDS,
@@ -3492,10 +3494,14 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
         },
     }
     path = out_dir / "comparison-index.json"
+    finite = _json_finite(payload)
     # sort_keys: evals/by_model insertion order follows DuckDB scan order,
     # which is run-to-run unstable — key order is meaningless to JSON
     # consumers, so sort for byte-deterministic builds.
-    path.write_text(json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default))
+    path.write_text(json.dumps(finite, indent=2, sort_keys=True, default=_json_default))
+    # The same content as tables, so a reader can load one eval or one
+    # model's cells without parsing the whole JSON.
+    comparison_tables.write_tables(finite, out_dir, snapshot_meta["snapshot_id"])
     return path
 
 

@@ -101,6 +101,9 @@ warehouse/<snapshot_id>/
 ├── eval_results_view.parquet      # one row per (model, benchmark, metric) triple
 ├── models_view.parquet            # one row per model, denormalised for the index page
 ├── evals_view.parquet             # one row per benchmark, multi-metric pre-pivoted
+├── comparison_evals.parquet       # comparison-index.json as tables: one row per eval entry
+├── comparison_metrics.parquet     #   one row per (eval, metric) leaderboard
+├── comparison_scores.parquet      #   one row per score cell, in leaderboard order
 ├── manifest.json                  # corpus scalars (model_count, eval_count, …)
 ├── headline.json                  # corpus signal aggregates (overall + by_category)
 ├── hierarchy.json                 # top-level composites[] tree + flat families[] lookup
@@ -111,8 +114,11 @@ warehouse/<snapshot_id>/
 ```
 
 The six canonical parquets are the source of truth (audit/debug);
-`*_view.parquet` + the JSON sidecars are pre-baked for the frontend to
-read without GROUP BYs.
+`*_view.parquet`, `comparison_*.parquet` + the JSON sidecars are pre-baked
+for the frontend to read without GROUP BYs. The `comparison_*` tables hold
+exactly what `comparison-index.json` holds (`by_model` is a re-pivot of
+`comparison_scores`), so one eval or one model can be read without parsing
+the whole file.
 
 ## Environment variables
 
