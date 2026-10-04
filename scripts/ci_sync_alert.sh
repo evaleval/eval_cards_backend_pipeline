@@ -173,7 +173,7 @@ handle_failure() {
   local job_id log="$tmp/job.log" tail_file="$tmp/tail.log"
   job_id="$(jq -r '[.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .id][0] // empty' "$jobs")"
   : > "$tail_file"
-  if [ -n "$job_id" ] && gh api "repos/${REPO}/actions/jobs/${job_id}/logs" > "$log" 2>/dev/null; then
+  if [ -n "$job_id" ] && gh api "repos/${REPO}/actions/jobs/${job_id}/logs" > "$log" 2> "$tmp/log.err"; then
     local last
     last="$(grep -n '##\[error\]' "$log" | tail -n 1 | cut -d: -f1 || true)"
     if [ -n "$last" ]; then
@@ -184,7 +184,7 @@ handle_failure() {
     tail -n "$LOG_TAIL_LINES" "$tmp/upto.log" \
       | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' | cut -c1-400 > "$tail_file"
   fi
-  [ -s "$tail_file" ] || echo "(log not available)" > "$tail_file"
+  [ -s "$tail_file" ] || { echo "(log not available)" > "$tail_file"; echo "log fetch: job_id=${job_id:-none} $(head -c 400 "$tmp/log.err" 2>/dev/null)" >&2; }
 
   local meta
   meta="$(fetch_snapshot_meta)"
