@@ -524,11 +524,20 @@ def test_currency_keeps_only_the_latest_row_per_scaffold(tmp_path, monkeypatch):
     assert [p["score"] for p in alpha] == [0.55]
 
 
-def test_distinct_scores_in_one_harvest_fail_loudly(tmp_path, monkeypatch):
+def test_distinct_scores_in_one_harvest_are_separate_points(tmp_path, monkeypatch):
     _write_curated(tmp_path, monkeypatch)
+    baseline, _ = _write(_build_con(), tmp_path)
+    before = [
+        p["score"] for p in _entry(baseline)["models"][MODEL_A_KEY]["external"]
+        if p["scaffold"] == "Alpha"
+    ]
     external = list(EXTERNAL) + [(MODEL_A_KEY, "Alpha", 58.0, CURRENT_HARVEST)]
-    with pytest.raises(RuntimeError, match="refusing to tie-break"):
-        _write(_build_con(external=external), tmp_path)
+    path, _ = _write(_build_con(external=external), tmp_path)
+    alpha = [
+        p["score"] for p in _entry(path)["models"][MODEL_A_KEY]["external"]
+        if p["scaffold"] == "Alpha"
+    ]
+    assert sorted(alpha) == sorted(before + [0.58])
 
 
 def test_external_value_outside_unit_range_fails(tmp_path, monkeypatch):
@@ -716,19 +725,19 @@ def test_official_task_count_is_context_not_an_eligibility_threshold(
     assert entry["models"][MODEL_A_KEY]["assisted"]["n_tasks"] == 19
 
 
-def test_unlabelled_duplicate_scores_fail_loudly(tmp_path, monkeypatch):
-    # A scaffold-less source publishing two different scores for one model at
-    # one harvest is held to the same standard as a labelled one: the strip
-    # reads as a spread, so an unexplained second number must not silently
-    # widen it.
+def test_unlabelled_distinct_scores_are_separate_points(tmp_path, monkeypatch):
     _write_curated(tmp_path, monkeypatch)
     aggregated = [
-        (MODEL_A_KEY, 55.0, CURRENT_HARVEST),
+        (MODEL_A_KEY, 33.3, CURRENT_HARVEST),
         (MODEL_A_KEY, 62.0, CURRENT_HARVEST),
         (MODEL_B_KEY, 38.0, CURRENT_HARVEST),
     ]
-    with pytest.raises(RuntimeError, match="refusing to tie-break"):
-        _write(_build_con(aggregated=aggregated), tmp_path)
+    path, _ = _write(_build_con(aggregated=aggregated), tmp_path)
+    unlabelled = [
+        p["score"] for p in _entry(path)["models"][MODEL_A_KEY]["external"]
+        if p["scaffold"] is None
+    ]
+    assert sorted(unlabelled) == [0.333, 0.62]
 
 
 def test_quality_holdout_survives_a_composite_that_spans_orgs(

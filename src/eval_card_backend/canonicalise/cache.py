@@ -26,6 +26,9 @@ log = logging.getLogger(__name__)
 CACHE_SCHEMA_VERSION = 14
 
 _SCHEMA_MARKER = "_cache_schema.json"
+# Which EEE sources the cached tables were built from (private-source toggle
+# and the private revision). A resume must match it exactly.
+_SOURCES_MARKER = "_cache_sources.json"
 
 # Ordered stage letters. 'H' was removed when completeness moved per-row.
 STAGE_ORDER: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G", "I", "J")
@@ -127,12 +130,23 @@ class StageCache:
 
     `enabled=False` makes writes a no-op while leaving reads available.
     Used by the `--no-cache` flag for runs that don't want the side-effect.
+
+    `source_state` (when given) is stamped next to the cached tables and
+    must match on restore: tables built with the private EEE source on can
+    never be resumed by a run with it off, or at another private revision.
     """
 
-    def __init__(self, root: Path | str, snapshot_id: str, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        snapshot_id: str,
+        enabled: bool = True,
+        source_state: dict | None = None,
+    ) -> None:
         self.root = Path(root)
         self.snapshot_id = snapshot_id
         self.enabled = enabled
+        self.source_state = source_state
         self._dir = self.root / _snapshot_dir_name(snapshot_id)
 
     @property
@@ -156,6 +170,23 @@ class StageCache:
 
     def _clear_schema_version(self) -> None:
         self._marker_path.unlink(missing_ok=True)
+
+    def assert_sources_match(self) -> None:
+        if self.source_state is None or not self._dir.exists():
+            return
+        try:
+            found = json.loads((self._dir / _SOURCES_MARKER).read_text())
+        except (OSError, ValueError):
+            found = None
+        if found == self.source_state:
+            return
+        raise RuntimeError(
+            f"stage cache at {self._dir} was written with EEE sources "
+            f"{found!r}, but this run uses {self.source_state!r} "
+            f"(EEE_INCLUDE_PRIVATE / EEE_PRIVATE_REVISION differ). Cached "
+            f"tables cannot cross a private-source change. Re-run from Stage A "
+            f"or use another snapshot id."
+        )
 
     def _prune_after(self, stage_letter: str) -> list[str]:
         """Delete cached outputs of every stage AFTER `stage_letter`.
@@ -249,6 +280,10 @@ class StageCache:
             )
         for table in STAGE_OUTPUTS[stage_letter]:
             self.write_table(con, table)
+        if self.source_state is not None:
+            (self._dir / _SOURCES_MARKER).write_text(
+                json.dumps(self.source_state, sort_keys=True)
+            )
         self._write_schema_version()
 
     def restore_through(self, con, last_stage: str) -> list[str]:
@@ -264,6 +299,7 @@ class StageCache:
         `CatalogException: table not found` deep inside a later stage.
         """
         self.assert_schema_current()
+        self.assert_sources_match()
         wanted: list[tuple[str, str]] = []
         for stage in STAGE_ORDER:
             wanted.extend((stage, table) for table in STAGE_OUTPUTS[stage])

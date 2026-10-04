@@ -23,8 +23,14 @@ import pytest
 # the per-test guard below runs, so the upstream revision pins CI exports must
 # be gone before any fixture is built. Otherwise ensure_snapshot sees a pinned
 # revision, treats the fixture dir as a stale cache and downloads the real
-# registry over it.
-for _rev_var in ("EEE_REVISION", "ENTITY_REGISTRY_REVISION", "BENCHMARK_METADATA_REVISION"):
+# registry over it. The private-source settings go too: CI turns the private
+# EEE source on, and a test that wants it sets them itself.
+_PINNED_ENV_VARS = (
+    "EEE_REVISION", "ENTITY_REGISTRY_REVISION", "BENCHMARK_METADATA_REVISION",
+    "EEE_INCLUDE_PRIVATE", "EEE_PRIVATE_REVISION",
+    "EEE_PRIVATE_LOCAL_DATASET_DIR",
+)
+for _rev_var in _PINNED_ENV_VARS:
     os.environ.pop(_rev_var, None)
 
 # Keep the suite hermetic: the open-weights backfill reaches the Hugging Face
@@ -71,5 +77,5 @@ def _set_taxonomy_seed_env(monkeypatch, _taxonomy_seed_stub, _collections_stub) 
     # ensure_snapshot treats a fixture dir (which has no `.pinned_revision` marker)
     # as a stale cache, wipes it, and downloads the real dataset — which hangs CI.
     # Clear the pins so no test inherits them regardless of the ambient environment.
-    for _rev_var in ("EEE_REVISION", "ENTITY_REGISTRY_REVISION", "BENCHMARK_METADATA_REVISION"):
+    for _rev_var in _PINNED_ENV_VARS:
         monkeypatch.delenv(_rev_var, raising=False)

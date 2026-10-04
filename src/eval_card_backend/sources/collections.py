@@ -33,12 +33,24 @@ The tables this module creates on the connection are Stage B outputs
 - `collection_trajectories_raw` — the vendored trajectories, unioned across
   collections; Stage I joins resolved ids and emits
   `collection_trajectories.parquet`.
+
+Private collections: some extracts are not vendored in this repo but
+published to the private dataset `EEE_PRIVATE_DATASET_REPO` under
+`collections/<name>/` (same three files). With `EEE_INCLUDE_PRIVATE=1`,
+`ensure_private_collections` downloads them and the adapter applies them
+self-contained: their member records are on no public repo, so nothing is
+dropped and every synthetic result and trajectory is injected. With the
+toggle off nothing is downloaded or read, and `active_collections` holds
+the curated entries marked `private_source` out of the guards that expect
+them to be observed; `assert_no_private_rows` fails the run if rows of
+such a collection turn up anyway.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -147,6 +159,204 @@ def load_curated(path: Path | None = None) -> dict[str, dict]:
     return data
 
 
+def _private_source(entry: dict) -> dict | None:
+    marker = entry.get("private_source")
+    if not marker:
+        return None
+    return marker if isinstance(marker, dict) else {}
+
+
+def _manifest_paths(vdir: Path | None) -> list[Path]:
+    if vdir is None or not vdir.is_dir():
+        return []
+    return sorted(vdir.glob("*/manifest.json"))
+
+
+def ensure_private_collections(
+    local_dir: str,
+    hf_token: str | None,
+    force_refresh: bool,
+    revision: str | None = None,
+) -> tuple[Path, str | None]:
+    """Download `collections/**` of the private dataset into `local_dir`.
+
+    Returns the local collections dir and the commit it holds. The
+    revision is resolved to one sha (HEAD when unpinned) and recorded in a
+    marker; a dir whose marker already names it is reused without
+    downloading, so a pinned re-run needs no network. A changed revision
+    replaces the whole collections dir, so no extract of an older commit
+    survives. With no revision requested, a dir that holds extracts but no
+    marker is hand-built and is used as is. Only called when
+    `EEE_INCLUDE_PRIVATE=1`.
+    """
+    import shutil
+
+    from huggingface_hub import HfApi, hf_hub_download
+
+    from eval_card_backend.config import EEE_PRIVATE_DATASET_REPO
+    from eval_card_backend.sources._revision_cache import (
+        _MARKER,
+        cache_revision_ok,
+        write_cache_revision,
+    )
+
+    target = Path(local_dir).resolve()
+    coll_dir = target / "collections"
+    has_marker = (target / _MARKER).exists()
+    if (
+        revision is None and not has_marker and not force_refresh
+        and _manifest_paths(coll_dir)
+    ):
+        log.info("private collections: hand-built dir at %s, nothing to sync", coll_dir)
+        return coll_dir, revision
+    if (
+        revision is not None and not force_refresh
+        and cache_revision_ok(target, revision) and _manifest_paths(coll_dir)
+    ):
+        return coll_dir, revision
+
+    repo = EEE_PRIVATE_DATASET_REPO
+    try:
+        api = HfApi()
+        resolved = revision or api.dataset_info(repo, token=hf_token).sha
+        if (
+            not force_refresh and cache_revision_ok(target, resolved)
+            and _manifest_paths(coll_dir)
+        ):
+            return coll_dir, resolved
+        files = sorted(
+            f for f in api.list_repo_files(
+                repo, repo_type="dataset", revision=resolved, token=hf_token,
+            )
+            if f.startswith("collections/")
+        )
+        if not files:
+            raise RuntimeError(f"no collections/ files at revision {resolved}")
+        shutil.rmtree(coll_dir, ignore_errors=True)
+        (target / _MARKER).unlink(missing_ok=True)
+        target.mkdir(parents=True, exist_ok=True)
+        for filename in files:
+            hf_hub_download(
+                repo_id=repo, filename=filename, repo_type="dataset",
+                revision=resolved, local_dir=str(target), token=hf_token,
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"private collection source {repo} could not be read "
+            f"({type(exc).__name__}: {exc}). EEE_INCLUDE_PRIVATE=1 requires an "
+            f"HF_TOKEN with read access to that dataset; unset "
+            f"EEE_INCLUDE_PRIVATE to build without it."
+        ) from exc
+    write_cache_revision(target, resolved)
+    log.info(
+        "private collections: %d file(s) from %s at %s into %s",
+        len(files), repo, resolved, coll_dir,
+    )
+    return coll_dir, resolved
+
+
+@dataclass(frozen=True)
+class ActiveCollections:
+    """What the private-source toggle leaves in force for one run.
+
+    `curated`: curated entries whose curated-key guard applies.
+    `exempt_composites`: taxonomy composites whose scoped-member guard is
+    skipped because their only producer is a private collection that is
+    switched off this run.
+    `held_out`: curated entries of those private collections, which the
+    no-private-rows guard checks against.
+    """
+
+    curated: dict[str, dict]
+    exempt_composites: frozenset[str]
+    held_out: dict[str, dict]
+
+
+def active_collections(
+    include_private: bool, *, curated: dict[str, dict] | None = None,
+) -> ActiveCollections:
+    """The one filter every toggle-dependent step reads. With the private
+    source on, everything is in force; off, curated entries marked
+    `private_source` and the composites they declare are held out."""
+    curated = curated if curated is not None else load_curated()
+    if include_private:
+        return ActiveCollections(dict(curated), frozenset(), {})
+    held_out = {
+        cid: entry for cid, entry in curated.items()
+        if _private_source(entry) is not None
+    }
+    exempt = frozenset(
+        slug
+        for entry in held_out.values()
+        for slug in (_private_source(entry).get("composites") or [])
+    )
+    return ActiveCollections(
+        {cid: e for cid, e in curated.items() if cid not in held_out},
+        exempt,
+        held_out,
+    )
+
+
+def assert_no_private_rows(con, held_out: dict[str, dict], *, where: str) -> None:
+    """Hard-fail when rows of a private collection are on the connection
+    although the private source is off (a stage cache restored from an
+    earlier run, or the records reappearing in the public datastore). A row
+    belongs to a private collection when its raw collection key is one of
+    the entry's `merge_raw_keys`, or its collection_id is the entry's id.
+
+    Checks every row-carrying table present, so the same call works after
+    Stage A, after a cache restore and before a warehouse write.
+    """
+    if not held_out:
+        return
+    keys = sorted({
+        k for cid, entry in held_out.items()
+        for k in (entry.get("merge_raw_keys") or [cid])
+    })
+    ids = sorted(held_out)
+    raw_key = collection_raw_key_sql(
+        "source_metadata.source_organization_name",
+        "source_metadata.source_name",
+        "eval_library.name",
+        "source_config",
+    )
+    hits: list[str] = []
+    for table in (
+        "eee_raw", "results_exploded", "results_resolved",
+        "fact_results_staging", "fact_results_signaled", "fact_results",
+        "eval_results_view",
+    ):
+        cols = {
+            r[0] for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = ?", [table],
+            ).fetchall()
+        }
+        preds, params = [], []
+        if {"source_metadata", "eval_library", "source_config"} <= cols:
+            preds.append(f"{raw_key} IN ({', '.join('?' for _ in keys)})")
+            params += keys
+        if "collection_id" in cols:
+            preds.append(f"collection_id IN ({', '.join('?' for _ in ids)})")
+            params += ids
+        if not preds:
+            continue
+        n = con.execute(
+            f"SELECT count(*) FROM {table} WHERE " + " OR ".join(preds), params
+        ).fetchone()[0]
+        if n:
+            hits.append(f"{table}: {n} row(s)")
+    if hits:
+        raise RuntimeError(
+            f"private-source guard ({where}): EEE_INCLUDE_PRIVATE is off but "
+            f"rows of a private collection ({', '.join(ids)}) are present "
+            f"({'; '.join(hits)}). A stage cache from a run with the private "
+            f"source on is being reused, or the public datastore carries "
+            f"these records again. Rebuild from Stage A, or curate the "
+            f"collection as public."
+        )
+
+
 def assert_curated_keys_observed(
     con, curated: dict[str, dict], *, strict: bool
 ) -> None:
@@ -252,6 +462,7 @@ def apply_vendor_collections(
     eee_revision: str | None,
     vendor_dir: Path | None = None,
     curated: dict[str, dict] | None = None,
+    private_collections_dir: Path | None = None,
 ) -> None:
     """Stage B collection step: create the collection tables, load the
     curated merge map, and apply every vendored collection adapter found
@@ -267,6 +478,10 @@ def apply_vendor_collections(
        (count must reconcile with the manifest's per-member result counts),
        and inject the vendored synthetic results whose base member record is
        present.
+
+    Adapters under `private_collections_dir` (the private dataset's
+    extracts, passed only when `EEE_INCLUDE_PRIVATE=1`) are self-contained:
+    see `_apply_one_adapter`.
     """
     create_collection_tables(con)
 
@@ -282,21 +497,34 @@ def apply_vendor_collections(
         )
 
     vdir = vendor_dir or vendor_collections_dir()
-    if not vdir.is_dir():
-        return
-    for manifest_path in sorted(vdir.glob("*/manifest.json")):
+    for manifest_path in _manifest_paths(vdir):
         _apply_one_adapter(con, manifest_path, eee_root, eee_revision)
+    for manifest_path in _manifest_paths(private_collections_dir):
+        _apply_one_adapter(
+            con, manifest_path, eee_root, eee_revision, self_contained=True
+        )
 
 
 def _apply_one_adapter(
-    con, manifest_path: Path, eee_root: Path | None, eee_revision: str | None
+    con,
+    manifest_path: Path,
+    eee_root: Path | None,
+    eee_revision: str | None,
+    *,
+    self_contained: bool = False,
 ) -> None:
+    """Apply one adapter. A `self_contained` adapter (from the private
+    dataset) has no member records in any loaded corpus: nothing is
+    dropped, every synthetic result and trajectory is injected, and its pin
+    is the private dataset revision it was downloaded at, so the EEE
+    revision check does not apply. A member record present in `eee_raw`
+    is then a hard failure (the study would be counted twice)."""
     adapter_dir = manifest_path.parent
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     collection_id = manifest["collection_id"]
     study_slug = manifest["study_slug"]
     members = manifest["members"]
-    if not manifest.get("eee_revision"):
+    if not self_contained and not manifest.get("eee_revision"):
         # The extract's pin is asserted — a manifest without one can't be
         # tied to any datastore state and must not ship.
         raise RuntimeError(
@@ -334,6 +562,16 @@ def _apply_one_adapter(
             [collection_id],
         ).fetchall()
     }
+    if self_contained:
+        if present:
+            raise RuntimeError(
+                f"collection {collection_id}: served from the private dataset "
+                f"but {len(present)} of its member record(s) are also in the "
+                f"EEE corpus (e.g. {sorted(present)[:3]}). Remove them upstream "
+                f"or ship the collection as an in-repo vendored extract."
+            )
+        _inject_synthetic(con, adapter_dir, collection_id, None)
+        return
     if not present:
         log.info(
             "collection %s: no member records in this run's corpus — adapter inert",
@@ -393,6 +631,19 @@ def _apply_one_adapter(
             collection_id, len(present), len(member_ids), n_dropped,
         )
 
+    _inject_synthetic(con, adapter_dir, collection_id, sorted(present), n_dropped)
+
+
+def _inject_synthetic(
+    con,
+    adapter_dir: Path,
+    collection_id: str,
+    present_list: list[str] | None,
+    n_dropped: int = 0,
+) -> None:
+    """Inject the adapter's synthetic results, protocol points and
+    trajectories. `present_list` limits the results to those base member
+    records; None injects all of them."""
     # --- Inject synthetic results (pre-Stage C; EEE-shaped rows).
     results_path = adapter_dir / "results.parquet"
     if not results_path.exists():
@@ -431,8 +682,11 @@ def _apply_one_adapter(
             f"re-run the extractor against the current code."
         )
 
-    present_list = sorted(present)
-    placeholders = ", ".join("?" for _ in present_list)
+    if present_list is None:
+        where, params = "TRUE", []
+    else:
+        where = f"evaluation_id IN ({', '.join('?' for _ in present_list)})"
+        params = present_list
     try:
         con.execute(
             f"""
@@ -445,9 +699,9 @@ def _apply_one_adapter(
                 ) AS evaluation_result_id,
                 fact_id_udf(evaluation_id, CAST(result_idx AS INTEGER)) AS fact_id
             FROM read_parquet('{rp}')
-            WHERE evaluation_id IN ({placeholders})
+            WHERE {where}
             """,
-            present_list,
+            params,
         )
     except Exception as exc:
         raise RuntimeError(
@@ -457,9 +711,8 @@ def _apply_one_adapter(
             f"re-run the extractor."
         ) from exc
     n_injected = con.execute(
-        f"SELECT count(*) FROM read_parquet('{rp}') "
-        f"WHERE evaluation_id IN ({placeholders})",
-        present_list,
+        f"SELECT count(*) FROM read_parquet('{rp}') WHERE {where}",
+        params,
     ).fetchone()[0]
 
     con.execute(
@@ -469,9 +722,9 @@ def _apply_one_adapter(
                ?, protocol_condition,
                CAST(n_trajectories AS INTEGER)
         FROM read_parquet('{rp}')
-        WHERE evaluation_id IN ({placeholders})
+        WHERE {where}
         """,
-        [collection_id] + present_list,
+        [collection_id] + params,
     )
 
     trajectories_path = adapter_dir / "trajectories.parquet"
@@ -484,12 +737,14 @@ def _apply_one_adapter(
 
     log.info(
         "collection %s: dropped %d fragment row(s), injected %d synthetic "
-        "result(s) across %d member record(s)",
-        collection_id, n_dropped, n_injected, len(present),
+        "result(s)",
+        collection_id, n_dropped, n_injected,
     )
 
 
-def assert_cache_has_collections(con) -> None:
+def assert_cache_has_collections(
+    con, private_collections_dir: Path | None = None
+) -> None:
     """Guard for `--from-stage` runs that restore a cache written BEFORE
     the collections step existed (or before a vendored extract was added).
 
@@ -499,12 +754,11 @@ def assert_cache_has_collections(con) -> None:
     guard passes vacuously, and the 561 fragment rows would silently
     republish. Hard-fail instead: if vendored collection manifests exist
     on disk but fewer collections are registered on the connection, the
-    restored state predates them.
+    restored state predates them. Private-dataset extracts count too when
+    the run has them (`private_collections_dir`).
     """
     vdir = vendor_collections_dir()
-    if not vdir.is_dir():
-        return
-    manifests = sorted(vdir.glob("*/manifest.json"))
+    manifests = _manifest_paths(vdir) + _manifest_paths(private_collections_dir)
     if not manifests:
         return
     create_collection_tables(con)

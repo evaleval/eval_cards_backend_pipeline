@@ -43,6 +43,7 @@ from eval_card_backend.canonicalise.resolver_setup import register_udfs
 from eval_card_backend.config import (
     BENCHMARK_METADATA_DATASET_REPO,
     EEE_DATASET_REPO,
+    EEE_PRIVATE_DATASET_REPO,
     ENTITY_REGISTRY_DATASET_REPO,
     IGNORED_CONFIGS,
     Settings,
@@ -294,7 +295,6 @@ def run(
 
     snapshot_id = normalize_snapshot_id(snapshot_id) if snapshot_id else _make_snapshot_id()
     log.info("snapshot_id = %s", snapshot_id)
-    cache = StageCache(cache_root, snapshot_id, enabled=not no_cache)
 
     if warehouse_dir is None:
         warehouse_dir = settings.warehouse_dir
@@ -307,6 +307,35 @@ def run(
     eee_root = eee.ensure_snapshot(
         settings.eee_local_dir, settings.hf_token, settings.refresh_eee,
         revision=settings.eee_revision,
+    )
+    # The private collection source is touched only when the toggle is on;
+    # off, no request goes to its repo and its local dir is never read.
+    private_collections_dir: Path | None = None
+    private_revision: str | None = None
+    private_collection_ids: frozenset[str] = frozenset()
+    if settings.include_private_eee:
+        private_collections_dir, private_revision = (
+            collections_src.ensure_private_collections(
+                settings.eee_private_local_dir, settings.hf_token,
+                settings.refresh_eee, revision=settings.eee_private_revision,
+            )
+        )
+        private_collection_ids = frozenset(
+            json.loads(p.read_text(encoding="utf-8"))["collection_id"]
+            for p in sorted(private_collections_dir.glob("*/manifest.json"))
+        )
+        log.info(
+            "private collections from %s at %s (revision=%s): %s",
+            EEE_PRIVATE_DATASET_REPO, private_collections_dir,
+            private_revision, sorted(private_collection_ids),
+        )
+    active = collections_src.active_collections(settings.include_private_eee)
+    cache = StageCache(
+        cache_root, snapshot_id, enabled=not no_cache,
+        source_state={
+            "include_private_eee": settings.include_private_eee,
+            "eee_private_revision": private_revision,
+        },
     )
     cards_root = benchmark_cards.ensure_snapshot(
         settings.benchmark_metadata_local_dir,
@@ -374,7 +403,12 @@ def run(
         # fragments. Only applies when the restored slice includes the
         # adapter's stage (B); a from-stage B run re-runs the adapter.
         if STAGE_ORDER.index(from_stage) > STAGE_ORDER.index("B"):
-            collections_src.assert_cache_has_collections(con)
+            collections_src.assert_cache_has_collections(
+                con, private_collections_dir
+            )
+        collections_src.assert_no_private_rows(
+            con, active.held_out, where="restored stage cache",
+        )
 
         # The composite_config_map cache is one of stage A's outputs. A 0-row
         # restoration means a prior run wrote an empty map (e.g. taxonomy
@@ -431,6 +465,9 @@ def run(
             log.info("Stage A: loading sources …")
             arrow_table = eee.load_arrow_table(eee_root, chosen, settings.hf_token)
             n_eee = stages.stage_a_load_eee(con, arrow_table)
+            collections_src.assert_no_private_rows(
+                con, active.held_out, where="after Stage A load",
+            )
             log.info("  loaded %d EEE records (validated)", n_eee)
             n_cards = stages.stage_a_load_cards(con, cards)
             log.info("  loaded %d cards", n_cards)
@@ -470,6 +507,7 @@ def run(
             # cached `results_exploded` is post-adapter.
             collections_src.apply_vendor_collections(
                 con, eee_root=eee_root, eee_revision=settings.eee_revision,
+                private_collections_dir=private_collections_dir,
             )
         elif letter == "C":
             log.info("Stage C: resolving identities …")
@@ -485,11 +523,13 @@ def run(
             stages.stage_d_join_dims_and_flatten(
                 con,
                 strict_collections=(configs is None and config_limit is None),
+                include_private=settings.include_private_eee,
             )
         elif letter == "E":
             stage_e_stats = stages.stage_e_per_row_signals(
                 con,
                 strict_composites=(configs is None and config_limit is None),
+                exempt_composites=active.exempt_composites,
             )
             log.info(
                 "Stage E: %d rows in, %d rows out "
@@ -510,6 +550,9 @@ def run(
             log.info("Stage G: dim materialisation …")
             stages.stage_g_materialise_dim_tables(con, snapshot_id)
         elif letter == "I":
+            collections_src.assert_no_private_rows(
+                con, active.held_out, where="before warehouse write",
+            )
             out_dir = Path(warehouse_dir) / _snapshot_dir_name(snapshot_id)
             out_dir.mkdir(parents=True, exist_ok=True)
             log.info("Stage I: emitting parquets to %s", out_dir)
@@ -517,7 +560,8 @@ def run(
         elif letter == "J":
             log.info("Stage J: building view layer …")
             stages.stage_j_eval_results_view(
-                con, snapshot_id, eee_revision=settings.eee_revision
+                con, snapshot_id, eee_revision=settings.eee_revision,
+                unlinked_collections=private_collection_ids,
             )
             # Must precede the views that read from eval_results_view, and
             # the parquet emit at the end of this branch.
@@ -531,6 +575,9 @@ def run(
             if out_dir is None:
                 out_dir = Path(warehouse_dir) / _snapshot_dir_name(snapshot_id)
                 out_dir.mkdir(parents=True, exist_ok=True)
+            collections_src.assert_no_private_rows(
+                con, active.held_out, where="before warehouse write",
+            )
             log.info("Stage J: emitting view parquets to %s", out_dir)
             stages.stage_j_emit_view_parquets(con, out_dir, snapshot_id)
 
@@ -645,6 +692,7 @@ def run(
         eee_root=eee_root,
         registry_root=registry_root,
         cards_root=cards_root,
+        private_revision=private_revision,
     )
     # Same non-finite wire form as every other sidecar (nothing in the meta
     # carries a registry float today; the invariant is what matters).
@@ -730,6 +778,7 @@ def _build_snapshot_meta(
     eee_root: Path | None,
     registry_root: Path | None,
     cards_root: Path | None,
+    private_revision: str | None = None,
 ) -> dict:
     """Assemble `snapshot_meta.json` payload. Pure data: doesn't touch
     DuckDB. The HF-revision lookups talk to HF's HTTP API and are best-
@@ -780,6 +829,19 @@ def _build_snapshot_meta(
         hf_token=settings.hf_token,
     )
 
+    upstream_pins = {
+        "eee_datastore": eee_pin,
+        "entity_registry": registry_pin,
+        "benchmark_metadata": cards_pin,
+    }
+    if settings.include_private_eee:
+        upstream_pins["eee_private"] = _upstream_pin(
+            EEE_PRIVATE_DATASET_REPO,
+            pinned=settings.eee_private_revision,
+            cached=private_revision,
+            hf_token=settings.hf_token,
+        )
+
     return {
         "snapshot_id": snapshot_id,
         "generated_at": _make_snapshot_id(),
@@ -791,11 +853,7 @@ def _build_snapshot_meta(
         # scalars plus last_modified and revision_source. Consumed by
         # `write_manifest` so the warehouse manifest carries enough info to
         # diagnose stale-input runs without re-querying HF.
-        "upstream_pins": {
-            "eee_datastore": eee_pin,
-            "entity_registry": registry_pin,
-            "benchmark_metadata": cards_pin,
-        },
+        "upstream_pins": upstream_pins,
         "tables": tables,
         "sidecars": sidecars,
         "row_counts": {

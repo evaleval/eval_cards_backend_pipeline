@@ -25,13 +25,24 @@ env:
   # these SHAs are bumped deliberately. Pinned to snapshot last validated
   # on: 2026-08-13. To accept new upstream data, bump the SHA (or remove
   # the var to track latest HEAD).
-  # Prev pin: 73761dc1d250913a9326fdc213f7ac2d23d390b6 (2026-09-20)
-  # RUNBOOK: an EEE pin bump that includes collection data changes (e.g.
-  # the AISI inference-scaling batch) must carry the collection-extractor
-  # re-run and the regenerated vendor/collections/** in the SAME PR —
-  # canonicalise hard-fails on a manifest/pin mismatch. See
-  # notes/collections-spec.md and scripts/collections/.
-  EEE_REVISION: d27319f8c989785144aaeff5db6fea11dae5221c
+  # Prev pin: d27319f8c989785144aaeff5db6fea11dae5221c (2026-09-25)
+  # RUNBOOK: an EEE pin bump that includes data of an in-repo vendored
+  # collection must carry the collection-extractor re-run and the
+  # regenerated vendor/collections/** in the SAME PR; canonicalise
+  # hard-fails on a manifest/pin mismatch. See scripts/collections/.
+  EEE_REVISION: 0fe996f1b578d43d7e4d16be814c961b6f778445
+  # Private collection source: the UK AISI inference-scaling extract
+  # (manifest.json, results.parquet, trajectories.parquet) is served from
+  # collections/aisi_inference_scaling/ in the private dataset
+  # evaleval/aisi-inference-scaling-data, downloaded into .cache/eee_private
+  # (never into the public cache below). EEE_INCLUDE_PRIVATE=1 applies it;
+  # the code default is off, and off the pipeline makes no request to that
+  # repo. The job's HF_TOKEN needs read access to the private dataset. To
+  # update the extract: run scripts/collections/aisi_inference_scaling.py,
+  # upload its three files to that folder, then set EEE_PRIVATE_REVISION
+  # (a commit sha) to the upload's commit.
+  EEE_INCLUDE_PRIVATE: "1"
+  EEE_PRIVATE_REVISION: d87044e949afdbe356287ffa8e1b219ed1b7a48e
   # Prev pin: 5f795ebcff6c8e2f31df491a38bd84b07a159f77 (2026-09-21)
   ENTITY_REGISTRY_REVISION: 9405e27e6b7a96fe9721b8b33a80fd349fabf6b9
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba

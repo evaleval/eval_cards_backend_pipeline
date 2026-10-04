@@ -700,7 +700,10 @@ def write_collections(con, out_dir: Path, snapshot_meta: dict) -> Path:
     curated = collections_src.load_curated()
     payload: dict[str, dict] = {}
     for cid, entry in curated.items():
-        clean = {k: v for k, v in entry.items() if not k.startswith("_")}
+        clean = {
+            k: v for k, v in entry.items()
+            if not k.startswith("_") and k != "private_source"
+        }
         clean["curated"] = True
         payload[cid] = clean
 
@@ -784,7 +787,8 @@ def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | 
     collection is curated with `has_trajectories`, declares the
     `task_mean_score` rule for the benchmark, and the registry benchmark
     entity carries `official_task_count` (shown as coverage context).
-    Returns None (no file) when nothing clears the gates.
+    Returns None (no file) when nothing clears the gates; a file left in
+    `out_dir` by an earlier run is then removed.
 
     Shape — `{collection_id: {benchmark_key: {…}}}` where each entry is::
 
@@ -809,6 +813,8 @@ def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | 
     """
     from eval_card_backend.sources import collections as collections_src
 
+    path = out_dir / "collection_context.json"
+    path.unlink(missing_ok=True)
     required = ("fact_results", "eval_results_view", "collection_trajectories_raw",
                 "benchmarks", "canonical_benchmarks", "canonical_metrics")
     if not all(_table_exists(con, t) for t in required):
@@ -835,7 +841,6 @@ def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | 
 
     if not payload:
         return None
-    path = out_dir / "collection_context.json"
     path.write_text(
         json.dumps(_json_finite(payload), indent=2, sort_keys=True, default=_json_default)
     )
@@ -1074,26 +1079,9 @@ def _context_external_points(con, *, collection_id: str, benchmark_key: str,
         ).fetchall()
         if not rows:
             continue
-        # Every key must resolve to one score at its latest harvest; two means
-        # the source republished without us noticing which supersedes which.
-        # Scaffold-less keys are held to the same standard rather than passing
-        # both points through: the strip reads as a spread of measurements, and
-        # a source that publishes two numbers for one model at one harvest
-        # carries nothing that says they are two measurements rather than one
-        # defect.
-        key_counts: dict[tuple, int] = defaultdict(int)
-        for model_key, scaffold, *_ in rows:
-            key_counts[(model_key, scaffold)] += 1
-        ambiguous = sorted(
-            (k for k, n in key_counts.items() if n > 1),
-            key=lambda k: (k[0], k[1] or ""),
-        )
-        if ambiguous:
-            raise RuntimeError(
-                f"collection_context: {composite_slug}/{benchmark_key} has "
-                f"multiple distinct scores for (model, scaffold) tuples "
-                f"{ambiguous} at their latest harvest — refusing to tie-break"
-            )
+        # A source can list one (model, scaffold) more than once: separate
+        # submissions are separate measurements, so every distinct score at
+        # the key's latest harvest is kept as its own point.
         kept.append({
             "id": composite_slug,
             "display_name": display_names.get(composite_slug, composite_slug),

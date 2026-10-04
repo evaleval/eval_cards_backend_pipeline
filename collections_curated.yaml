@@ -13,12 +13,22 @@
 # (none | answer_feedback | unknown), REQUIRED for any collection whose
 # runs receive correctness signals: the view layer's rollup exclusions
 # filter on it by name.
+#
+# `private_source` marks a collection whose extract is served from the
+# private dataset (EEE_PRIVATE_DATASET_REPO, `collections/<name>/`) and
+# applied only when EEE_INCLUDE_PRIVATE=1. With the toggle off the entry is
+# exempt from the curated-entry detach guard, the taxonomy composites
+# listed under `composites` (curated in the registry, produced only by this
+# collection) are exempt from the Stage E scoped-member guard, and any row
+# under its merge_raw_keys fails the run.
 
 uk-aisi-inference-scaling:
   display_name: How Inference Compute Shapes Frontier LLM Evaluation
   kind: paper_study
   url: https://arxiv.org/abs/2606.17930
   curated: true
+  private_source:
+    composites: [aisi-inference-scaling]
   merge_raw_keys:
     # Which spelling is observed depends on the EEE revision: the current
     # pin (2d9a8b23, post-rename-sweep) observes "Institute" on 732

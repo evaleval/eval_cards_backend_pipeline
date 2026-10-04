@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +12,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Env-overridable for testing against a fork/mirror. The same repo serves
 # both the snapshot download and the eee_record_url deep-links.
 EEE_DATASET_REPO = os.environ.get("EEE_DATASET_REPO", "evaleval/EEE_datastore")
+# Private dataset holding processed collection extracts
+# (`collections/<name>/{manifest.json,results.parquet,trajectories.parquet}`).
+# Read only when `EEE_INCLUDE_PRIVATE=1`; with the toggle off nothing in the
+# pipeline touches this repo or its local directory.
+EEE_PRIVATE_DATASET_REPO = os.environ.get(
+    "EEE_PRIVATE_DATASET_REPO", "evaleval/aisi-inference-scaling-data"
+)
 BENCHMARK_METADATA_DATASET_REPO = "evaleval/auto-benchmarkcards"
 ENTITY_REGISTRY_DATASET_REPO = "evaleval/entity-registry-data"
 
@@ -21,6 +29,9 @@ ENTITY_REGISTRY_DATASET_REPO = "evaleval/entity-registry-data"
 # unchanged there. Explicit overrides (the env vars below, --warehouse-dir,
 # --registry-local-dir) are still honoured exactly as given.
 DEFAULT_EEE_LOCAL_DIR = str(REPO_ROOT / ".cache" / "eee_datastore")
+# Separate from the public snapshot dir so a public cache (and the CI cache
+# of it) never holds private files.
+DEFAULT_EEE_PRIVATE_LOCAL_DIR = str(REPO_ROOT / ".cache" / "eee_private")
 DEFAULT_BENCHMARK_METADATA_LOCAL_DIR = str(REPO_ROOT / ".cache" / "auto_benchmarkcards")
 DEFAULT_REGISTRY_LOCAL_DIR = str(REPO_ROOT / ".cache" / "entity_registry")
 DEFAULT_WAREHOUSE_DIR = str(REPO_ROOT / "warehouse")
@@ -33,6 +44,19 @@ DEFAULT_WAREHOUSE_DIR = str(REPO_ROOT / "warehouse")
 # developer/org attribution (`unknown__<x>` patterns); causes systematic
 # provenance/resolution noise. Re-include when upstream cleans up.
 IGNORED_CONFIGS: frozenset[str] = frozenset({"alphaxiv"})
+
+_COMMIT_SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")
+
+
+def _private_revision_from_env() -> str | None:
+    value = os.environ.get("EEE_PRIVATE_REVISION") or None
+    if value is not None and not _COMMIT_SHA_RE.match(value):
+        raise ValueError(
+            f"EEE_PRIVATE_REVISION={value!r} is not a 40-character commit sha. "
+            f"The pin must name an immutable commit (branches and tags are "
+            f"rejected)."
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -54,6 +78,12 @@ class Settings:
     eee_revision: str | None
     benchmark_metadata_revision: str | None
     registry_revision: str | None
+    # Private collection source (see EEE_PRIVATE_DATASET_REPO). Off by
+    # default. `eee_private_revision` must be a commit sha when set; unset
+    # resolves HEAD to a sha once per run.
+    include_private_eee: bool = False
+    eee_private_revision: str | None = None
+    eee_private_local_dir: str = DEFAULT_EEE_PRIVATE_LOCAL_DIR
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -82,4 +112,10 @@ class Settings:
                 os.environ.get("BENCHMARK_METADATA_REVISION") or None
             ),
             registry_revision=os.environ.get("ENTITY_REGISTRY_REVISION") or None,
+            include_private_eee=os.environ.get("EEE_INCLUDE_PRIVATE") == "1",
+            eee_private_revision=_private_revision_from_env(),
+            eee_private_local_dir=(
+                os.environ.get("EEE_PRIVATE_LOCAL_DATASET_DIR")
+                or DEFAULT_EEE_PRIVATE_LOCAL_DIR
+            ),
         )

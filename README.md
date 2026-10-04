@@ -1,6 +1,7 @@
 # eval-card-backend
 
-Materialises evaluation artifacts from `evaleval/EEE_datastore`,
+Materialises evaluation artifacts from `evaleval/EEE_datastore` (plus,
+opt-in, collection extracts from a private dataset; see below),
 `evaleval/auto-benchmarkcards`, and `evaleval/entity-registry-data` into
 a Parquet warehouse for the Eval Cards frontend.
 
@@ -126,6 +127,43 @@ read without GROUP BYs.
 | `BENCHMARK_METADATA_REFRESH` | unset | Set to `1` to force-refetch the cards. |
 | `ENTITY_REGISTRY_REFRESH` | unset | Set to `1` to force-refetch the registry. |
 | `HF_OPENNESS_PROBE` | `1` | Set to `0` to skip the open-weights backfill (offline bakes, or to pin a snapshot to exactly what the registry states). |
+| `EEE_INCLUDE_PRIVATE` | unset | Set to `1` to also apply the collection extracts of the private dataset (see below). |
+| `EEE_PRIVATE_DATASET_REPO` | `evaleval/aisi-inference-scaling-data` | The private dataset. |
+| `EEE_PRIVATE_REVISION` | unset | Commit sha of the private dataset; branches and tags are rejected. Unset resolves HEAD to a sha once per run. |
+| `EEE_PRIVATE_LOCAL_DATASET_DIR` | `.cache/eee_private` | Local cache for the private extracts, separate from the public snapshot. |
+
+### Private collection source
+
+The UK AISI inference-scaling submission is not in `evaleval/EEE_datastore`.
+Its processed collection extract (the output of
+`scripts/collections/aisi_inference_scaling.py`: `manifest.json`,
+`results.parquet`, `trajectories.parquet`) lives in the private dataset
+`EEE_PRIVATE_DATASET_REPO` under `collections/aisi_inference_scaling/`;
+the raw records and transcripts are on no HF dataset. With
+`EEE_INCLUDE_PRIVATE=1` the pipeline downloads `collections/**` at the
+pinned revision into its own local dir (a marker records the commit, so a
+pinned re-run needs no network) and applies each extract with the
+collection adapter: every synthetic result and trajectory is injected, and
+nothing is dropped because no member record is loaded. These rows carry
+NULL `eee_record_url` and `instance_file_url`. `upstream_pins.eee_private`
+records the revision consumed. The token needs read access to the private
+dataset.
+
+With the toggle off (the default) the pipeline makes no request to the
+private repo and never reads its local dir. The private collection's
+curated entry and taxonomy composite are exempt from the guards that
+expect it to be observed, and the run fails if rows under its raw
+collection keys are present anyway (after loading, after a cache restore,
+before any warehouse write). A stage cache records which sources built it
+and cannot be resumed across a toggle or private-revision change. A run
+that emits no collection trajectories or collection context removes those
+two files if an earlier run left them in the snapshot dir.
+
+To update the extract: run the extractor against the local raw data
+(`--source-dir`), upload its three output files to
+`collections/aisi_inference_scaling/` in the private dataset, then set
+`EEE_PRIVATE_REVISION` in `.github/workflows/sync.yml` to the upload's
+commit.
 
 ### Open-weights backfill
 

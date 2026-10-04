@@ -1567,7 +1567,9 @@ def _apply_slice_key(con) -> None:
 # ---------------------------------------------------------------------------
 
 
-def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> None:
+def stage_d_join_dims_and_flatten(
+    con, *, strict_collections: bool = False, include_private: bool = False,
+) -> None:
     """Flatten + JOIN.
 
     Reads typed STRUCT fields directly via dot notation. The metric-meta
@@ -1580,6 +1582,9 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
     downstream `fact_results.parquet` consumers expect (the upstream typed
     shapes for these are still in flux). `generation_args_json` is the
     canonical serialised form fed to `variant_key_udf` and divergence UDFs.
+
+    `include_private` is the private-source toggle: off, curated entries of
+    a private source are exempt from the curated-key guard.
     """
     # Curated "was the evaluation submitted by the org that ran it" lookup,
     # keyed by evaluation_id. Materialised as a deduped view (an evaluation_id can
@@ -2319,7 +2324,9 @@ def stage_d_join_dims_and_flatten(con, *, strict_collections: bool = False) -> N
     _log_split_inheritance(con)
     _log_flat_exact_wholes(con)
 
-    _build_collection_keys(con, collection_raw_key, strict_collections)
+    _build_collection_keys(
+        con, collection_raw_key, strict_collections, include_private
+    )
 
 
 def _log_flat_exact_wholes(con, top_n: int = 20) -> None:
@@ -2546,7 +2553,8 @@ def _log_malformed_metric_models(con) -> None:
 
 
 def _build_collection_keys(
-    con, collection_raw_key: str, strict_collections: bool
+    con, collection_raw_key: str, strict_collections: bool,
+    include_private: bool = False,
 ) -> None:
     """Materialise `collection_keys` — one row per observed raw collection
     key with its post-merge collection_id, a representative source_name
@@ -2558,16 +2566,33 @@ def _build_collection_keys(
     sample-carrier records (no evaluation_results — e.g. the one
     Initiative-spelled AISI record) never produce exploded rows but must
     still count as observing their raw key.
+
+    A collection served from the private dataset has no records in
+    `eee_raw`: its members are observed through their synthetic rows, one
+    per member evaluation_id.
     """
     con.execute(
         f"""
         CREATE TABLE collection_keys AS
-        WITH keyed AS (
+        WITH records AS (
+            SELECT source_metadata, eval_library, source_config
+            FROM eee_raw
+            UNION ALL
+            SELECT source_metadata, eval_library, source_config
+            FROM results_exploded
+            WHERE evaluation_id IN (SELECT evaluation_id FROM collection_member_ids)
+              AND evaluation_id NOT IN
+                  (SELECT evaluation_id FROM eee_raw WHERE evaluation_id IS NOT NULL)
+            QUALIFY row_number() OVER (
+                PARTITION BY evaluation_id ORDER BY result_idx
+            ) = 1
+        ),
+        keyed AS (
             SELECT
                 {collection_raw_key}                     AS raw_key,
                 COALESCE(rr.source_metadata.source_name,
                          rr.source_config)               AS src_name
-            FROM eee_raw rr
+            FROM records rr
         ),
         name_pick AS (
             -- Most-frequent source_name per raw key, tie-broken
@@ -2597,7 +2622,9 @@ def _build_collection_keys(
         """
     )
     collections_src.assert_curated_keys_observed(
-        con, collections_src.load_curated(), strict=strict_collections
+        con,
+        collections_src.active_collections(include_private).curated,
+        strict=strict_collections,
     )
 
 
@@ -2637,7 +2664,12 @@ _SENTINEL_DROP_PREDICATE = """
 """
 
 
-def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageEStats:
+def stage_e_per_row_signals(
+    con,
+    *,
+    strict_composites: bool = False,
+    exempt_composites: frozenset[str] = frozenset(),
+) -> StageEStats:
     """Compute per-row signals + apply drop policies, in this order:
 
     1. **No-score drop** — `score IS NULL`. The row carries no measurement.
@@ -2669,6 +2701,8 @@ def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageESt
     configs over the surviving-row population (see
     `_apply_composite_partitions`); `strict_composites` mirrors Stage D's
     collections strictness (hard curated-member guards only on full runs).
+    `exempt_composites` skips that guard for composites whose only
+    producer is a private source that is switched off this run.
     """
     staging_cols = {
         r[1] for r in con.execute(
@@ -2898,7 +2932,9 @@ def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageESt
         WHERE _content_dedup_rank = 1
         """
     )
-    _apply_composite_partitions(con, strict=strict_composites)
+    _apply_composite_partitions(
+        con, strict=strict_composites, exempt=exempt_composites
+    )
     post = con.execute("SELECT count(*) FROM fact_results_signaled").fetchone()[0]
     pre_dedup = pre - n_dropped_no_score - n_dropped_sentinel
     fact_id_survivors = con.execute(
@@ -2940,7 +2976,9 @@ def stage_e_per_row_signals(con, *, strict_composites: bool = False) -> StageESt
     )
 
 
-def _apply_composite_partitions(con, *, strict: bool) -> None:
+def _apply_composite_partitions(
+    con, *, strict: bool, exempt: frozenset[str] = frozenset()
+) -> None:
     """Composite org-partition pass (notes/composite-partition-spec.md),
     applied to `fact_results_signaled` — the post-supersession
     population, so a superseded row can never split a page whose
@@ -2989,7 +3027,7 @@ def _apply_composite_partitions(con, *, strict: bool) -> None:
     warnings: list[str] = []
     scoped_by_composite: dict[str, list] = {}
     for slug, cfg, org, source, specificity, n_matches in member_rows:
-        if specificity < 2:
+        if specificity < 2 or slug in exempt:
             continue
         scoped_by_composite.setdefault(slug, []).append(n_matches)
         if n_matches == 0:
@@ -4533,6 +4571,8 @@ def stage_i_emit_warehouse_parquets(con, out_dir: Path, snapshot_id: str) -> Non
             """
         )
         log.info("Stage I: emitted collection_trajectories.parquet (%d rows)", n_traj)
+    else:
+        (out_dir / "collection_trajectories.parquet").unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -4552,7 +4592,12 @@ def _ensure_merged_view_inputs(con) -> None:
         con.execute(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
 
 
-def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = None) -> None:
+def stage_j_eval_results_view(
+    con,
+    snapshot_id: str,
+    eee_revision: str | None = None,
+    unlinked_collections: frozenset[str] = frozenset(),
+) -> None:
     """Materialise `eval_results_view` — one row per (composite, benchmark,
     metric, model, protocol condition, judge condition, split). Foundation
     view: models_view + evals_view fan out from this.
@@ -4577,6 +4622,11 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
     excluded from `position` / `total`. `percentile` =
     `1 - (position-1) / (total-1)`.
 
+    **Unlinked collections**: rows whose representative collection_id is in
+    `unlinked_collections` (collections served from the private dataset,
+    whose raw records are on no public repo) get NULL `eee_record_url` and
+    `instance_file_url`. Other rows are unaffected.
+
     **Headline** — `fact_headline` (materialised here) maps every fact row
     to the one condition row that represents its (composite, benchmark,
     metric, model) cell. Every page-level rollup, here and in the sidecars,
@@ -4592,6 +4642,13 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
     # immutable links.
     eee_repo = EEE_DATASET_REPO
     eee_rev = eee_revision or "main"
+
+    unlinked_case = ""
+    if unlinked_collections:
+        quoted = ", ".join(
+            "'" + c.replace("'", "''") + "'" for c in sorted(unlinked_collections)
+        )
+        unlinked_case = f"WHEN rep_collection_id IN ({quoted}) THEN NULL"
 
     eval_annotation_struct_type = (
         "STRUCT("
@@ -5751,6 +5808,7 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             -- repo-relative path carried since Stage A; NULL when the
             -- representative row has no recorded path.
             CASE
+                {unlinked_case}
                 WHEN rep_source_record_path IS NOT NULL
                 THEN 'https://huggingface.co/datasets/{eee_repo}/resolve/{eee_rev}/'
                      || rep_source_record_path
@@ -5838,6 +5896,7 @@ def stage_j_eval_results_view(con, snapshot_id: str, eee_revision: str | None = 
             -- `eee_record_url` deep-link uses, so a snapshot's record links
             -- and its sample links always address the same upstream state.
             CASE
+                {unlinked_case}
                 WHEN rep_instance_file_path IS NOT NULL
                 THEN 'https://huggingface.co/datasets/{eee_repo}/resolve/{eee_rev}/'
                      || rep_instance_file_path
@@ -7337,8 +7396,8 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             SELECT
                 erv.composite_slug,
                 erv.benchmark_id,
-                CAST(COUNT(DISTINCT erv.instance_file_path)
-                     FILTER (WHERE erv.instance_file_path IS NOT NULL) AS BIGINT)
+                CAST(COUNT(DISTINCT erv.instance_file_url)
+                     FILTER (WHERE erv.instance_file_url IS NOT NULL) AS BIGINT)
                     AS url_count,
                 -- `instance_data.sample_urls` is consumed as a link list,
                 -- so aggregate the fetchable URL rather than the
@@ -7348,7 +7407,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                     FILTER (WHERE erv.instance_file_url IS NOT NULL)
                     AS sample_urls_full,
                 CAST(COUNT(DISTINCT erv.model_key)
-                     FILTER (WHERE erv.instance_file_path IS NOT NULL) AS INTEGER)
+                     FILTER (WHERE erv.instance_file_url IS NOT NULL) AS INTEGER)
                     AS models_with_loaded_instances
             FROM eval_results_view erv
             GROUP BY 1, 2

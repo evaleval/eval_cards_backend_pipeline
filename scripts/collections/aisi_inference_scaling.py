@@ -20,22 +20,30 @@ EEE datastore's per-sample JSONLs into complete per-setting results:
                           expected drop count, extraction stats +
                           reconciliation evidence
 
-Run manually when AISI data changes (an EEE pin bump that includes AISI
-changes must carry the regenerated vendor files in the same PR.2):
+The raw records and transcripts are no longer on any HF dataset; they are
+read from a local directory laid out like the datastore
+(`data/<benchmark>/<developer>/<model>/<uuid>.json` plus the
+`<uuid>_samples.jsonl` next to each record):
 
     uv run python scripts/collections/aisi_inference_scaling.py \
-        --revision <EEE_REVISION>
+        --source-dir /path/to/aisi_raw
 
-Check the revision first: it must be a datastore flat-rebuild commit whose
-index holds every member record, or the run re-derives the old extract:
+Transcripts are parsed and discarded, never persisted. CI never runs this.
+`--revision <EEE_REVISION>` instead reads the public datastore at that
+commit (aggregates via the pipeline's snapshot step, samples streamed with
+`hf_hub_download`), for a datastore revision that still holds the records.
 
-    uv run python scripts/collections/check_flat_pin.py \
-        --revision <EEE_REVISION> --require-collection <config> ...
+How to publish: the extract is not vendored in this repo. It is served
+from the private dataset `EEE_PRIVATE_DATASET_REPO` and read by canonicalise
+only with EEE_INCLUDE_PRIVATE=1.
 
-Aggregate records are read from the local `.cache/eee_datastore` snapshot
-when its listing revision matches (else a per-revision sibling dir is
-materialised); sample JSONLs are streamed via `hf_hub_download` (multi-GB;
-transcripts are parsed and discarded, never persisted). CI never runs this.
+1. Run the extractor; it writes manifest.json, results.parquet and
+   trajectories.parquet to `--out-dir` (default
+   `.cache/collections_extract/aisi_inference_scaling`).
+2. Upload the three files to `collections/aisi_inference_scaling/` in the
+   private dataset.
+3. Set EEE_PRIVATE_REVISION in `.github/workflows/sync.yml` to the commit
+   that upload created.
 """
 
 # /// script
@@ -65,6 +73,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from eval_card_backend.config import EEE_PRIVATE_DATASET_REPO  # noqa: E402
 from eval_card_backend.sources.collections import slug  # noqa: E402
 
 COLLECTION_ID = "uk-aisi-inference-scaling"
@@ -85,7 +94,7 @@ BENCHMARK_LABELS = {
     "aisi-the-last-ones": "the-last-ones",
 }
 EEE_REPO = "evaleval/EEE_datastore"
-OUT_DIR = REPO_ROOT / "vendor" / "collections" / "aisi_inference_scaling"
+OUT_DIR = REPO_ROOT / ".cache" / "collections_extract" / "aisi_inference_scaling"
 DEFAULT_EEE_CACHE = REPO_ROOT / ".cache" / "eee_datastore"
 
 # Appendix A.1.1 fixes the paper's TerminalBench population at 86 of the 89
@@ -325,9 +334,18 @@ def _pinned_snapshot_root(revision: str, eee_cache: Path, hf_token: str | None) 
     )
 
 
+def _local_record_paths(source_dir: Path) -> list[str]:
+    """Aggregate record paths under a local datastore-shaped dir."""
+    return sorted(
+        p.relative_to(source_dir).as_posix()
+        for p in (source_dir / "data").rglob("*.json")
+    )
+
+
 def enumerate_members(
-    revision: str, eee_cache: Path, hf_token: str | None,
+    revision: str | None, eee_cache: Path | None, hf_token: str | None,
     stats: Counter | None = None,
+    source_dir: Path | None = None,
 ) -> tuple[list[Member], Path]:
     """Read every aggregate record at `revision` and keep the study's
     members. Predicate: slug(source_name) == study slug — org is
@@ -335,15 +353,20 @@ def enumerate_members(
     exact-org matching leaks fragments). Unreadable listing entries are
     counted, not silently skipped — a missing member would undercount
     `expected_drop_count` (the canonicalise leak guard backstops, but the
-    miss should be visible here first)."""
+    miss should be visible here first). `source_dir` reads a local
+    datastore-shaped dir instead of a datastore revision."""
     stats = stats if stats is not None else Counter()
-    root = _pinned_snapshot_root(revision, eee_cache, hf_token)
-    listing = json.loads(
-        (root / ".eee_file_listing.json").read_text(encoding="utf-8")
-    )
+    if source_dir is not None:
+        root = source_dir
+        paths = _local_record_paths(source_dir)
+    else:
+        root = _pinned_snapshot_root(revision, eee_cache, hf_token)
+        paths = json.loads(
+            (root / ".eee_file_listing.json").read_text(encoding="utf-8")
+        )["paths"]
     members: list[Member] = []
     n_org_mismatch = 0
-    for path in listing["paths"]:
+    for path in paths:
         p = root / path
         if not p.exists():
             stats["listing_files_missing"] += 1
@@ -597,7 +620,8 @@ def parse_sample_row(member: Member, row: dict, stats: Counter) -> Trajectory | 
 
 
 def stream_trajectories(
-    members: list[Member], revision: str, hf_token: str | None, stats: Counter
+    members: list[Member], revision: str | None, hf_token: str | None,
+    stats: Counter, source_dir: Path | None = None,
 ) -> list[Trajectory]:
     from concurrent.futures import ThreadPoolExecutor
 
@@ -608,6 +632,9 @@ def stream_trajectories(
         return p or m.path.replace(".json", "_samples.jsonl")
 
     def _fetch(m: Member) -> str | Exception:
+        if source_dir is not None:
+            local = source_dir / _sample_path(m)
+            return str(local) if local.exists() else FileNotFoundError(str(local))
         last: Exception | None = None
         for _attempt in range(3):
             try:
@@ -1637,10 +1664,16 @@ def write_results_parquet(synthetic: list[dict], out: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument(
-        "--revision", required=True,
-        help="EEE datastore revision (must equal the EEE_REVISION the "
-             "pipeline will consume)",
+    source = ap.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--source-dir", type=Path,
+        help="local dir holding the study's raw records and sample files "
+             "as data/<benchmark>/<developer>/<model>/<uuid>.json "
+             "(+ <uuid>_samples.jsonl)",
+    )
+    source.add_argument(
+        "--revision",
+        help="read the public EEE datastore at this commit instead",
     )
     ap.add_argument("--eee-cache", type=Path, default=DEFAULT_EEE_CACHE)
     ap.add_argument("--out-dir", type=Path, default=OUT_DIR)
@@ -1662,9 +1695,11 @@ def main() -> None:
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
     stats: Counter = Counter()
 
-    members, _root = enumerate_members(args.revision, args.eee_cache, hf_token, stats)
+    members, _root = enumerate_members(
+        args.revision, args.eee_cache, hf_token, stats, source_dir=args.source_dir
+    )
     if not members:
-        raise SystemExit("no member records found — wrong revision?")
+        raise SystemExit("no member records found; wrong --source-dir or --revision?")
     unknown_benchmarks = {m.config for m in members} - set(BENCHMARKS)
     if unknown_benchmarks:
         raise SystemExit(
@@ -1684,7 +1719,9 @@ def main() -> None:
               f"{sorted({m.config for m in agg_members})} — no sample files "
               f"will be fetched for these")
 
-    trajs = stream_trajectories(traj_members, args.revision, hf_token, stats)
+    trajs = stream_trajectories(
+        traj_members, args.revision, hf_token, stats, source_dir=args.source_dir
+    )
     if stats["files_download_failed"]:
         raise SystemExit(
             f"{stats['files_download_failed']} sample file(s) failed to "
@@ -1817,6 +1854,12 @@ def main() -> None:
         "collection_id": COLLECTION_ID,
         "study_slug": STUDY_SLUG,
         "extractor": "scripts/collections/aisi_inference_scaling.py",
+        "source_repo": EEE_PRIVATE_DATASET_REPO,
+        "raw_source": (
+            {"type": "local_dir", "path": str(args.source_dir)}
+            if args.source_dir is not None
+            else {"type": "hf_dataset", "repo": EEE_REPO, "revision": args.revision}
+        ),
         "eee_revision": args.revision,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "expected_drop_count": sum(m.n_results for m in members),
