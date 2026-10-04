@@ -1,0 +1,71 @@
+name: Sync Alert
+
+# Reports Sync Pipeline trouble in one issue thread (label: sync-alert).
+# See scripts/ci_sync_alert.sh for what is posted and when.
+on:
+  workflow_run:
+    workflows: ["Sync Pipeline"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    # Staleness check on the published snapshot. It shares GitHub's
+    # scheduler with the pipeline, so it is best effort against a
+    # scheduler-wide stoppage.
+    - cron: "43 6 * * *"
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Sync Pipeline run id to replay. Empty: run the staleness check."
+        type: string
+        default: ""
+      write:
+        description: "Post to the issue. Off: dry run, the action and body are only printed in the log."
+        type: boolean
+        default: false
+
+permissions:
+  issues: write
+  actions: read
+  contents: read
+
+# Alerts are handled one at a time so two runs cannot both create the issue
+# or interleave a failure comment with a close.
+concurrency:
+  group: sync-alert
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          INPUT_WRITE: ${{ inputs.write }}
+        run: |
+          args=()
+          case "$EVENT_NAME" in
+            workflow_run)
+              args+=(--run-id "$TRIGGER_RUN_ID")
+              ;;
+            schedule)
+              args+=(--staleness)
+              ;;
+            workflow_dispatch)
+              if [ "$INPUT_WRITE" != "true" ]; then
+                args+=(--dry-run)
+              fi
+              if [ -n "$INPUT_RUN_ID" ]; then
+                args+=(--run-id "$INPUT_RUN_ID")
+              else
+                args+=(--staleness)
+              fi
+              ;;
+          esac
+          bash scripts/ci_sync_alert.sh "${args[@]}"
