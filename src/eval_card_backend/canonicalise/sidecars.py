@@ -1,6 +1,6 @@
-"""Stage J — JSON sidecars for the view layer.
+"""Stage J — sidecars for the view layer.
 
-Five small documents the frontend reads alongside the view parquets:
+Documents the frontend reads alongside the view parquets:
 
 - `manifest.json` — corpus-level scalars (model_count, eval_count, …).
 - `headline.json` — corpus signal aggregates with stratified by-tag
@@ -8,9 +8,10 @@ Five small documents the frontend reads alongside the view parquets:
 - `hierarchy.json` — six-level rollout tree (families → composites →
   benchmarks → metrics). Drives the home-page rollout strip + family
   detail page.
-- `comparison-index.json` — per-(eval, metric) leaderboards plus an inverse
+- the comparison index — per-(eval, metric) leaderboards plus an inverse
   model→peer index. Backs the model-detail grid view; without it the grid
-  renders empty regardless of how many cells the model has.
+  renders empty regardless of how many cells the model has. Written as the
+  three `comparison_*.parquet` tables (see `comparison_tables`), not as JSON.
 - `benchmark_index.json` — per-benchmark cross-composite appearance index.
   For each canonical `benchmark_id`, lists every composite reporting it
   with the primary-metric aggregate stats (avg/top score, models_count).
@@ -18,9 +19,9 @@ Five small documents the frontend reads alongside the view parquets:
   Open LLM v2/MMLU avg=Y across M models" without scanning the full
   hierarchy tree.
 
-These are emitted by Python serialisation rather than DuckDB COPY because
-they're scalar/JSON-shaped, not columnar, and the frontend reads them as
-JSON. Stage cache integration deliberately skips them — sidecars are
+The JSON documents are emitted by Python serialisation rather than DuckDB
+COPY because they're scalar/JSON-shaped, not columnar, and the frontend
+reads them as JSON. Stage cache integration deliberately skips them — sidecars are
 cheap to re-derive from the cached canonical + view parquets.
 """
 from __future__ import annotations
@@ -115,7 +116,6 @@ def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
         "summary_artifacts": {
             "corpus_aggregates": "headline.json",
             "eval_hierarchy":    "hierarchy.json",
-            "comparison_index":  "comparison-index.json",
             "benchmark_index":   "benchmark_index.json",
             "organizations":     "organizations.json",
             "collections":       "collections.json",
@@ -2933,7 +2933,7 @@ def _aggregate_comparability(members: list[dict]) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# comparison-index.json
+# comparison index (comparison_*.parquet)
 # ---------------------------------------------------------------------------
 
 
@@ -3018,7 +3018,7 @@ def _classify_metric_group(metric_kind: str | None, metric_name: str | None) -> 
     return "other"
 
 
-def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
+def build_comparison_index(con, snapshot_meta: dict) -> dict:
     """Per-(eval, metric) leaderboards + inverse model→peer index.
 
     Backs the grid view on the model detail page. The frontend's
@@ -3035,6 +3035,9 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
     metric's direction — carrying the collapsed count as
     `submission_count` with `submission_axis="protocol"`. Ordinary rows
     keep `submission_count=1, submission_axis="default"`.
+
+    Returns the index in its JSON form: non-finite floats are already
+    spelled "Infinity" / "-Infinity".
     """
     # `metric_kind` is per-metric within a benchmark; pre-aggregate from
     # fact_results once rather than carry it on every cell row. Mirrors the
@@ -3493,16 +3496,21 @@ def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> Path:
             for route, evs in by_model.items()
         },
     }
-    path = out_dir / "comparison-index.json"
-    finite = _json_finite(payload)
-    # sort_keys: evals/by_model insertion order follows DuckDB scan order,
-    # which is run-to-run unstable — key order is meaningless to JSON
-    # consumers, so sort for byte-deterministic builds.
-    path.write_text(json.dumps(finite, indent=2, sort_keys=True, default=_json_default))
-    # The same content as tables, so a reader can load one eval or one
-    # model's cells without parsing the whole JSON.
-    comparison_tables.write_tables(finite, out_dir, snapshot_meta["snapshot_id"])
-    return path
+    return _json_finite(payload)
+
+
+def write_comparison_index(con, out_dir: Path, snapshot_meta: dict) -> list[Path]:
+    """Write the comparison index as the three `comparison_*.parquet` tables,
+    so a reader can load one eval or one model's cells on their own.
+
+    Returns the table paths (evals, metrics, scores). `flatten` raises on
+    any value the tables cannot reproduce exactly.
+    """
+    index = build_comparison_index(con, snapshot_meta)
+    paths = comparison_tables.write_tables(index, out_dir, snapshot_meta["snapshot_id"])
+    # A re-bake into a directory written before the JSON was dropped.
+    (out_dir / "comparison-index.json").unlink(missing_ok=True)
+    return paths
 
 
 # ---------------------------------------------------------------------------

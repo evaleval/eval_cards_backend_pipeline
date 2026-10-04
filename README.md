@@ -101,13 +101,12 @@ warehouse/<snapshot_id>/
 ├── eval_results_view.parquet      # one row per (model, benchmark, metric) triple
 ├── models_view.parquet            # one row per model, denormalised for the index page
 ├── evals_view.parquet             # one row per benchmark, multi-metric pre-pivoted
-├── comparison_evals.parquet       # comparison-index.json as tables: one row per eval entry
+├── comparison_evals.parquet       # comparison index (per-(eval, metric) leaderboards): one row per eval entry
 ├── comparison_metrics.parquet     #   one row per (eval, metric) leaderboard
 ├── comparison_scores.parquet      #   one row per score cell, in leaderboard order
 ├── manifest.json                  # corpus scalars (model_count, eval_count, …)
 ├── headline.json                  # corpus signal aggregates (overall + by_category)
 ├── hierarchy.json                 # top-level composites[] tree + flat families[] lookup
-├── comparison-index.json          # per-(eval, metric) leaderboards + inverse model→peer index
 ├── benchmark_index.json           # per-benchmark coverage / signal rollups
 ├── peer-ranks.json                # per-model peer rankings
 └── snapshot_meta.json             # pipeline run metadata (tables, sidecars, row counts)
@@ -116,9 +115,11 @@ warehouse/<snapshot_id>/
 The six canonical parquets are the source of truth (audit/debug);
 `*_view.parquet`, `comparison_*.parquet` + the JSON sidecars are pre-baked
 for the frontend to read without GROUP BYs. The `comparison_*` tables hold
-exactly what `comparison-index.json` holds (`by_model` is a re-pivot of
-`comparison_scores`), so one eval or one model can be read without parsing
-the whole file.
+the comparison index: per-(eval, metric) leaderboards, from which the
+inverse model→peer index is a re-pivot of `comparison_scores`. Snapshots
+built before the tables existed carry the same content as
+`comparison-index.json`; `scripts/backfill_comparison_tables.py` converts
+them.
 
 ## Environment variables
 

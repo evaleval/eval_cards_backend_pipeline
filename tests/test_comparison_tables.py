@@ -1,4 +1,4 @@
-"""comparison-index.json as parquet tables: the round trip is exact."""
+"""The comparison index as parquet tables: the round trip is exact."""
 from __future__ import annotations
 
 import importlib.util
@@ -10,10 +10,11 @@ import pyarrow.parquet as pq
 import pytest
 
 from eval_card_backend.canonicalise import comparison_tables as ct
+from eval_card_backend.canonicalise import sidecars
 from eval_card_backend.canonicalise.cache import normalize_snapshot_id
 from eval_card_backend.canonicalise.stages import snapshot_id_to_sql
 from tests.test_stage_j_sidecars import (
-    _comparison_index_with_merged,
+    _connection_with_merged,
     _materialise_views_and_sidecars,
     _run_through_stage_i,
 )
@@ -157,6 +158,16 @@ def _assert_exact(index: dict, tmp_path) -> None:
     assert rows == _counts(index)
 
 
+def _built_index(con, out: Path) -> dict:
+    """The index as the builder returns it, before any table is written.
+    It is already in its JSON form: serialising and parsing it changes
+    nothing."""
+    snap = json.loads((out / "snapshot_meta.json").read_text())
+    index = sidecars.build_comparison_index(con, snap)
+    assert json.loads(json.dumps(index)) == index
+    return index
+
+
 def test_round_trip_purpose_built(tmp_path):
     index = _index()
     _assert_exact(index, tmp_path)
@@ -219,19 +230,22 @@ def test_values_that_would_not_read_back_raise(mutate):
 def test_round_trip_on_sidecar_fixtures(tmp_path, monkeypatch, config):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, config)
-    _materialise_views_and_sidecars(out)
-    index = json.loads((out / "comparison-index.json").read_text())
+    con = _materialise_views_and_sidecars(out)
+    index = _built_index(con, out)
     assert index["evals"]
-    assert ct.unflatten(ct.read_tables(out)) == index
+    assert ct.read_index(out) == index
     _assert_exact(index, tmp_path)
 
 
 def test_round_trip_with_merged_entries(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_splits")
-    index = _comparison_index_with_merged(out)
+    con = _connection_with_merged(out)
+    index = _built_index(con, out)
     assert any(e.get("is_merged") for e in index["evals"].values())
-    assert ct.unflatten(ct.read_tables(out)) == index
+    snap = json.loads((out / "snapshot_meta.json").read_text())
+    sidecars.write_comparison_index(con, out, snap)
+    assert ct.read_index(out) == index
     _assert_exact(index, tmp_path)
 
 

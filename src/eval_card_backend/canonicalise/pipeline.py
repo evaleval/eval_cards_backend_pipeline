@@ -713,7 +713,7 @@ def run(
         context_path = sidecars.write_collection_context(con, out_dir, meta)
         log.info(
             "Stage J: wrote sidecars (manifest, headline, hierarchy, "
-            "comparison-index, benchmark_index, peer-ranks, organizations, "
+            "comparison tables, benchmark_index, peer-ranks, organizations, "
             "collections%s) to %s",
             ", collection_context" if context_path else "",
             out_dir,

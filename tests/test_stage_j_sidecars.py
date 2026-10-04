@@ -7,6 +7,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from eval_card_backend.canonicalise import comparison_tables
+
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -112,7 +114,10 @@ def test_manifest_summary_artifact_pointers(tmp_path, monkeypatch):
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["summary_artifacts"]["corpus_aggregates"] == "headline.json"
     assert manifest["summary_artifacts"]["eval_hierarchy"] == "hierarchy.json"
-    assert manifest["summary_artifacts"]["comparison_index"] == "comparison-index.json"
+    # The comparison index is the comparison_*.parquet tables, not a JSON
+    # sidecar, so the manifest carries no pointer for it.
+    assert "comparison_index" not in manifest["summary_artifacts"]
+    assert "comparison-index.json" not in manifest["summary_artifacts"].values()
     assert manifest["summary_artifacts"]["benchmark_index"] == "benchmark_index.json"
 
 
@@ -574,7 +579,7 @@ def test_comparison_index_evaluation_id_format(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     for eval_id in ci["evals"]:
         # Decoded form contains a `/` separator.
         from urllib.parse import unquote
@@ -583,15 +588,35 @@ def test_comparison_index_evaluation_id_format(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# comparison-index.json
+# comparison index (comparison_*.parquet)
 # ---------------------------------------------------------------------------
+
+
+def test_comparison_index_written_as_tables_only(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    from eval_card_backend.canonicalise import sidecars
+
+    # The pipeline run itself, then a direct call into a cleared directory.
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    assert not (out / "comparison-index.json").exists()
+    assert all((out / name).exists() for name in comparison_tables.TABLE_FILES)
+    for name in comparison_tables.TABLE_FILES:
+        (out / name).unlink()
+    con = _materialise_views_and_sidecars(out)
+    snap = json.loads((out / "snapshot_meta.json").read_text())
+    # Left by a bake from before the JSON was dropped.
+    (out / "comparison-index.json").write_text("{}")
+    paths = sidecars.write_comparison_index(con, out, snap)
+    assert [p.name for p in paths] == list(comparison_tables.TABLE_FILES)
+    assert all(p.exists() for p in paths)
+    assert not (out / "comparison-index.json").exists()
 
 
 def test_comparison_index_top_level_shape(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     assert {
         "generated_at", "config_version", "metric_group_order",
         "evals", "by_model",
@@ -607,7 +632,7 @@ def test_comparison_index_eval_keyset_covers_eval_results_view(tmp_path, monkeyp
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     con = _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     expected = {
         (row[0], row[1])
         for row in con.execute(
@@ -636,7 +661,7 @@ def test_comparison_index_eval_entry_required_fields(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     assert ci["evals"], "comparison-index has no evals; nothing to validate"
     sample = next(iter(ci["evals"].values()))
     assert {
@@ -663,7 +688,7 @@ def test_comparison_index_scores_ranked_best_first(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     for eval_entry in ci["evals"].values():
         for metric in eval_entry["metrics"]:
             scores = metric["scores"]
@@ -689,7 +714,7 @@ def test_comparison_index_metric_group_classified(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     valid = set(ci["metric_group_order"])
     seen_groups = set()
     for eval_entry in ci["evals"].values():
@@ -707,7 +732,7 @@ def test_comparison_index_metrics_ordered_by_group(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     for eval_entry in ci["evals"].values():
         metrics = eval_entry["metrics"]
         keys = [(m["group_order"], m["metric_name"] or "") for m in metrics]
@@ -720,7 +745,7 @@ def test_comparison_index_by_model_inverse_consistent(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     for route, eval_map in ci["by_model"].items():
         for eval_id, metric_map in eval_map.items():
             for metric_summary_id, by_model_entry in metric_map.items():
@@ -746,7 +771,7 @@ def test_comparison_index_score_cells_carry_generation_params(tmp_path, monkeypa
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     assert ci["evals"], "comparison-index has no evals; nothing to validate"
     for eval_entry in ci["evals"].values():
         for metric in eval_entry["metrics"]:
@@ -767,7 +792,7 @@ def test_comparison_index_generation_params_null_when_unreported(tmp_path, monke
     snap = json.loads((out / "snapshot_meta.json").read_text())
     from eval_card_backend.canonicalise import sidecars
     sidecars.write_comparison_index(con, out, snap)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     assert ci["evals"], "comparison-index has no evals; nothing to validate"
     for eval_entry in ci["evals"].values():
         for metric in eval_entry["metrics"]:
@@ -783,10 +808,10 @@ def test_comparison_index_generation_params_null_when_unreported(tmp_path, monke
 _RECOGNISED_SPLITS = {"train", "test", "validation", "val", "dev"}
 
 
-def _comparison_index_with_merged(out_dir: Path) -> dict:
-    """Build `comparison-index.json` on a connection that also carries the
-    registry benchmark dim, so `merged_evals_view` is populated and the
-    artifact holds merged entries beside the per-source ones.
+def _connection_with_merged(out_dir: Path):
+    """A connection that also carries the registry benchmark dim, so
+    `merged_evals_view` is populated and the comparison index holds merged
+    entries beside the per-source ones.
     """
     from eval_card_backend.canonicalise import sidecars, stages
     from eval_card_backend.canonicalise.resolver_setup import register_udfs
@@ -819,9 +844,17 @@ def _comparison_index_with_merged(out_dir: Path) -> dict:
     stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_merged_evals_view(con, "2026-04-30T00:00:00Z")
+    return con
+
+
+def _comparison_index_with_merged(out_dir: Path) -> dict:
+    """Write the comparison index with merged entries and read it back."""
+    from eval_card_backend.canonicalise import sidecars
+
+    con = _connection_with_merged(out_dir)
     snap = json.loads((out_dir / "snapshot_meta.json").read_text())
     sidecars.write_comparison_index(con, out_dir, snap)
-    return json.loads((out_dir / "comparison-index.json").read_text())
+    return comparison_tables.read_index(out_dir)
 
 
 def _per_source_cells(ci: dict) -> list[dict]:
@@ -848,7 +881,7 @@ def test_comparison_index_declares_version_two(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     assert ci["comparison_index_version"] == 2
 
 
@@ -859,7 +892,7 @@ def test_comparison_index_per_source_scores_carry_split(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_splits")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     cells = _per_source_cells(ci)
     assert cells, "comparison-index has no per-source scores; nothing to validate"
     for cell in cells:
@@ -875,7 +908,7 @@ def test_comparison_index_split_null_when_unstated(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     cells = _per_source_cells(ci)
     assert cells, "comparison-index has no per-source scores; nothing to validate"
     for cell in cells:
@@ -901,7 +934,7 @@ def test_comparison_index_by_model_has_no_split(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_splits")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     assert ci["by_model"], "comparison-index has no by_model entries"
     for eval_map in ci["by_model"].values():
         for metric_map in eval_map.values():
@@ -1108,7 +1141,7 @@ def test_peer_ranks_uses_primary_metric(tmp_path, monkeypatch):
 
 
 def _comparison_index_units(out_dir: Path, tmp_path: Path, scan_order: str) -> dict:
-    """Build `comparison-index.json` with one model's `metric_unit` changed
+    """Build the comparison index with one model's `metric_unit` changed
     so a leaderboard bucket holds two different units, and with
     `eval_results_view` pinned to `scan_order`.
 
@@ -1150,7 +1183,7 @@ def _comparison_index_units(out_dir: Path, tmp_path: Path, scan_order: str) -> d
     dest.mkdir(parents=True, exist_ok=True)
     snap = json.loads((out_dir / "snapshot_meta.json").read_text())
     sidecars.write_comparison_index(con, dest, snap)
-    ci = json.loads((dest / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(dest)
     return {
         eval_id: [m["unit"] for m in entry["metrics"]]
         for eval_id, entry in ci["evals"].items()

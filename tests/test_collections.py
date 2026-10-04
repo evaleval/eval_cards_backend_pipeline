@@ -26,6 +26,7 @@ from tests.test_canonicalise_e2e import (
     _write_registry_fixture,
 )
 
+from eval_card_backend.canonicalise import comparison_tables
 from eval_card_backend.sources import collections as collections_src
 
 JUDGE_GPT = "openai/gpt-4o-2024-05-13"
@@ -741,7 +742,7 @@ def test_view_layer_protocol_policy(adapter_out):
 
 
 def test_comparison_index_protocol_collapse(adapter_out):
-    payload = json.loads((adapter_out / "comparison-index.json").read_text())
+    payload = comparison_tables.read_index(adapter_out)
     eval_id = "minibench%2Fminibench"
     entry = payload["evals"][eval_id]
     (metric,) = entry["metrics"]

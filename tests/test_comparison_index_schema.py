@@ -1,4 +1,4 @@
-"""comparison-index.json — schema-only golden test.
+"""Comparison index — schema-only golden test.
 
 Each entry in `evals[]` carries a fixed shape that the frontend's
 `getCompositeKey()` fallback chain reads. This test asserts presence
@@ -16,6 +16,8 @@ from pathlib import Path
 
 import duckdb
 import pytest
+
+from eval_card_backend.canonicalise import comparison_tables
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -111,7 +113,7 @@ def test_comparison_index_schema_clean(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     assert ci["evals"], "comparison-index has no evals; nothing to validate"
     for eval_id, entry in ci["evals"].items():
         _assert_eval_entry_schema(eval_id, entry)
@@ -126,7 +128,7 @@ def test_comparison_index_schema_slices(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_slices")
     _materialise_views_and_sidecars(out)
-    ci = json.loads((out / "comparison-index.json").read_text())
+    ci = comparison_tables.read_index(out)
     assert ci["evals"], "comparison-index has no evals; nothing to validate"
     # Note: this corpus exercises Stage C's metric-level slice_key path
     # (e.g. MMLU subject splits). Benchmark-level slices (is_slice=true

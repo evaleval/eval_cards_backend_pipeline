@@ -662,13 +662,14 @@ def test_slice_only_benchmark_gets_benchmark_grain_row(clean_out_dir):
 
 
 def test_comparison_index_merged_entries(clean_out_dir, tmp_path):
-    from eval_card_backend.canonicalise import sidecars
+    from eval_card_backend.canonicalise import comparison_tables, sidecars
 
     con = _materialise_views(clean_out_dir)
-    path = sidecars.write_comparison_index(
+    paths = sidecars.write_comparison_index(
         con, tmp_path, {"snapshot_id": "2026-04-30T00:00:00Z"}
     )
-    payload = json.loads(path.read_text())
+    assert {p.parent for p in paths} == {tmp_path}
+    payload = comparison_tables.read_index(tmp_path)
     merged = payload["evals"].get("mmlu")
     assert merged is not None
     assert merged["is_merged"] is True

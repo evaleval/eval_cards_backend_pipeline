@@ -284,6 +284,8 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     ):
         assert table in snap["tables"]
     assert all((out_dir / t).exists() for t in snap["tables"])
+    # The comparison index ships as those three tables only.
+    assert not (out_dir / "comparison-index.json").exists()
     assert set(snap["sidecars"]) == {
         "manifest.json", "headline.json", "hierarchy.json",
         "benchmark_index.json", "peer-ranks.json", "collections.json",

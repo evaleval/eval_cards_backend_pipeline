@@ -1,7 +1,10 @@
-"""`comparison-index.json` as three parquet tables, and back.
+"""The comparison index as three parquet tables, and back.
 
-`flatten` takes the index exactly as it is written to JSON (non-finite
-floats already spelled "Infinity" / "-Infinity") and returns one table per
+The pipeline writes the index only as these tables. Snapshots produced
+before that also carry it as `comparison-index.json`, with the same content.
+
+`flatten` takes the index in its JSON form (non-finite floats already
+spelled "Infinity" / "-Infinity") and returns one table per
 level: evals, metrics (one row per (evaluation_id, metric_summary_id)) and
 score cells. `unflatten` rebuilds the identical dict, `by_model` included,
 which is not stored: it is a re-pivot of the score rows.
@@ -321,3 +324,8 @@ def read_tables(snapshot_dir: Path) -> dict[str, pa.Table]:
         name: pq.read_table(Path(snapshot_dir) / f"{name}.parquet")
         for name in (EVALS_TABLE, METRICS_TABLE, SCORES_TABLE)
     }
+
+
+def read_index(snapshot_dir: Path) -> dict:
+    """The comparison index of a snapshot, rebuilt from its three tables."""
+    return unflatten(read_tables(snapshot_dir))

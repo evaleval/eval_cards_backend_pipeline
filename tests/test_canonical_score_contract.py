@@ -105,7 +105,7 @@ def artifacts(tmp_path_factory):
     pytest.importorskip("duckdb")
     from _pytest.monkeypatch import MonkeyPatch
 
-    from eval_card_backend.canonicalise import sidecars, stages
+    from eval_card_backend.canonicalise import comparison_tables, sidecars, stages
     from eval_card_backend.canonicalise.resolver_setup import register_udfs
     from eval_card_backend.sources import registry as registry_src
     from eval_entity_resolver import Resolver
@@ -133,8 +133,9 @@ def artifacts(tmp_path_factory):
     stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
     snap = json.loads((out_dir / "snapshot_meta.json").read_text())
-    index_path = sidecars.write_comparison_index(con, out_dir, snap)
-    return con, json.loads(index_path.read_text()), pct_model, frac_model
+    table_paths = sidecars.write_comparison_index(con, out_dir, snap)
+    assert [p.name for p in table_paths] == list(comparison_tables.TABLE_FILES)
+    return con, comparison_tables.read_index(out_dir), pct_model, frac_model
 
 
 def _model_row(con, model):
