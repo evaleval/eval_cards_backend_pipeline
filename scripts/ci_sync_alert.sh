@@ -34,7 +34,8 @@
 # --dry-run makes the same read calls, prints the action and the comment
 # body, and writes nothing.
 #
-# Needs gh (GH_TOKEN with issues: write, actions: read), curl and jq.
+# Needs gh (GH_TOKEN with issues: write, actions: read; without GH_TOKEN the
+# job log is fetched with `gh auth token`), curl and jq.
 set -euo pipefail
 
 REPO="${GITHUB_REPOSITORY:-evaleval/eval_cards_backend_pipeline}"
@@ -111,6 +112,11 @@ post() {
   issue="$open_issue"
   if has_marker "$marker"; then
     echo "ACTION: none (a ${LABEL} issue already has ${marker})"
+    if [ "$dry_run" = 1 ]; then
+      echo "----- body (already posted, shown for the dry run) -----"
+      cat "$body_file"
+      echo "----- end body -----"
+    fi
     return 0
   fi
   if [ "$dry_run" = 1 ]; then
@@ -155,6 +161,23 @@ revisions_line() {
   fi
 }
 
+# Download one job's log to a file. Goes through curl, not `gh api`: newer
+# gh versions refuse to print a response containing terminal escape
+# sequences, and older ones do not know the flag that allows it.
+fetch_job_log() {
+  local job_id="$1" out="$2" token="${GH_TOKEN:-}"
+  if [ -z "$token" ]; then
+    token="$(gh auth token 2>/dev/null || true)"
+  fi
+  if [ -z "$token" ]; then
+    echo "no GH_TOKEN and no gh auth token" >&2
+    return 1
+  fi
+  curl --fail --silent --show-error --location --retry 2 --retry-delay 2 --max-time 120 \
+    -H "Authorization: Bearer ${token}" \
+    "https://api.github.com/repos/${REPO}/actions/jobs/${job_id}/logs" > "$out"
+}
+
 handle_failure() {
   local conclusion="$1" event="$2" url="$3"
   local marker="<!-- sync-alert:failure:${run_id} -->"
@@ -173,7 +196,11 @@ handle_failure() {
   local job_id log="$tmp/job.log" tail_file="$tmp/tail.log"
   job_id="$(jq -r '[.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .id][0] // empty' "$jobs")"
   : > "$tail_file"
-  if [ -n "$job_id" ] && gh api "repos/${REPO}/actions/jobs/${job_id}/logs" > "$log" 2>/dev/null; then
+  if [ -z "$job_id" ]; then
+    echo "failed job log not fetched: the run lists no failed job" >&2
+  elif ! fetch_job_log "$job_id" "$log"; then
+    echo "failed job log not fetched: request for job ${job_id} failed" >&2
+  else
     local last
     last="$(grep -n '##\[error\]' "$log" | tail -n 1 | cut -d: -f1 || true)"
     if [ -n "$last" ]; then
@@ -181,8 +208,12 @@ handle_failure() {
     else
       cp "$log" "$tmp/upto.log"
     fi
-    tail -n "$LOG_TAIL_LINES" "$tmp/upto.log" \
-      | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' | cut -c1-400 > "$tail_file"
+    local esc
+    esc="$(printf '\033')"
+    tail -n "$LOG_TAIL_LINES" "$tmp/upto.log" | tr -d '\r' \
+      | sed -E -e "s/${esc}\\[[0-9;?]*[A-Za-z]//g" \
+        -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' \
+      | cut -c1-400 > "$tail_file"
   fi
   [ -s "$tail_file" ] || echo "(log not available)" > "$tail_file"
 

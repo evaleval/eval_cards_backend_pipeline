@@ -86,8 +86,6 @@ if argv[:1] == ["api"]:
         emit("run.json")
     elif path == f"{base}/actions/runs/{run_id}/jobs?per_page=100":
         emit("jobs.json")
-    elif path == f"{base}/actions/jobs/55/logs":
-        emit("job.log")
     elif path == f"{base}/actions/workflows/sync.yml/runs?branch=main&status=completed&per_page=1":
         emit("newest_runs.json")
     else:
@@ -101,6 +99,8 @@ elif argv[:2] == ["run", "download"]:
     dest = Path(argv[8]) / "2026-10-04T00:00:00Z"
     dest.mkdir(parents=True)
     shutil.copy(src, dest / "snapshot_meta.json")
+elif argv == ["auth", "token"]:
+    print("gh-auth-token")
 elif argv[:2] == ["label", "create"]:
     if argv[2:5] != ["sync-alert", "-R", repo]:
         die("unexpected label create arguments")
@@ -140,16 +140,22 @@ def die(msg, code=1):
 for flag in ("--fail", "--silent", "--show-error", "--location", "--retry", "--max-time"):
     if flag not in flags:
         die(f"missing {flag}")
-if "Authorization" in " ".join(flags):
-    die("unexpected Authorization header (no token in the test env)")
-
 hf = "https://huggingface.co"
+job_log_url = f"https://api.github.com/repos/{os.environ['FAKE_REPO']}/actions/jobs/55/logs"
+headers = [flags[i + 1] for i, flag in enumerate(flags[:-1]) if flag == "-H"]
+if url == job_log_url:
+    if headers != [f"Authorization: Bearer {os.environ['FAKE_EXPECTED_TOKEN']}"]:
+        die("job log request without the expected Authorization header")
+elif headers:
+    die("unexpected header on a Hugging Face request (no HF token in the test env)")
+
 registry_sha = os.environ.get("FAKE_REGISTRY_SHA", "")
 routes = {
     f"{hf}/api/datasets/evaleval/EEE_datastore?expand[]=sha": "eee_head.json",
     f"{hf}/api/datasets/evaleval/entity-registry-data?expand[]=sha": "registry_head.json",
     f"{hf}/datasets/evaleval/entity-registry-data/resolve/{registry_sha}/manifest.json": "manifest.json",
     f"{hf}/datasets/evaleval/card_backend/resolve/main/warehouse/latest/snapshot_meta.json": "published_meta.json",
+    job_log_url: "job.log",
 }
 if url not in routes:
     die("unexpected url")
@@ -157,7 +163,8 @@ if "[" in url and "--globoff" not in flags:
     die("bracketed url without --globoff")
 path = fix / routes[url]
 if not path.exists():
-    die("404", code=22)
+    sys.stderr.write(f"curl: (22) The requested URL returned error: 404 {url}\n")
+    sys.exit(22)
 sys.stdout.write(path.read_text())
 """
 
@@ -193,6 +200,8 @@ class Harness:
             "FAKE_REPO": REPO,
             "FAKE_RUN_ID": RUN_ID,
             "FAKE_REGISTRY_SHA": SHA_REGISTRY,
+            "FAKE_EXPECTED_TOKEN": "env-token",
+            "GH_TOKEN": "env-token",
             "GITHUB_REPOSITORY": REPO,
             "GITHUB_ENV": str(self.github_env),
             "GITHUB_OUTPUT": str(self.github_output),
@@ -446,6 +455,58 @@ def test_alert_failure_creates_issue_and_comments(h, conclusion):
     assert log_tail[-1] == "##[error]Process completed with exit code 1."
 
 
+JOB_LOG_URL = f"https://api.github.com/repos/{REPO}/actions/jobs/55/logs"
+
+
+def test_alert_failure_log_tail_has_no_ansi_escapes_or_carriage_returns(h):
+    _alert_fixtures(h, conclusion="failure", open_issue=3)
+    h.put(
+        "job.log",
+        "2026-10-04T11:30:00.0000000Z \x1b[36;1mcollecting\x1b[0m tests\r\n"
+        "2026-10-04T11:30:01.0000000Z \x1b[31mFAILED\x1b[0m tests/test_x.py \x1b[2K\x1b[?25h\r\n"
+        "2026-10-04T11:30:02.0000000Z ##[error]Process completed with exit code 1.\r\n"
+        "2026-10-04T11:30:03.0000000Z cleanup\r\n",
+    )
+    proc = h.run("ci_sync_alert.sh", "--run-id", RUN_ID)
+    assert proc.returncode == 0, proc.stderr
+    assert JOB_LOG_URL in h.calls()
+    body = h.posted_body()
+    assert "\x1b" not in body
+    assert "\r" not in body
+    lines = body.splitlines()
+    start = lines.index("````") + 1
+    assert lines[start : lines.index("````", start)] == [
+        "collecting tests",
+        "FAILED tests/test_x.py ",
+        "##[error]Process completed with exit code 1.",
+    ]
+
+
+def test_alert_failure_still_comments_when_the_log_fetch_fails(h):
+    _alert_fixtures(h, conclusion="failure", open_issue=3)
+    (h.fixtures / "job.log").unlink()
+    proc = h.run("ci_sync_alert.sh", "--run-id", RUN_ID)
+    assert proc.returncode == 0, proc.stderr
+    _assert_only_comment(h, 3)
+    lines = h.posted_body().splitlines()
+    start = lines.index("````") + 1
+    assert lines[start : lines.index("````", start)] == ["(log not available)"]
+    assert "failed job log not fetched: request for job 55 failed" in proc.stderr
+    assert "env-token" not in proc.stdout + proc.stderr
+
+
+def test_alert_failure_log_fetch_falls_back_to_gh_auth_token(h):
+    _alert_fixtures(h, conclusion="failure", open_issue=3)
+    proc = h.run(
+        "ci_sync_alert.sh", "--run-id", RUN_ID,
+        env={"GH_TOKEN": "", "FAKE_EXPECTED_TOKEN": "gh-auth-token"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "auth token" in h.calls()
+    assert "line 60" in h.posted_body()
+    assert "gh-auth-token" not in proc.stdout + proc.stderr
+
+
 def test_alert_failure_comments_on_the_open_issue_with_revisions(h):
     _alert_fixtures(h, conclusion="failure", open_issue=3)
     proc = h.run("ci_sync_alert.sh", "--run-id", RUN_ID)
@@ -695,6 +756,20 @@ def test_alert_dry_run_prints_action_and_body_and_writes_nothing(h):
     assert proc.returncode == 0, proc.stderr
     assert h.writes() == []
     assert "ACTION (dry run): comment 'recovered' on issue #3 and close it" in proc.stdout
+
+
+def test_alert_dry_run_shows_the_body_of_an_already_posted_alert(h):
+    _alert_fixtures(
+        h,
+        conclusion="failure",
+        open_issue=3,
+        comments=[f"<!-- sync-alert:failure:{RUN_ID} -->"],
+    )
+    proc = h.run("ci_sync_alert.sh", "--dry-run", "--run-id", RUN_ID)
+    assert proc.returncode == 0, proc.stderr
+    assert h.writes() == []
+    assert "ACTION: none" in proc.stdout
+    assert "##[error]Process completed with exit code 1." in proc.stdout
 
 
 # 2026-10-06T12:00:00Z
