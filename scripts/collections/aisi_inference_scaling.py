@@ -108,6 +108,17 @@ DEFAULT_EEE_CACHE = REPO_ROOT / ".cache" / "eee_datastore"
 # it was not run under.
 _AGG_ONLY_SCAFFOLD = "ReAct"
 
+# The SWE-Bench Pro records and samples carry a secret-scanner placeholder
+# where each instance id's 40-hex base commit should be, which merges
+# distinct tasks under one id. The restore file puts the original values
+# back: per sample, the commit of the public SWE-Bench Pro task whose
+# problem statement the sample's prompt contains (keyed by `sample_hash`);
+# per record, the `sample_ids` list as first submitted.
+REDACTED_COMMIT = "<AWS-SECRET-KEY>"
+_SWEBENCHPRO_IDS = json.loads(
+    Path(__file__).with_name("aisi_swebenchpro_ids.json").read_text()
+)
+
 PAPER_TERMINALBENCH_TASK_COUNT = 86
 PAPER_TERMINALBENCH_EXCLUDED_TASKS = frozenset({
     "filter-js-from-html",
@@ -271,6 +282,9 @@ def parse_member(path: str, record: dict) -> Member:
         first = results[0]
         generation_config = first.get("generation_config")
         source_data = first.get("source_data")
+        restored_ids = _SWEBENCHPRO_IDS["sample_ids_by_record"].get(Path(path).stem)
+        if source_data is not None and restored_ids is not None:
+            source_data = {**source_data, "sample_ids": restored_ids}
         args = (generation_config or {}).get("generation_args") or {}
         plan = args.get("eval_plan") or {}
         cfg = plan.get("config") or {}
@@ -585,11 +599,18 @@ def parse_sample_row(member: Member, row: dict, stats: Counter) -> Trajectory | 
 
     score = _to_float(ev.get("score"))
     submit_count = _to_int(meta.get("traj_submit_count"))
+    sample_id = str(row.get("sample_id"))
+    if REDACTED_COMMIT in sample_id:
+        # Unknown hash raises: an unrestorable id must not be emitted.
+        sample_id = sample_id.replace(
+            REDACTED_COMMIT,
+            _SWEBENCHPRO_IDS["commit_by_sample_hash"][row["sample_hash"]],
+        )
     return Trajectory(
         member=member,
         config=member.config,
         model_id=member.record["model_info"]["id"],
-        sample_id=str(row.get("sample_id")),
+        sample_id=sample_id,
         has_turns=has_turns,
         condition=condition,
         epoch=epoch,
@@ -1765,6 +1786,14 @@ def main() -> None:
             f"turn histories — installment pieces exist after all; the "
             f"one-row-one-trajectory model undercounts. Re-diagnose before "
             f"shipping."
+        )
+
+    if any(REDACTED_COMMIT in t.sample_id for t in trajs) or (
+        REDACTED_COMMIT in json.dumps(synthetic)
+    ):
+        raise SystemExit(
+            f"{REDACTED_COMMIT} placeholder survives in the extract — a "
+            f"scrubbed id is missing from aisi_swebenchpro_ids.json."
         )
 
     if (
