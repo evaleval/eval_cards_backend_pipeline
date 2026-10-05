@@ -1035,6 +1035,35 @@ def test_aggregate_only_flag_tracks_declaration():
     assert not extractor.aggregate_only("hle")
 
 
+def test_swebenchpro_scrubbed_ids_are_restored():
+    """The base commit scrubbed out of a SWE-Bench Pro id comes back from the
+    restore file; a scrubbed id the file does not cover is never emitted."""
+    extractor = _load_extractor_module()
+    restore = extractor._SWEBENCHPRO_IDS
+    sample_hash, commit = next(iter(restore["commit_by_sample_hash"].items()))
+    record_uuid, sample_ids = next(iter(restore["sample_ids_by_record"].items()))
+    path = f"data/swebenchpro/openai/model/{record_uuid}.json"
+    member = extractor.parse_member(path, {
+        "evaluation_id": "swebenchpro/openai_model/1",
+        "model_info": {"id": "openai/model"},
+        "evaluation_results": [{"source_data": {
+            "dataset_name": "swebenchpro",
+            "sample_ids": [f"instance_a__b-{extractor.REDACTED_COMMIT}"],
+        }}],
+    })
+    assert member.source_data["sample_ids"] == sample_ids
+    assert member.source_data["dataset_name"] == "swebenchpro"
+
+    scrubbed = f"instance_a__b-{extractor.REDACTED_COMMIT}-v1"
+    row = {"sample_id": scrubbed, "sample_hash": sample_hash, "messages": [{}]}
+    trajectory = extractor.parse_sample_row(member, row, Counter())
+    assert trajectory.sample_id == f"instance_a__b-{commit}-v1"
+    with pytest.raises(KeyError):
+        extractor.parse_sample_row(
+            member, {**row, "sample_hash": "not-in-the-file"}, Counter()
+        )
+
+
 def test_token_threshold_read_from_each_carrier():
     extractor = _load_extractor_module()
     typed = {"metric_config": {"metric_parameters": {"token_threshold": 5_000_000}}}

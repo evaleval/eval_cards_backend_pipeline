@@ -60,7 +60,7 @@ env:
   # upload its three files to that folder, then set EEE_PRIVATE_REVISION
   # (a commit sha) to the upload's commit.
   EEE_INCLUDE_PRIVATE: "1"
-  EEE_PRIVATE_REVISION: d87044e949afdbe356287ffa8e1b219ed1b7a48e
+  EEE_PRIVATE_REVISION: d655e56ca6b90ef85c99777debfcf0119c452788
   # Benchmark cards stay pinned here; bump the sha to accept new cards.
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
 
