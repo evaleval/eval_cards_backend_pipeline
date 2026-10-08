@@ -882,7 +882,7 @@ def test_workflow_resolves_revisions_before_checkout_and_caches(sync_workflow):
 
     registry_checkout = [
         i for i, step in enumerate(steps)
-        if step.get("with", {}).get("repository") == "evaleval/evalcard-registry"
+        if step.get("with", {}).get("repository") == "evaleval/eval-entity-registry"
     ]
     assert len(registry_checkout) == 1
     caches = [
@@ -904,10 +904,10 @@ def test_workflow_checks_out_the_registry_at_the_derived_resolver_ref(sync_workf
     steps = _steps(sync_workflow)
     checkout = next(
         step for step in steps
-        if step.get("with", {}).get("repository") == "evaleval/evalcard-registry"
+        if step.get("with", {}).get("repository") == "evaleval/eval-entity-registry"
     )
     assert checkout["with"]["ref"] == "${{ env.RESOLVER_REF }}"
-    assert checkout["with"]["path"] == "evalcard-registry"
+    assert checkout["with"]["path"] == "eval-entity-registry"
 
 
 def test_workflow_env_carries_no_hardcoded_followed_revisions(sync_workflow):

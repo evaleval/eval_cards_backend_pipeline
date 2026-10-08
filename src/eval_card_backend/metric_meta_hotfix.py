@@ -23,7 +23,7 @@ WHY HOTFIX
     (always-false silently).
 
 RETIREMENT
-    When evalcard-registry's `canonical_metrics` gains real `metric_kind`
+    When eval-entity-registry's `canonical_metrics` gains real `metric_kind`
     / `metric_unit` columns AND coverage is verified against EEE's actual
     vocabulary, retire by:
       1. Stage A loads the new columns directly from canonical_metrics.

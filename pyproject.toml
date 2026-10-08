@@ -12,7 +12,7 @@ dependencies = [
     # (validates EEE records at the Stage A boundary).
     "pydantic>=2.5",
     # PyYAML for the composite/family/slice taxonomy seed (composites.yaml,
-    # families.yaml, slice_overrides.yaml in evalcard-registry/seed/).
+    # families.yaml, slice_overrides.yaml in eval-entity-registry/seed/).
     "pyyaml>=6",
     # numpy backs the collection_context Jeffreys band simulation. Runtime,
     # not dev: a --no-dev production bake would ImportError without it
@@ -31,7 +31,7 @@ build-backend = "hatchling.build"
 packages = ["src/eval_card_backend"]
 
 [tool.uv.sources]
-eval-entity-resolver = { path = "../eval-card-registry/packages/eval-entity-resolver", editable = true }
+eval-entity-resolver = { path = "../eval-entity-registry/packages/eval-entity-resolver", editable = true }
 
 [dependency-groups]
 dev = [

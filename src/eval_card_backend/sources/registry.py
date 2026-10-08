@@ -62,7 +62,7 @@ __all__ = [
 # Registry schema major. Bumped when the registry removes/renames a
 # column the producer reads. Minor bumps (additive columns) don't
 # require a producer change. Coordinated with
-# `eval-card-registry/scripts/publish_registry_data.py:SCHEMA_VERSION`.
+# `eval-entity-registry/scripts/publish_registry_data.py:SCHEMA_VERSION`.
 EXPECTED_REGISTRY_SCHEMA_MAJOR = 3
 
 
@@ -114,7 +114,7 @@ def _has_registry_data(target: Path) -> bool:
     # `<table>.parquet`). Recognizing only the former made ensure_snapshot
     # treat freshly seeded fixtures as an empty cache and clobber them with
     # the published snapshot — breaking the documented local validation loop
-    # (ENTITY_REGISTRY_LOCAL_DIR=../eval-card-registry/fixtures).
+    # (ENTITY_REGISTRY_LOCAL_DIR=../eval-entity-registry/fixtures).
     return any(
         (target / table).exists() or (target / f"{table}.parquet").exists()
         for table in ALL_TABLES

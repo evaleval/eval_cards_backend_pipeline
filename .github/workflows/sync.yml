@@ -90,23 +90,23 @@ jobs:
       # at taxonomy.py. Checked out at the same RESOLVER_REF the resolver
       # package is installed from, so the seed YAMLs travel together with
       # the resolver code that consumes them.
-      - name: Check out evalcard-registry (for taxonomy seed YAMLs)
+      - name: Check out eval-entity-registry (for taxonomy seed YAMLs)
         uses: actions/checkout@v6
         with:
-          repository: evaleval/evalcard-registry
+          repository: evaleval/eval-entity-registry
           ref: ${{ env.RESOLVER_REF }}
           # Path matches one of the names taxonomy.resolve_seed_dir()
-          # walks parents looking for ("evalcard-registry/seed"), so the
+          # walks parents looking for ("eval-entity-registry/seed"), so the
           # producer can find it via parent walk even if the env var
           # below goes missing. Both paths point to the same directory —
           # belt and braces.
-          path: evalcard-registry
+          path: eval-entity-registry
 
       - name: Check the registry checkout has the seed and the resolver
         run: |
           for dir in seed packages/eval-entity-resolver; do
-            if [ ! -d "evalcard-registry/$dir" ]; then
-              echo "::error::evalcard-registry@${RESOLVER_REF} has no $dir directory"
+            if [ ! -d "eval-entity-registry/$dir" ]; then
+              echo "::error::eval-entity-registry@${RESOLVER_REF} has no $dir directory"
               exit 1
             fi
           done
@@ -177,10 +177,10 @@ jobs:
           # Point the producer's taxonomy loader at the registry checkout
           # done above. resolve_seed_dir() prefers this env var over its
           # parent-walk fallback. The parent-walk would also find the
-          # checkout (path: evalcard-registry matches one of the names it
+          # checkout (path: eval-entity-registry matches one of the names it
           # searches for), but the explicit env var avoids dependence on
           # cwd and makes the wiring obvious.
-          EVALCARD_REGISTRY_SEED_DIR: ${{ github.workspace }}/evalcard-registry/seed
+          EVALCARD_REGISTRY_SEED_DIR: ${{ github.workspace }}/eval-entity-registry/seed
         run: uv run eval-card-backend canonicalise --warehouse warehouse
 
       # Schedule and push runs carry no inputs, so they always publish and

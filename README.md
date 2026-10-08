@@ -18,7 +18,7 @@ uv sync
 ```
 
 `eval-entity-resolver` is wired as a uv workspace path dep against a
-sibling clone at `../eval-card-registry/`. CI overrides this with a git
+sibling clone at `../eval-entity-registry/`. CI overrides this with a git
 URL — see `scripts/ci_install_resolver.py`.
 
 ## Run
