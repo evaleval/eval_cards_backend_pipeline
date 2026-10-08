@@ -4260,7 +4260,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
     # Surface registry-staleness signals on the models dim. A model_key
     # that didn't match `canonical_models.id` indicates either (a) the
     # registry hasn't synced this model yet — operator must run
-    # `eval-card-registry sync` and push to entity-registry-data — or
+    # `eval-entity-registry sync` and push to entity-registry-data — or
     # (b) the producer's join key (model_aggregation_key) carries the
     # raw HF id rather than the registry slug. Either way the row
     # surfaces with NULL metadata in the warehouse, so consumers

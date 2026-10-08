@@ -1,7 +1,7 @@
 """CI helper: swap the workspace path resolver dep for a pinned git URL.
 
 Local dev installs `eval-entity-resolver` from a sibling repo via
-`[tool.uv.sources]`'s `path = "../eval-card-registry/..."`. CI runners
+`[tool.uv.sources]`'s `path = "../eval-entity-registry/..."`. CI runners
 don't have that sibling, so this script rewrites the source to a git URL
 in-place before `uv sync` runs. `RESOLVER_REF` env var pins the commit;
 defaults to `main`.
@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-REGISTRY_REPO = "https://github.com/evaleval/evalcard-registry.git"
+REGISTRY_REPO = "https://github.com/evaleval/eval-entity-registry.git"
 REGISTRY_SUBDIR = "packages/eval-entity-resolver"
 PYPROJECT = Path("pyproject.toml")
 

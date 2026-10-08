@@ -21,9 +21,10 @@ half of the raw collection key.
   1. Parquet from `<registry_local_dir>/canonical_composites.parquet`
      and `canonical_families.parquet`. Single source of truth. Shipped
      alongside the rest of the registry data via
-     `eval-card-registry/scripts/publish_registry_data.py`.
-  2. YAML fallback at `<registry_local_dir>/../{eval-card-registry,
-     evalcard-registry}/seed/`. Used when the registry's published
+     `eval-entity-registry/scripts/publish_registry_data.py`.
+  2. YAML fallback at `<registry_local_dir>/../{eval-entity-registry,
+     eval-card-registry, evalcard-registry}/seed/` (the latter two are
+     older checkout names). Used when the registry's published
      dataset predates the canonical_families / canonical_composites
      tables (back-compat) or when running against a sibling registry
      checkout in development.
@@ -155,7 +156,7 @@ def resolve_seed_dir(registry_root: Path | None, override: Path | None = None) -
       1. `override` if supplied (test injection / explicit path).
       2. `EVALCARD_REGISTRY_SEED_DIR` env var if set.
       3. Sibling of `registry_root`: `<registry_root>/../seed/` —
-         correct when eval-card-backend and eval-card-registry are
+         correct when eval-card-backend and eval-entity-registry are
          checked out side-by-side via the uv workspace dep.
 
     Returns None when no candidate exists.
@@ -172,14 +173,13 @@ def resolve_seed_dir(registry_root: Path | None, override: Path | None = None) -
     if registry_root is not None:
         # registry_root is typically `<repo>/.cache/registry/` — the seed
         # YAMLs live next to the registry source repo, not in the data
-        # cache. Walk up to find a sibling `eval-card-registry/seed/`.
+        # cache. Walk up to find a sibling `eval-entity-registry/seed/`
+        # (older checkout names kept as fallbacks).
         for ancestor in [registry_root, *registry_root.parents]:
-            candidate = ancestor / "eval-card-registry" / "seed"
-            if candidate.exists():
-                return candidate
-            candidate = ancestor / "evalcard-registry" / "seed"
-            if candidate.exists():
-                return candidate
+            for name in ("eval-entity-registry", "eval-card-registry", "evalcard-registry"):
+                candidate = ancestor / name / "seed"
+                if candidate.exists():
+                    return candidate
     return None
 
 
@@ -537,7 +537,7 @@ def load_and_materialise(
                 f"YAMLs (override={seed_dir_override!r}). The producer needs at "
                 f"least one of: a registry data snapshot with the new "
                 f"canonical_families/canonical_composites tables, OR a sibling "
-                f"eval-card-registry checkout with seed/, OR an explicit "
+                f"eval-entity-registry checkout with seed/, OR an explicit "
                 f"--taxonomy-seed-dir / EVALCARD_REGISTRY_SEED_DIR override. "
                 f"Without curated taxonomy, composite_slug falls back to "
                 f"kebab-case(source_config) and silently splits multi-config "

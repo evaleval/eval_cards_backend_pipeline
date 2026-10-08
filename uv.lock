@@ -475,7 +475,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "duckdb", specifier = ">=1.0" },
-    { name = "eval-entity-resolver", editable = "../eval-card-registry/packages/eval-entity-resolver" },
+    { name = "eval-entity-resolver", editable = "../eval-entity-registry/packages/eval-entity-resolver" },
     { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyarrow", specifier = ">=16" },
@@ -495,7 +495,7 @@ dev = [
 [[package]]
 name = "eval-entity-resolver"
 version = "0.1.0"
-source = { editable = "../eval-card-registry/packages/eval-entity-resolver" }
+source = { editable = "../eval-entity-registry/packages/eval-entity-resolver" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "pandas" },
