@@ -51,6 +51,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -604,32 +605,8 @@ def iter_records(
 # ---------------------------------------------------------------------------
 
 
-def load_arrow_table(
-    eee_root: Path | None,
-    configs: Iterable[str],
-    hf_token: str | None,
-) -> pa.Table:
-    """Read EEE records, validate via Pydantic, cast to a typed Arrow table.
-
-    The schema is derived from the vendored JSON Schema; see
-    `schemas/eee_arrow.py` for the translation rules. Two extra columns are
-    appended for downstream stages: `source_config` (config name) and
-    `_record_path` (relative path of the source JSON).
-
-    Records that fail (read error, non-dict, pydantic validation, pa cast)
-    are dropped; the per-(config, reason) counter is updated and the first
-    occurrence per key is logged. Caller should `reset_drop_counter()`
-    before invocation and `log_drop_summary()` after.
-    """
-    # Local imports keep `sources.eee` module-import cheap when callers don't
-    # need the typed path (e.g. discover_configs only).
-    from pydantic import ValidationError
-
-    from eval_card_backend.schemas.eee_arrow import (
-        derive_pyarrow_schema,
-        pad_record_for_cast,
-    )
-    from eval_card_backend.schemas.eee_types import EvaluationLog
+def _arrow_table_schema() -> tuple[pa.Schema, pa.Schema]:
+    from eval_card_backend.schemas.eee_arrow import derive_pyarrow_schema
 
     base_schema = derive_pyarrow_schema()
     # Schema for what the table actually holds = upstream contract +
@@ -641,13 +618,83 @@ def load_arrow_table(
             pa.field("_record_path", pa.string(), nullable=False),
         ]
     )
+    return base_schema, table_schema
 
-    rows: list[dict[str, Any]] = []
+
+def load_arrow_table(
+    eee_root: Path | None,
+    configs: Iterable[str],
+    hf_token: str | None,
+) -> pa.Table:
+    """Read EEE records, validate via Pydantic, cast to a typed Arrow table.
+
+    Convenience wrapper over `iter_arrow_tables` that concatenates every
+    config into one table. `pipeline.run` uses the iterator directly so only
+    one config's rows are in Python memory at a time.
+    """
+    _, table_schema = _arrow_table_schema()
+    tables = [t for _, t in iter_arrow_tables(eee_root, configs, hf_token)]
+    if not tables:
+        return pa.Table.from_pylist([], schema=table_schema)
+    return pa.concat_tables(tables)
+
+
+def iter_arrow_tables(
+    eee_root: Path | None,
+    configs: Iterable[str],
+    hf_token: str | None,
+) -> Iterator[tuple[str, pa.Table]]:
+    """Yield (config, typed Arrow table) per config, validating via Pydantic.
+
+    The schema is derived from the vendored JSON Schema; see
+    `schemas/eee_arrow.py` for the translation rules. Two extra columns are
+    appended for downstream stages: `source_config` (config name) and
+    `_record_path` (relative path of the source JSON).
+
+    Records that fail (read error, non-dict, pydantic validation, pa cast)
+    are dropped; the per-(config, reason) counter is updated and the first
+    occurrence per key is logged. Caller should `reset_drop_counter()`
+    before invocation and `log_drop_summary()` after.
+
+    Configs with zero kept records yield nothing.
+    """
+    # Local imports keep `sources.eee` module-import cheap when callers don't
+    # need the typed path (e.g. discover_configs only).
+    from pydantic import ValidationError
+
+    from eval_card_backend.schemas.eee_arrow import pad_record_for_cast
+    from eval_card_backend.schemas.eee_types import EvaluationLog
+
+    base_schema, table_schema = _arrow_table_schema()
+
+    # Records per yielded batch: bounds the Python-side working set (parsed
+    # dicts + the Arrow batch) for a large config, same knob as the stage
+    # batches downstream.
+    chunk = int(os.environ.get("CANONICALISE_BATCH_ROWS", "50000"))
+
+    def _flush(cfg: str, rows: list[dict[str, Any]]) -> pa.Table:
+        try:
+            return pa.Table.from_pylist(rows, schema=table_schema)
+        except Exception as exc:
+            # Should not happen — pad_record_for_cast already handled missing
+            # keys, and pydantic already accepted the record. If it does,
+            # surface a clear error rather than raising the cryptic Arrow
+            # message.
+            raise RuntimeError(
+                f"pyarrow cast failed on {len(rows)} validated records "
+                f"of config {cfg}: {type(exc).__name__}: {exc}"
+            ) from exc
+
     for cfg in configs:
         cfg_paths = list_json_files(cfg, eee_root, hf_token)
         log.info("Stage A: loading config %s (%d records) …", cfg, len(cfg_paths))
-        cfg_kept_before = len(rows)
+        rows: list[dict[str, Any]] = []
+        kept = 0
         for path in cfg_paths:
+            if len(rows) >= chunk:
+                kept += len(rows)
+                yield cfg, _flush(cfg, rows)
+                rows = []
             try:
                 rec = read_record(path, eee_root, hf_token)
             except Exception as exc:
@@ -676,23 +723,8 @@ def load_arrow_table(
             padded["source_config"] = cfg
             padded["_record_path"] = path
             rows.append(padded)
-        log.info(
-            "Stage A: %s done — kept %d / %d",
-            cfg, len(rows) - cfg_kept_before, len(cfg_paths),
-        )
-
-    if not rows:
-        # Empty table with the right schema so downstream con.register +
-        # SELECT works without special-casing the zero-row case.
-        return pa.Table.from_pylist([], schema=table_schema)
-
-    try:
-        return pa.Table.from_pylist(rows, schema=table_schema)
-    except Exception as exc:
-        # Should not happen — pad_record_for_cast already handled missing
-        # keys, and pydantic already accepted the record. If it does, surface
-        # a clear error rather than raising the cryptic Arrow message.
-        raise RuntimeError(
-            f"pyarrow cast failed on {len(rows)} validated records: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
+        kept += len(rows)
+        log.info("Stage A: %s done — kept %d / %d", cfg, kept, len(cfg_paths))
+        if rows:
+            yield cfg, _flush(cfg, rows)
+        del rows

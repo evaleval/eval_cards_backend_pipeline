@@ -9,6 +9,7 @@ All UDFs live here so `resolver_setup.py` can import-and-register cleanly.
 from __future__ import annotations
 
 import functools
+import json
 import re
 import logging
 from collections import Counter, defaultdict
@@ -39,7 +40,10 @@ from eval_card_backend.signals.setup import (
 # deliberate re-exports without re-introducing the misleading entries.
 __all__ = [
     "canonical_json",
+    "compute_completeness_by_benchmark_py",
     "compute_completeness_py",
+    "is_agentic_by_benchmark_py",
+    "set_card_registry",
     "compute_cross_party_divergence_udf_body",
     "compute_variant_divergence_udf_body",
     "derive_metric_meta",
@@ -54,6 +58,60 @@ __all__ = [
 ]
 
 log = logging.getLogger(__name__)
+
+
+# Benchmark card per canonical benchmark_id, parsed once per run. The card is
+# benchmark-level; shipping it per fact row through the Stage E UDFs meant
+# serialising and re-parsing a multi-kilobyte document 700k+ times and made
+# the card the widest column of every fact-grain table.
+_CARDS_BY_BENCHMARK: dict[str, Any] = {}
+
+
+def set_card_registry(con) -> int:
+    """(Re)load `cards_raw` (one card per non-NULL benchmark_id, the same
+    rows Stage D used to join) into the per-run registry. A missing table
+    leaves the registry empty, which is what a NULL card join produced."""
+    _CARDS_BY_BENCHMARK.clear()
+    try:
+        rows = con.execute(
+            "SELECT benchmark_id, to_json(card) FROM cards_raw "
+            "WHERE benchmark_id IS NOT NULL"
+        ).fetchall()
+    except Exception as exc:  # CatalogException: no cards in this connection
+        log.debug("card registry: cards_raw unavailable (%s)", exc)
+        return 0
+    for benchmark_id, card_json in rows:
+        _CARDS_BY_BENCHMARK[benchmark_id] = (
+            json.loads(card_json) if card_json is not None else None
+        )
+    return len(_CARDS_BY_BENCHMARK)
+
+
+def is_agentic_by_benchmark_py(
+    benchmark_id: str | None, generation_args: object
+) -> bool:
+    return is_agentic_py(
+        benchmark_id, _CARDS_BY_BENCHMARK.get(benchmark_id), generation_args
+    )
+
+
+def compute_completeness_by_benchmark_py(
+    benchmark_id: str | None,
+    source_type: str | None,
+    source_organization_name: str | None,
+    evaluator_relationship: str | None,
+    lifecycle_status: str | None,
+    preregistration_url: str | None,
+) -> Any:
+    # Explicit parameters: DuckDB derives the UDF arity from the signature.
+    return compute_completeness_py(
+        _CARDS_BY_BENCHMARK.get(benchmark_id),
+        source_type,
+        source_organization_name,
+        evaluator_relationship,
+        lifecycle_status,
+        preregistration_url,
+    )
 
 
 def variant_parent_id_py(parents_json: str | None) -> str | None:

@@ -181,6 +181,13 @@ jobs:
           # searches for), but the explicit env var avoids dependence on
           # cwd and makes the wiring obvious.
           EVALCARD_REGISTRY_SEED_DIR: ${{ github.workspace }}/eval-entity-registry/seed
+          # The runner has 16 GB. DuckDB pages tables out to disk past this
+          # limit instead of the VM being shut down (2026-10-07/08 failures);
+          # the row-local stages run in record batches of this size, so the
+          # peak is set by these two knobs, not by the corpus. Measured
+          # 2026-10-08 on 85k records: 5.4 GB max RSS at 4GB/50000.
+          CANONICALISE_MEMORY_LIMIT: 6GB
+          CANONICALISE_BATCH_ROWS: "50000"
         run: uv run eval-card-backend canonicalise --warehouse warehouse
 
       # Schedule and push runs carry no inputs, so they always publish and
