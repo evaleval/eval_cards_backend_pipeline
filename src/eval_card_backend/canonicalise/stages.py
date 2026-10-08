@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, Iterable, NamedTuple
 
 import pyarrow as pa
 
@@ -30,7 +31,7 @@ from eval_card_backend.signals.reproducibility import (
     AGENTIC_REPRODUCIBILITY_FIELDS,
     BASE_REPRODUCIBILITY_FIELDS,
 )
-from eval_card_backend.canonicalise import taxonomy
+from eval_card_backend.canonicalise import taxonomy, udfs
 from eval_card_backend.config import EEE_DATASET_REPO
 from eval_card_backend.sources import collections as collections_src
 from eval_card_backend.sources.registry import read_parquet_arg
@@ -105,6 +106,89 @@ def explicit_projection_sql(con, relation: str, alias: str | None = None) -> str
         )
     prefix = f"{alias}." if alias else ""
     return ", ".join(f'{prefix}"{c}"' for c in cols)
+
+
+def _batch_rows() -> int:
+    """Source rows per batch for the row-local stage queries. The working
+    set of a wide projection with window functions and Python UDFs scales
+    with rows x columns per statement, not with the table on disk, so each
+    statement sees one batch of source configs at a time."""
+    return int(os.environ.get("CANONICALISE_BATCH_ROWS", "50000"))
+
+
+def _sql_str(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def record_batches(
+    con, source_table: str, key_col: str, target_rows: int | None = None
+) -> tuple[str, int]:
+    """Assign every record of `source_table` (one `key_col` value, e.g. the
+    source JSON path) to a batch of about `target_rows` rows, in first-seen
+    order, and return (temp map table, batch count). Rows of one record are
+    never split, whatever their physical order: the explode's lateral
+    `range()` interleaves records, so rowid ranges cannot be used."""
+    target = target_rows if target_rows is not None else _batch_rows()
+    map_table = f"_batch_map_{source_table.strip('_')}"
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE {map_table} AS
+        WITH keys AS (
+            SELECT {key_col} AS k, COUNT(*) AS n, MIN(rowid) AS first_rowid
+            FROM {source_table}
+            GROUP BY {key_col}
+        )
+        SELECT k,
+               CAST(COALESCE(
+                   SUM(n) OVER (ORDER BY first_rowid
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+                   0) // {target} AS INTEGER) AS b
+        FROM keys
+        """
+    )
+    n_null = con.execute(
+        f"SELECT COUNT(*) FROM {map_table} WHERE k IS NULL"
+    ).fetchone()[0]
+    if n_null:
+        raise RuntimeError(
+            f"{source_table}: {key_col} is NULL on some rows; cannot batch by record."
+        )
+    n_batches = con.execute(
+        f"SELECT COALESCE(MAX(b) + 1, 0) FROM {map_table}"
+    ).fetchone()[0]
+    return map_table, int(n_batches)
+
+
+def materialise_in_batches(
+    con,
+    table: str,
+    select_for: "Callable[[str], str]",
+    source_table: str,
+    key_col: str,
+    source_alias: str = "",
+    target_rows: int | None = None,
+) -> None:
+    """CREATE `table` as the union of `select_for(predicate)` over record
+    batches of `source_table` (see `record_batches`), so one statement's
+    working set is one batch of rows rather than the corpus. The predicate
+    is a membership test on `key_col` of the source relation (qualified by
+    `source_alias` when the select aliases it); the select must be
+    row-local or per-record in that relation. Batches follow first-seen
+    record order; within a batch, rows keep the source's scan order."""
+    map_table, n_batches = record_batches(con, source_table, key_col, target_rows)
+    col = f"{source_alias}.{key_col}" if source_alias else key_col
+    if n_batches == 0:
+        con.execute(f"CREATE TABLE {table} AS {select_for('FALSE')}")
+        con.execute(f"DROP TABLE {map_table}")
+        return
+    for i in range(n_batches):
+        sql = select_for(f"{col} IN (SELECT k FROM {map_table} WHERE b = {i})")
+        if i == 0:
+            con.execute(f"CREATE TABLE {table} AS {sql}")
+        else:
+            con.execute(f"INSERT INTO {table} {sql}")
+        log.info("  %s: batch %d/%d", table, i + 1, n_batches)
+    con.execute(f"DROP TABLE {map_table}")
 
 
 def protocol_exclusion_sql(col: str = "protocol_condition") -> str:
@@ -451,13 +535,17 @@ def _model_developer_pattern_case_sql(slug_expr: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def stage_a_load_eee(con, arrow_table: pa.Table) -> int:
-    """Register a typed EEE Arrow table with DuckDB as `eee_raw`.
+def stage_a_load_eee(
+    con, tables: pa.Table | Iterable[tuple[str, pa.Table]]
+) -> int:
+    """Load typed EEE Arrow tables into DuckDB as `eee_raw`.
 
-    Zero-copy: DuckDB reads from the Arrow buffers in place. The caller
-    (`pipeline.run`) builds the table via `sources.eee.load_arrow_table`,
-    which validates each record against the vendored upstream Pydantic
-    models and casts to the schema derived from the JSON Schema.
+    Accepts one table or an iterable of (config, table) batches as yielded
+    by `sources.eee.iter_arrow_tables`; batches are appended in order, so
+    the result is identical to loading the concatenation. Per-config
+    batches keep only one config's rows alive on the Python side at a
+    time. Every table carries the schema derived from the JSON Schema and
+    has been validated against the vendored upstream Pydantic models.
 
     Hard-fails on NULL `source_config`: downstream Stage D's
     composite_slug fallback regex evaluates to NULL on NULL input, which
@@ -466,9 +554,26 @@ def stage_a_load_eee(con, arrow_table: pa.Table) -> int:
     silent dropout — every EEE record is expected to carry a config
     name; a NULL means upstream contract is broken.
     """
-    con.register("eee_raw_arrow", arrow_table)
-    con.execute("CREATE TABLE eee_raw AS SELECT * FROM eee_raw_arrow")
-    con.unregister("eee_raw_arrow")
+    if isinstance(tables, pa.Table):
+        tables = [("", tables)]
+    n_rows = 0
+    created = False
+    for _cfg, table in tables:
+        con.register("eee_raw_arrow", table)
+        if created:
+            con.execute("INSERT INTO eee_raw SELECT * FROM eee_raw_arrow")
+        else:
+            con.execute("CREATE TABLE eee_raw AS SELECT * FROM eee_raw_arrow")
+            created = True
+        con.unregister("eee_raw_arrow")
+        n_rows += table.num_rows
+    if not created:
+        from eval_card_backend.sources.eee import _arrow_table_schema
+
+        _, table_schema = _arrow_table_schema()
+        con.register("eee_raw_arrow", pa.Table.from_pylist([], schema=table_schema))
+        con.execute("CREATE TABLE eee_raw AS SELECT * FROM eee_raw_arrow")
+        con.unregister("eee_raw_arrow")
 
     null_cfg_count = con.execute(
         "SELECT COUNT(*) FROM eee_raw WHERE source_config IS NULL"
@@ -486,7 +591,7 @@ def stage_a_load_eee(con, arrow_table: pa.Table) -> int:
             f"the source loader if a default makes sense."
         )
 
-    return arrow_table.num_rows
+    return n_rows
 
 
 def stage_a_load_cards(con, cards: dict) -> int:
@@ -1096,8 +1201,10 @@ def stage_b_explode_evaluation_results(con) -> int:
         )
         return 0
 
-    con.execute(
-        f"CREATE TABLE results_exploded AS {explode_select_sql('eee_raw')}"
+    materialise_in_batches(
+        con, "results_exploded",
+        lambda pred: explode_select_sql(f"(SELECT * FROM eee_raw WHERE {pred})"),
+        source_table="eee_raw", key_col="_record_path",
     )
 
     con.execute(
@@ -1209,9 +1316,7 @@ def stage_c_resolve_identities(con) -> None:
     # in `sources.eee.load_arrow_table` guarantees stable STRUCT shapes so
     # JSON-path extraction isn't needed here.
     org_raw_clean = org_display_normalize_sql('source_metadata.source_organization_name')
-    con.execute(
-        f"""
-        CREATE TABLE results_resolved AS
+    resolved_body = f"""(
         WITH raw AS (
             SELECT
                 *,
@@ -1293,6 +1398,7 @@ def stage_c_resolve_identities(con) -> None:
                     END
                 )                                                                 AS _harness_raw
             FROM results_exploded
+            WHERE __BATCH_PRED__
         )
         SELECT
             *,
@@ -1336,7 +1442,17 @@ def stage_c_resolve_identities(con) -> None:
             resolve_strategy(_org_raw,       'org',       source_config) AS org_resolution_strategy,
             resolve_strategy(NULLIF(_harness_raw, ''), 'harness', source_config) AS harness_resolution_strategy
         FROM raw
-        """
+    )"""
+    # Resolver UDFs over the wide exploded rows, one source-config batch at
+    # a time; the cross-record passes below (slice promotion, folds,
+    # slice_key) are UPDATEs on narrow columns.
+    resolved_cols = explicit_projection_sql(
+        con, resolved_body.replace("__BATCH_PRED__", "FALSE")
+    )
+    materialise_in_batches(
+        con, "results_resolved",
+        lambda pred: f"SELECT {resolved_cols} FROM {resolved_body.replace('__BATCH_PRED__', pred)}",
+        source_table="results_exploded", key_col="source_record_path",
     )
 
     # v2-style slice promotion: for dot-notation aggregator records
@@ -1638,6 +1754,7 @@ def stage_d_join_dims_and_flatten(
                 {org_token}          AS org_token,
                 {source_label_slug}  AS _curated_source_slug
             FROM results_resolved rr0
+            WHERE __BATCH_PRED__
         ),
         joined AS (
             -- LEFT JOIN dims, then call the metric-meta hotfix UDF once per row
@@ -1683,7 +1800,6 @@ def stage_d_join_dims_and_flatten(
                 -- when an older registry snapshot doesn't ship them).
                 cm_model.model_family_id                               AS _cm_model_family_id,
                 cm_model.lineage_origin_model_id                       AS _cm_lineage_origin_model_id,
-                c.card                                                 AS _card_payload,
                 CASE WHEN c.card IS NOT NULL THEN rr.benchmark_id ELSE NULL END AS _benchmark_card_id,
                 -- Curated composite claims resolve finest-first:
                 -- (config, org, source) > (config, org) > (config). Each
@@ -2152,7 +2268,6 @@ def stage_d_join_dims_and_flatten(
                 ELSE NULL
             END                                                                          AS judge_condition,
 
-            j._card_payload AS card_payload,
 
             -- Scale-classifier inputs; dropped from the emitted table below.
             j._eff_min_score,
@@ -2202,8 +2317,11 @@ def stage_d_join_dims_and_flatten(
               ON ps.evaluation_id      IS NOT DISTINCT FROM f.evaluation_id
              AND ps.source_record_path IS NOT DISTINCT FROM f.source_record_path
              AND ps.benchmark_key      IS NOT DISTINCT FROM f.benchmark_key
-        ),
-        scale_grp AS (
+        )
+        SELECT * FROM flat_split
+    )"""
+    scale_body = """(
+        WITH scale_grp AS (
             -- Scale-suspect detection is per (source, benchmark, renamed
             -- metric) GROUP; the group max is what tells a percent-scaled
             -- publication apart from genuine fractions. Answer-feedback rows
@@ -2216,13 +2334,18 @@ def stage_d_join_dims_and_flatten(
             -- are genuinely 0.0, and alone in a group of their own they read
             -- as fractions while the answerable arms at 44-64 read as
             -- percents.
-            SELECT *,
-                MAX(score) FILTER (
-                    WHERE {protocol_exclusion_sql("protocol_condition")}
-                ) OVER (
-                    PARTITION BY composite_slug, benchmark_key, metric_base_key
-                ) AS _grp_max
-            FROM flat_split
+            --
+            -- The group max is a GROUP BY over the narrow keys joined back,
+            -- not a window over the wide rows: the window would hold every
+            -- column of every row at once, and the rows are built one
+            -- source-config batch at a time (see `materialise_in_batches`).
+            SELECT sp.*, g._grp_max
+            FROM _staging_pre sp
+            LEFT JOIN _scale_grp_max g
+              ON g.composite_slug   IS NOT DISTINCT FROM sp.composite_slug
+             AND g.benchmark_key    IS NOT DISTINCT FROM sp.benchmark_key
+             AND g.metric_base_key  IS NOT DISTINCT FROM sp.metric_base_key
+            WHERE __BATCH_PRED__
         ),
         scale_class AS (
             -- Canonical-scale classification, on facts so every later stage
@@ -2315,10 +2438,36 @@ def stage_d_join_dims_and_flatten(
             score_ci_upper * _scale_mult + _scale_off AS score_ci_upper_canonical
         FROM scale_applied
     )"""
-    con.execute(
-        f"CREATE TABLE fact_results_staging AS "
-        f"SELECT {explicit_projection_sql(con, staging_body)} FROM {staging_body}"
+    # Row-local flatten per source-config batch, then the one cross-record
+    # input (the scale group max) on narrow keys, then the scale pass per
+    # batch again. Each statement's working set is a batch of wide rows.
+    pre_cols = explicit_projection_sql(con, staging_body.replace("__BATCH_PRED__", "FALSE"))
+    materialise_in_batches(
+        con, "_staging_pre",
+        lambda pred: f"SELECT {pre_cols} FROM {staging_body.replace('__BATCH_PRED__', pred)}",
+        source_table="results_resolved", key_col="source_record_path",
+        source_alias="rr0",
     )
+    con.execute(
+        f"""
+        CREATE TEMP TABLE _scale_grp_max AS
+        SELECT composite_slug, benchmark_key, metric_base_key,
+               MAX(score) FILTER (
+                   WHERE {protocol_exclusion_sql("protocol_condition")}
+               ) AS _grp_max
+        FROM _staging_pre
+        GROUP BY composite_slug, benchmark_key, metric_base_key
+        """
+    )
+    staging_cols = explicit_projection_sql(con, scale_body.replace("__BATCH_PRED__", "FALSE"))
+    materialise_in_batches(
+        con, "fact_results_staging",
+        lambda pred: f"SELECT {staging_cols} FROM {scale_body.replace('__BATCH_PRED__', pred)}",
+        source_table="_staging_pre", key_col="source_record_path",
+        source_alias="sp",
+    )
+    con.execute("DROP TABLE _staging_pre")
+    con.execute("DROP TABLE _scale_grp_max")
 
     _log_malformed_metric_models(con)
     _log_split_inheritance(con)
@@ -2716,6 +2865,8 @@ def stage_e_per_row_signals(
             "restored from a cache written before the composite-partition "
             "schema. Re-run with --from-stage D (or A) to rebuild it."
         )
+    n_cards = udfs.set_card_registry(con)
+    log.info("  card registry: %d benchmark card(s)", n_cards)
     pre = con.execute("SELECT count(*) FROM fact_results_staging").fetchone()[0]
     n_dropped_no_score = con.execute(
         "SELECT count(*) FROM fact_results_staging WHERE score IS NULL"
@@ -2724,9 +2875,10 @@ def stage_e_per_row_signals(
         f"SELECT count(*) FROM fact_results_staging "
         f"WHERE score IS NOT NULL AND ({_SENTINEL_DROP_PREDICATE})"
     ).fetchone()[0]
-    con.execute(
-        f"""
-        CREATE TABLE fact_results_signaled AS
+    # Per-row signals (Python UDFs over wide rows) run one source-config
+    # batch at a time; the two dedup decisions run over a narrow projection
+    # keyed by rowid; the survivors are then copied out per batch again.
+    signaled_body = f"""(
         WITH base AS (
             SELECT
                 *,
@@ -2743,10 +2895,11 @@ def stage_e_per_row_signals(
                 -- read the same source)
                 CAST(NULL AS VARCHAR) AS lifecycle_status,
                 CAST(NULL AS VARCHAR) AS preregistration_url,
-                is_agentic_udf(benchmark_id, to_json(card_payload), generation_args_json) AS is_agentic
+                is_agentic_by_benchmark_udf(benchmark_id, generation_args_json) AS is_agentic
             FROM fact_results_staging
             WHERE score IS NOT NULL
               AND NOT ({_SENTINEL_DROP_PREDICATE})
+              AND __BATCH_PRED__
         ),
         scored AS (
             -- One UDF call per row; destructured below. Without the CTE,
@@ -2754,8 +2907,8 @@ def stage_e_per_row_signals(
             -- repro_missing_fields is built here from per-field has_* flags
             -- so the rest of the SELECT can reference it without recomputing.
             SELECT base.*,
-                compute_completeness_udf(
-                    to_json(card_payload),
+                compute_completeness_by_benchmark_udf(
+                    benchmark_id,
                     source_type,
                     org_raw,                         -- source_organization_name
                     evaluator_relationship,
@@ -2802,6 +2955,36 @@ def stage_e_per_row_signals(
                 _completeness.missing_required_fields              AS completeness_missing_required_fields,
                 _completeness.partial_fields                       AS completeness_partial_fields
             FROM scored
+        )
+        SELECT * FROM signaled
+    )"""
+    signaled_cols = explicit_projection_sql(
+        con, signaled_body.replace("__BATCH_PRED__", "FALSE")
+    )
+    materialise_in_batches(
+        con, "_signaled_rows",
+        lambda pred: f"SELECT {signaled_cols} FROM {signaled_body.replace('__BATCH_PRED__', pred)}",
+        source_table="fact_results_staging", key_col="source_record_path",
+    )
+    con.execute(
+        """
+        CREATE TEMP TABLE _e_keep AS
+        WITH _e_narrow AS (
+            SELECT rowid AS _rid,
+                   fact_id, retrieved_timestamp, evaluation_id,
+                   evaluation_result_id, source_record_path,
+                   source_config, org_raw, evaluator_relationship, source_type,
+                   model_raw, inference_platform, evaluation_name,
+                   benchmark_raw, benchmark_id, benchmark_subset, slice_key,
+                   slice_name, aggregate_level, observation_role, collection_id,
+                   metric_raw, metric_id, metric_key, metric_qualifier, split,
+                   score, n_samples, evaluation_timestamp,
+                   generation_args_json, generation_additional_details,
+                   agent_scaffold_raw, harness_raw, harness_id,
+                   eval_library_name, eval_library_version,
+                   protocol_condition, judge_condition,
+                   instance_checksum, instance_hash_algorithm, instance_rows
+            FROM _signaled_rows
         ),
         fact_id_ranked AS (
             -- Dedup on (snapshot_id, fact_id): same fact_id appearing more
@@ -2843,7 +3026,7 @@ def stage_e_per_row_signals(
                                   source_record_path DESC
                      )
                 END AS _dedup_rank
-            FROM signaled
+            FROM _e_narrow
         ),
         fact_id_deduped AS (
             SELECT * EXCLUDE (_dedup_rank)
@@ -2927,11 +3110,24 @@ def stage_e_per_row_signals(
             ) AS _content_dedup_rank
             FROM content_keyed
         )
-        SELECT * EXCLUDE (_observation_key, _content_dedup_rank, evaluation_name)
+        SELECT _rid
         FROM content_ranked
         WHERE _content_dedup_rank = 1
         """
     )
+    final_cols = explicit_projection_sql(
+        con, "(SELECT * EXCLUDE (evaluation_name) FROM _signaled_rows WHERE FALSE)"
+    )
+    materialise_in_batches(
+        con, "fact_results_signaled",
+        lambda pred: (
+            f"SELECT {final_cols} FROM _signaled_rows "
+            f"WHERE rowid IN (SELECT _rid FROM _e_keep) AND {pred}"
+        ),
+        source_table="_signaled_rows", key_col="source_record_path",
+    )
+    con.execute("DROP TABLE _signaled_rows")
+    con.execute("DROP TABLE _e_keep")
     _apply_composite_partitions(
         con, strict=strict_composites, exempt=exempt_composites
     )
@@ -3480,7 +3676,7 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
     fact_body = f"""(
         SELECT
             TIMESTAMP '{snapshot_id_to_sql(snapshot_id)}' AS snapshot_id,
-            * EXCLUDE (card_payload, org_normalized_key, generation_args_json,
+            * EXCLUDE (org_normalized_key, generation_args_json,
                        _completeness),
             COALESCE(model_id, model_raw) AS model_key
         FROM fact_results_grouped_annotated
@@ -3489,7 +3685,7 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
 
         SELECT
             TIMESTAMP '{snapshot_id_to_sql(snapshot_id)}' AS snapshot_id,
-            fr.* EXCLUDE (card_payload, generation_args_json, _completeness),
+            fr.* EXCLUDE (generation_args_json, _completeness),
             COALESCE(fr.model_id, fr.model_raw)                AS model_key,
             CAST(NULL AS INTEGER)                              AS distinct_reporting_orgs,
             CAST(NULL AS VARCHAR)                              AS comparability_group_id,
@@ -3528,7 +3724,7 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
     _resolved_cols = {
         r[0] for r in con.execute(
             f"DESCRIBE SELECT TIMESTAMP '{snapshot_id_to_sql(snapshot_id)}' AS snapshot_id, "
-            "* EXCLUDE (card_payload, org_normalized_key, generation_args_json, _completeness), "
+            "* EXCLUDE (org_normalized_key, generation_args_json, _completeness), "
             "COALESCE(model_id, model_raw) AS model_key "
             "FROM fact_results_grouped_annotated"
         ).fetchall()

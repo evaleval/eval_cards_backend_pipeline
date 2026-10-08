@@ -364,7 +364,7 @@ def run(
         cards = benchmark_cards.load_cards(cards_root) if cards_root else {}
 
     # 2. DuckDB + UDFs
-    con = duckdb.connect()
+    con, db_dir = _connect_duckdb()
     udfs.reset_resolver_counters()
     reset_json_coerce_counter()
     reset_provenance_counter()
@@ -463,8 +463,9 @@ def run(
 
         if letter == "A":
             log.info("Stage A: loading sources …")
-            arrow_table = eee.load_arrow_table(eee_root, chosen, settings.hf_token)
-            n_eee = stages.stage_a_load_eee(con, arrow_table)
+            n_eee = stages.stage_a_load_eee(
+                con, eee.iter_arrow_tables(eee_root, chosen, settings.hf_token)
+            )
             collections_src.assert_no_private_rows(
                 con, active.held_out, where="after Stage A load",
             )
@@ -583,6 +584,24 @@ def run(
 
         cache.write_stage(con, letter)
 
+        # Release tables no later stage reads. The stage cache above holds
+        # them on disk, so --from-stage keeps working; this keeps the peak
+        # from being the sum of every fact-grain table since Stage A. Row
+        # counts the snapshot meta needs are captured before the drop.
+        if letter == "D":
+            if n_eee is None:
+                n_eee = _table_count(con, "eee_raw")
+            if n_exploded is None:
+                n_exploded = _table_count(con, "results_exploded")
+            if n_synth_collisions is None and n_exploded is not None:
+                n_synth_collisions = stages.stage_b_count_synth_id_collisions(con)
+            if not chosen:
+                chosen = _configs_from_eee_raw(con)
+        if letter == "F" and stage_e_stats is None:
+            stage_e_stats = _recover_stage_e_stats(con)
+        _release_tables(con, _RELEASE_AFTER.get(letter, ()))
+        _log_memory(f"after stage {letter}")
+
     # When --to-stage cuts the run off before warehouse emit, the cache dir
     # is the result. Skip snapshot_meta and final summaries that depend on
     # post-Stage-F state we may not have.
@@ -596,6 +615,7 @@ def run(
         log_purpose_shape_summary()
         log_metric_meta_summary(log)
         eee.log_drop_summary()
+        _close_duckdb(con, db_dir)
         return None
 
     # Recover row counts and configs list from cached tables when they
@@ -621,60 +641,9 @@ def run(
     # content dedup. This keeps `snapshot_meta.row_counts` accurate across
     # `--from-stage F+` reruns instead of zeroing out real signals.
     if stage_e_stats is None:
-        pre_count = _table_count(con, "fact_results_staging")
-        post_count = _table_count(con, "fact_results_signaled")
-        n_no_score = None
-        n_sentinel = None
-        n_dedup = None
-        n_content_dedup = None
-        if pre_count is not None:
-            try:
-                n_no_score = con.execute(
-                    "SELECT count(*) FROM fact_results_staging WHERE score IS NULL"
-                ).fetchone()[0]
-                n_sentinel = con.execute(
-                    f"SELECT count(*) FROM fact_results_staging "
-                    f"WHERE score IS NOT NULL "
-                    f"AND ({stages._SENTINEL_DROP_PREDICATE})"
-                ).fetchone()[0]
-                if post_count is not None:
-                    pre_dedup = pre_count - n_no_score - n_sentinel
-                    fact_id_survivors = con.execute(
-                        f"""
-                        SELECT COUNT(DISTINCT fact_id)
-                             + COUNT(*) FILTER (WHERE fact_id IS NULL)
-                        FROM fact_results_staging
-                        WHERE score IS NOT NULL
-                          AND NOT ({stages._SENTINEL_DROP_PREDICATE})
-                        """
-                    ).fetchone()[0]
-                    n_dedup = max(0, pre_dedup - fact_id_survivors)
-                    n_content_dedup = max(0, fact_id_survivors - post_count)
-            except duckdb.CatalogException:
-                log.warning(
-                    "fact_results_staging missing; Stage E breakdowns = None"
-                )
-        stage_e_stats = stages.StageEStats(
-            pre=pre_count if pre_count is not None else 0,
-            n_dropped_no_score=n_no_score if n_no_score is not None else 0,
-            n_dropped_sentinel=n_sentinel if n_sentinel is not None else 0,
-            n_dropped_dedup=n_dedup if n_dedup is not None else 0,
-            n_dropped_content_dedup=(
-                n_content_dedup if n_content_dedup is not None else 0
-            ),
-            post=post_count if post_count is not None else 0,
-        )
+        stage_e_stats = _recover_stage_e_stats(con)
     if not chosen:
-        try:
-            chosen = [
-                r[0] for r in con.execute(
-                    "SELECT DISTINCT source_config FROM eee_raw "
-                    "WHERE source_config IS NOT NULL ORDER BY source_config"
-                ).fetchall()
-            ]
-        except duckdb.CatalogException:
-            log.warning("eee_raw missing; snapshot_meta.configs = []")
-            chosen = []
+        chosen = _configs_from_eee_raw(con)
 
     # 12. Snapshot meta sidecar
     j_in_slice = STAGE_ORDER.index("J") in range(from_idx, to_idx + 1)
@@ -725,6 +694,8 @@ def run(
     log_metric_meta_summary(log)
     eee.log_drop_summary()
     _log_canonicalisation_summary(con, stage_e_stats.post)
+    _log_memory("end of run")
+    _close_duckdb(con, db_dir)
 
     return out_dir
 
@@ -885,6 +856,133 @@ def _table_count(con, table: str) -> int | None:
     except duckdb.CatalogException:
         log.warning("table %s not present in connection; row count = None", table)
         return None
+
+
+# Tables no later stage reads, dropped once the stage cache has written
+# them. Last read sites: eee_raw / results_exploded / results_resolved in
+# Stage D's collection keys; fact_results_staging in Stage E; the signaled
+# and grouped tables in Stage F.
+_RELEASE_AFTER: dict[str, tuple[str, ...]] = {
+    "D": ("eee_raw", "results_exploded", "results_resolved"),
+    "E": ("fact_results_staging",),
+    "F": (
+        "fact_results_signaled",
+        "fact_results_grouped",
+        "fact_results_grouped_annotated",
+    ),
+}
+
+
+def _connect_duckdb() -> tuple[duckdb.DuckDBPyConnection, Path]:
+    """Open a file-backed DuckDB in a private temp dir so the buffer manager
+    can page tables out under `memory_limit` instead of growing until the
+    host kills the process. `CANONICALISE_MEMORY_LIMIT` (e.g. `10GB`) sets
+    the limit; unset leaves DuckDB's default. The dir is removed by
+    `_close_duckdb`."""
+    import tempfile
+
+    db_dir = Path(tempfile.mkdtemp(prefix="canonicalise-duckdb-"))
+    con = duckdb.connect(str(db_dir / "canonicalise.duckdb"))
+    con.execute(f"SET temp_directory = '{db_dir / 'tmp'}'")
+    limit = os.environ.get("CANONICALISE_MEMORY_LIMIT")
+    if limit:
+        con.execute(f"SET memory_limit = '{limit}'")
+    log.info(
+        "duckdb: file-backed at %s, memory_limit=%s, threads=%s",
+        db_dir,
+        con.execute("SELECT current_setting('memory_limit')").fetchone()[0],
+        con.execute("SELECT current_setting('threads')").fetchone()[0],
+    )
+    return con, db_dir
+
+
+def _close_duckdb(con, db_dir: Path) -> None:
+    import shutil
+
+    try:
+        con.close()
+    finally:
+        shutil.rmtree(db_dir, ignore_errors=True)
+
+
+def _release_tables(con, tables: tuple[str, ...]) -> None:
+    for table in tables:
+        con.execute(f"DROP TABLE IF EXISTS {table}")
+    if tables:
+        log.info("  released %s", ", ".join(tables))
+
+
+def _log_memory(where: str) -> None:
+    import resource
+    import sys
+
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform != "darwin":
+        peak *= 1024  # Linux reports KiB
+    log.info("  memory: peak RSS so far %.1f GB (%s)", peak / 1e9, where)
+
+
+def _configs_from_eee_raw(con) -> list[str]:
+    try:
+        return [
+            r[0] for r in con.execute(
+                "SELECT DISTINCT source_config FROM eee_raw "
+                "WHERE source_config IS NOT NULL ORDER BY source_config"
+            ).fetchall()
+        ]
+    except duckdb.CatalogException:
+        log.warning("eee_raw missing; snapshot_meta.configs = []")
+        return []
+
+
+def _recover_stage_e_stats(con) -> "stages.StageEStats":
+    """Row counts for `snapshot_meta.row_counts` when Stage E was restored
+    from cache rather than run. Sentinel and fact-id survivor counts are
+    pure SQL against `fact_results_staging`; the remaining pre/post delta
+    is the content dedup."""
+    pre_count = _table_count(con, "fact_results_staging")
+    post_count = _table_count(con, "fact_results_signaled")
+    n_no_score = None
+    n_sentinel = None
+    n_dedup = None
+    n_content_dedup = None
+    if pre_count is not None:
+        try:
+            n_no_score = con.execute(
+                "SELECT count(*) FROM fact_results_staging WHERE score IS NULL"
+            ).fetchone()[0]
+            n_sentinel = con.execute(
+                f"SELECT count(*) FROM fact_results_staging "
+                f"WHERE score IS NOT NULL "
+                f"AND ({stages._SENTINEL_DROP_PREDICATE})"
+            ).fetchone()[0]
+            if post_count is not None:
+                pre_dedup = pre_count - n_no_score - n_sentinel
+                fact_id_survivors = con.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT fact_id)
+                         + COUNT(*) FILTER (WHERE fact_id IS NULL)
+                    FROM fact_results_staging
+                    WHERE score IS NOT NULL
+                      AND NOT ({stages._SENTINEL_DROP_PREDICATE})
+                    """
+                ).fetchone()[0]
+                n_dedup = max(0, pre_dedup - fact_id_survivors)
+                n_content_dedup = max(0, fact_id_survivors - post_count)
+        except duckdb.CatalogException:
+            log.warning(
+                "fact_results_staging missing; Stage E breakdowns = None"
+            )
+    return stages.StageEStats(
+        pre=pre_count if pre_count is not None else 0,
+        n_dropped_no_score=n_no_score if n_no_score is not None else 0,
+        n_dropped_sentinel=n_sentinel if n_sentinel is not None else 0,
+        n_dropped_dedup=n_dedup if n_dedup is not None else 0,
+        n_dropped_content_dedup=(
+            n_content_dedup if n_content_dedup is not None else 0
+        ),
+        post=post_count if post_count is not None else 0,
+    )
 
 
 def _log_canonicalisation_summary(con, fact_count: int) -> None:

@@ -183,6 +183,21 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
         completeness_struct_type,
         null_handling="special",
     )
+    # Stage E variants: the card comes from the per-run registry
+    # (`udfs.set_card_registry`) by benchmark_id instead of riding on every
+    # fact row.
+    con.create_function(
+        "is_agentic_by_benchmark_udf", udfs.is_agentic_by_benchmark_py,
+        ["VARCHAR", "JSON"], "BOOLEAN",
+        null_handling="special",
+    )
+    con.create_function(
+        "compute_completeness_by_benchmark_udf",
+        udfs.compute_completeness_by_benchmark_py,
+        ["VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR"],
+        completeness_struct_type,
+        null_handling="special",
+    )
 
     # Group-level signal UDFs. `differing_setup_fields` is a list of
     # STRUCT(field, "values"); the UDF body produces those structs directly.

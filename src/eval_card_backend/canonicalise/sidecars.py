@@ -325,7 +325,11 @@ def _completeness_block(con, tag: str | None) -> dict:
         )
         SELECT
             COUNT(*)                                AS total_triples,
-            AVG(triple_avg_completeness)            AS completeness_avg,
+            -- Exact decimal mean: a double SUM's rounding depends on the
+            -- order partial sums combine in, which the storage layout can
+            -- change between runs; the warehouse promise is byte-identical.
+            CAST(AVG(CAST(triple_avg_completeness AS DECIMAL(38, 18)))
+                 AS DOUBLE)                         AS completeness_avg,
             MIN(triple_avg_completeness)            AS completeness_min,
             MAX(triple_avg_completeness)            AS completeness_max
         FROM triple_rollups
