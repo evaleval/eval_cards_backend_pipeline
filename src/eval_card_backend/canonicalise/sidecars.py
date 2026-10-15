@@ -108,6 +108,9 @@ def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
         # is `{repo_id, sha, last_modified}`; values are None on lookup
         # failure (best-effort, never fatal — see _hf_dataset_snapshot).
         "upstream_pins":         snapshot_meta.get("upstream_pins") or {},
+        "collection_adapter_accounting": (
+            snapshot_meta.get("collection_adapter_accounting") or {}
+        ),
         # raw_verified coverage — drives the 1st/3rd-party classification
         # for llm-stats rows. Tracking coverage
         # makes it visible when upstream EEE starts populating the field
@@ -1547,7 +1550,7 @@ def write_hierarchy(con, out_dir: Path, snapshot_meta: dict) -> Path:
     hierarchy_hotfixes.group_same_bench_across_sources(family_records, curated_ids)
 
     # Systematic dedup (permanent pipeline logic). Both passes are
-    # score-gated (notes/data-model-invariants.md) — only true echoes
+    # score-gated, so only true echoes
     # (matching scores) are collapsed; independent cross-source
     # evaluations of the same benchmark are preserved.
     hierarchy_dedup.consolidate_dedicated_home_benchmarks(family_records, con)

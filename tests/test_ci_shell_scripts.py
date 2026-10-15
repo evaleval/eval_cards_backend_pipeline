@@ -919,9 +919,23 @@ def test_workflow_env_carries_no_hardcoded_followed_revisions(sync_workflow):
     assert set(env) == {
         "HF_TARGET_DATASET",
         "EEE_INCLUDE_PRIVATE",
+        "EEE_PRIVATE_ALLOW_ZERO_MEMBERS",
         "EEE_PRIVATE_REVISION",
         "BENCHMARK_METADATA_REVISION",
     }
+
+
+def test_workflow_summarises_adapter_accounting_before_publish(sync_workflow):
+    steps = _steps(sync_workflow)
+    canonicalise = _index(steps, name="Run canonicalisation")
+    summary = _index(steps, name="Summarise collection adapter accounting")
+    publish = _index(steps, name=PUBLISH_STEP)
+    assert canonicalise < summary < publish
+    assert steps[summary].get("continue-on-error") is True
+    script = steps[summary]["run"]
+    assert "collection_adapter_accounting" in script
+    assert "upstream_pins" in script
+    assert "GITHUB_STEP_SUMMARY" in script
 
 
 def test_workflow_publish_and_check_only_conditions(sync_workflow):

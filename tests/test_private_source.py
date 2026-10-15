@@ -1,11 +1,10 @@
-"""Private collection source behind `EEE_INCLUDE_PRIVATE`.
+"""Processed private collection extracts behind `EEE_INCLUDE_PRIVATE`.
 
-The private dataset serves processed collection extracts under
-`collections/<name>/`; no member record is on any loaded corpus. The
-pipeline tests reuse the mini-study fixture from `test_collections`: the
-extract sits in a hand-built private collections dir, the public root holds
-one ordinary record on the same benchmark, and the in-repo vendor dir is
-empty.
+The private dataset serves processed extracts under `collections/<name>/`.
+Their aggregate member records may also be in the public EEE corpus. Toggle
+on drops those public member result rows and injects the complete processed
+study. Toggle off does not read the private source and leaves public members
+as ordinary records.
 """
 from __future__ import annotations
 
@@ -53,7 +52,13 @@ STUDY_IDS = {"minibench/model/a", "minibench/model/b", "minibench/model/c"}
 def test_toggle_defaults_off():
     s = Settings.from_env()
     assert s.include_private_eee is False
+    assert s.eee_private_allow_zero_members is False
     assert s.eee_private_revision is None
+
+
+def test_zero_member_rollout_setting(monkeypatch):
+    monkeypatch.setenv("EEE_PRIVATE_ALLOW_ZERO_MEMBERS", "1")
+    assert Settings.from_env().eee_private_allow_zero_members is True
 
 
 @pytest.mark.parametrize("value", ["main", "v1.0", "c" * 39, "C" * 40])
@@ -199,22 +204,33 @@ def test_access_error_names_repo_and_toggle(tmp_path, private_hub):
 
 
 def _study_files():
+    rec_a = _study_record(
+        "minibench/model/a", STUDY_ORG_A,
+        "accuracy on minibench/S-adaptive/+1ep for scorer x", 0.2,
+    )
+    rec_b = _study_record(
+        "minibench/model/b", STUDY_ORG_A,
+        "accuracy on minibench/S-adaptive/+2ep/abc for scorer x", 1.0,
+    )
+    rec_b["model_info"] = {
+        "developer": "openai",
+        "name": "openai/gpt-4o-mini",
+        "id": "openai/gpt-4o-mini",
+    }
     return [
-        ("minibench", "rec_a.json", json.dumps(_study_record(
-            "minibench/model/a", STUDY_ORG_A,
-            "accuracy on minibench/S-adaptive/+1ep for scorer x", 0.2))),
+        ("minibench", "rec_a.json", json.dumps(rec_a)),
+        ("minibench", "rec_b.json", json.dumps(rec_b)),
     ]
 
 
-def _write_curated(path: Path, *, exempt: bool = True) -> None:
-    composites = "    composites: [mini-study]\n" if exempt else "    composites: []\n"
+def _write_curated(path: Path) -> None:
     path.write_text(
         "test-study:\n"
         "  display_name: Test Study\n"
         "  kind: paper_study\n"
         "  curated: true\n"
         "  private_source:\n"
-        + composites +
+        "    composites: [mini-study]\n"
         "  merge_raw_keys:\n"
         "    - test-aisi-institute/mini-study-paper\n"
         "    - test-aisi-initiative/mini-study-paper\n"
@@ -237,14 +253,28 @@ def _write_seed(seed_root: Path) -> None:
 
 @pytest.fixture
 def world(tmp_path):
-    write_eee_datastore(tmp_path / "eee", [
-        ("minibench", "ordinary.json", json.dumps(_ordinary_record())),
-    ])
+    write_eee_datastore(
+        tmp_path / "eee",
+        [("minibench", "ordinary.json", json.dumps(_ordinary_record()))]
+        + _study_files(),
+    )
+    members = [
+        {"record_uuid": "rec_a", "evaluation_id": "minibench/model/a",
+         "path": "data/minibench/dev/model/rec_a.json",
+         "config": "minibench", "n_results": 1},
+        {"record_uuid": "rec_b", "evaluation_id": "minibench/model/b",
+         "path": "data/minibench/dev/model/rec_b.json",
+         "config": "minibench", "n_results": 1},
+        {"record_uuid": "rec_c", "evaluation_id": "minibench/model/c",
+         "path": "data/minibench/dev/model/rec_c.json",
+         "config": "minibench", "n_results": 0},
+    ]
     _write_vendor_fixture(
         tmp_path / "eee_private" / "collections",
         manifest_overrides={
             "source_repo": EEE_PRIVATE_DATASET_REPO, "eee_revision": None,
         },
+        members=members,
     )
     (tmp_path / "vendor_collections").mkdir()
     _write_curated(tmp_path / "curated.yaml")
@@ -254,8 +284,15 @@ def world(tmp_path):
     return tmp_path
 
 
-def _run(world: Path, monkeypatch, *, include_private: bool,
-         from_stage: str | None = None, private_dir: Path | None = None):
+def _run(
+    world: Path,
+    monkeypatch,
+    *,
+    include_private: bool,
+    allow_zero_members: bool = False,
+    from_stage: str | None = None,
+    private_dir: Path | None = None,
+):
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(world / "eee"))
     monkeypatch.setenv(
         "EEE_PRIVATE_LOCAL_DATASET_DIR", str(private_dir or world / "eee_private")
@@ -269,6 +306,10 @@ def _run(world: Path, monkeypatch, *, include_private: bool,
         monkeypatch.setenv("EEE_INCLUDE_PRIVATE", "1")
     else:
         monkeypatch.delenv("EEE_INCLUDE_PRIVATE", raising=False)
+    if allow_zero_members:
+        monkeypatch.setenv("EEE_PRIVATE_ALLOW_ZERO_MEMBERS", "1")
+    else:
+        monkeypatch.delenv("EEE_PRIVATE_ALLOW_ZERO_MEMBERS", raising=False)
 
     from eval_card_backend.canonicalise import pipeline
 
@@ -320,13 +361,19 @@ def _warehouse_text(out: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_on_injects_every_synthetic_row_without_member_records(world, monkeypatch):
-    out = _run(world, monkeypatch, include_private=True)
+def test_on_drops_public_members_and_injects_complete_extract(
+    world, monkeypatch, caplog
+):
+    with caplog.at_level("INFO", logger="eval_card_backend.sources.collections"):
+        out = _run(world, monkeypatch, include_private=True)
     facts = _facts(out)
-    # both synthetic results (0.5, 0.95) plus the public ordinary row (0.6);
-    # no member record was loaded and nothing was dropped
+    # Raw public members (0.2, 1.0) are gone. Both synthetic cells, including
+    # the cell represented by absent zero-result member c, are injected.
     assert [r[2] for r in facts] == [0.5, 0.6, 0.95]
     assert {r[1] for r in facts if r[0] in STUDY_IDS} == {"test-study"}
+    assert "public members 2/3 present" in caplog.text
+    assert "1/1 absent members account for zero rows" in caplog.text
+    assert "dropped 2/2 manifest result row(s)" in caplog.text
     traj = duckdb.connect().execute(
         f"SELECT collection_id, count(*) "
         f"FROM read_parquet('{out}/collection_trajectories.parquet') GROUP BY 1"
@@ -337,7 +384,7 @@ def test_on_injects_every_synthetic_row_without_member_records(world, monkeypatc
     assert "private_source" not in collections["test-study"]
 
 
-def test_on_links_are_null_for_private_rows(world, monkeypatch):
+def test_on_links_stay_null_for_private_derived_rows(world, monkeypatch):
     out = _run(world, monkeypatch, include_private=True)
     urls = _urls(out)
     assert urls[0.6][0] == (
@@ -348,6 +395,33 @@ def test_on_links_are_null_for_private_rows(world, monkeypatch):
     assert urls[0.95] == (None, None)
 
 
+def test_on_zero_public_members_fails_without_rollout_setting(world, monkeypatch):
+    for name in ("rec_a.json", "rec_b.json"):
+        (world / "eee" / "data" / "minibench" / "dev" / "model" / name).unlink()
+    monkeypatch.setenv("EEE_REVISION", OTHER_SHA)
+    (world / "eee" / _MARKER).write_text(OTHER_SHA)
+    with pytest.raises(RuntimeError, match=(
+        f"datastore pin {OTHER_SHA}.*EEE_PRIVATE_ALLOW_ZERO_MEMBERS"
+    )):
+        _run(world, monkeypatch, include_private=True)
+
+
+def test_on_zero_public_members_allowed_during_rollout(world, monkeypatch, caplog):
+    for name in ("rec_a.json", "rec_b.json"):
+        (world / "eee" / "data" / "minibench" / "dev" / "model" / name).unlink()
+    with caplog.at_level("WARNING", logger="eval_card_backend.sources.collections"):
+        out = _run(
+            world,
+            monkeypatch,
+            include_private=True,
+            allow_zero_members=True,
+        )
+    assert [r[2] for r in _facts(out)] == [0.5, 0.6, 0.95]
+    assert _urls(out)[0.5] == (None, None)
+    assert _urls(out)[0.95] == (None, None)
+    assert "EEE_PRIVATE_ALLOW_ZERO_MEMBERS=1" in caplog.text
+
+
 def test_on_upstream_pin_records_private_revision(world, monkeypatch):
     from eval_card_backend.canonicalise import pipeline
 
@@ -356,14 +430,129 @@ def test_on_upstream_pin_records_private_revision(world, monkeypatch):
     monkeypatch.setenv("EEE_PRIVATE_REVISION", PRIVATE_SHA)
     out = _run(world, monkeypatch, include_private=True)
     for name in ("snapshot_meta.json", "manifest.json"):
-        pin = json.loads((out / name).read_text())["upstream_pins"]["eee_private"]
+        payload = json.loads((out / name).read_text())
+        pin = payload["upstream_pins"]["eee_private"]
         assert pin["repo_id"] == EEE_PRIVATE_DATASET_REPO
         assert pin["sha"] == PRIVATE_SHA
+        assert payload["collection_adapter_accounting"] == {
+            "test-study": {
+                "members_total": 3,
+                "members_present": 2,
+                "members_absent": 1,
+                "members_absent_nonzero": 0,
+                "expected_drop": 2,
+                "dropped": 2,
+                "injected": 2,
+                "private_revision": PRIVATE_SHA,
+                "fact_results": 2,
+                "eval_results_view": 2,
+            }
+        }
 
 
-def test_on_member_record_in_public_corpus_fails(world, monkeypatch):
-    write_eee_datastore(world / "eee", _study_files())
-    with pytest.raises(RuntimeError, match="also in the EEE corpus"):
+def test_on_partial_public_ingest_missing_nonempty_member_fails(world, monkeypatch):
+    (world / "eee" / "data" / "minibench" / "dev" / "model" / "rec_b.json").unlink()
+    with pytest.raises(RuntimeError, match="incomplete study ingest"):
+        _run(world, monkeypatch, include_private=True)
+
+
+def test_present_members_with_offsetting_count_errors_fail_before_delete(world):
+    manifest_path = (
+        world / "eee_private" / "collections" / "test_study" / "manifest.json"
+    )
+    con = duckdb.connect()
+    con.execute("CREATE TABLE eee_raw (evaluation_id VARCHAR)")
+    con.execute(
+        "INSERT INTO eee_raw VALUES ('minibench/model/a'), ('minibench/model/b')"
+    )
+    con.execute("CREATE TABLE results_exploded (evaluation_id VARCHAR)")
+    con.execute(
+        "INSERT INTO results_exploded VALUES "
+        "('minibench/model/b'), ('minibench/model/b')"
+    )
+    collections_src.create_collection_tables(con)
+
+    with pytest.raises(RuntimeError, match="result count mismatch") as exc:
+        collections_src._apply_one_adapter(
+            con,
+            manifest_path,
+            world / "eee",
+            OTHER_SHA,
+            private_extract=True,
+            private_revision=PRIVATE_SHA,
+        )
+    assert "minibench/model/a: manifest=1, observed=0" in str(exc.value)
+    assert "minibench/model/b: manifest=1, observed=2" in str(exc.value)
+    assert con.execute(
+        "SELECT evaluation_id FROM results_exploded ORDER BY evaluation_id"
+    ).fetchall() == [("minibench/model/b",), ("minibench/model/b",)]
+
+
+def test_old_and_new_uuid_for_one_evaluation_id_fail_before_delete(world):
+    manifest_path = (
+        world / "eee_private" / "collections" / "test_study" / "manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text())
+    manifest["members"] = [manifest["members"][0]]
+    manifest["expected_drop_count"] = 1
+    manifest_path.write_text(json.dumps(manifest))
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE eee_raw (evaluation_id VARCHAR, record_uuid VARCHAR)")
+    con.execute(
+        "INSERT INTO eee_raw VALUES "
+        "('minibench/model/a', 'old-uuid'), "
+        "('minibench/model/a', 'new-uuid')"
+    )
+    con.execute("CREATE TABLE results_exploded (evaluation_id VARCHAR)")
+    con.execute(
+        "INSERT INTO results_exploded VALUES "
+        "('minibench/model/a'), ('minibench/model/a')"
+    )
+    collections_src.create_collection_tables(con)
+
+    with pytest.raises(
+        RuntimeError, match="minibench/model/a: manifest=1, observed=2"
+    ):
+        collections_src._apply_one_adapter(
+            con,
+            manifest_path,
+            world / "eee",
+            OTHER_SHA,
+            private_extract=True,
+            private_revision=PRIVATE_SHA,
+        )
+    assert con.execute("SELECT count(*) FROM results_exploded").fetchone()[0] == 2
+
+
+def test_present_members_with_matching_counts_pass():
+    member_counts = {"a": 1, "b": 3, "c": 0}
+    con = duckdb.connect()
+    con.execute("CREATE TABLE results_exploded (evaluation_id VARCHAR)")
+    rows = [
+        (evaluation_id,)
+        for evaluation_id, count in member_counts.items()
+        for _ in range(count)
+    ]
+    con.executemany("INSERT INTO results_exploded VALUES (?)", rows)
+
+    assert collections_src._validate_present_member_result_counts(
+        con,
+        "test-study",
+        set(member_counts),
+        member_counts,
+    ) == 4
+
+
+def test_on_leak_guard_fires_for_unknown_empty_public_record(world, monkeypatch):
+    unknown = _study_record(
+        "minibench/model/unknown", STUDY_ORG_A, "minibench", 0.1
+    )
+    unknown["evaluation_results"] = []
+    write_eee_datastore(world / "eee", [
+        ("minibench", "unknown.json", json.dumps(unknown)),
+    ])
+    with pytest.raises(RuntimeError, match="leak guard"):
         _run(world, monkeypatch, include_private=True)
 
 
@@ -381,58 +570,92 @@ def test_on_cache_resume_matches(world, monkeypatch):
 
 def test_off_never_touches_private_source(world, monkeypatch, no_private_access):
     missing = world / "never_created"
-    out = _run(world, monkeypatch, include_private=False, private_dir=missing)
+    out = _run(
+        world,
+        monkeypatch,
+        include_private=False,
+        allow_zero_members=True,
+        private_dir=missing,
+    )
     assert not missing.exists()
 
-    assert [r[0] for r in _facts(out)] == ["minibench/ordinary/1"]
+    facts = _facts(out)
+    assert [r[0] for r in facts] == [
+        "minibench/model/a", "minibench/ordinary/1", "minibench/model/b",
+    ]
+    assert {r[1] for r in facts if r[0] in STUDY_IDS} == {"test-study"}
     assert not (out / "collection_trajectories.parquet").exists()
     assert not (out / "collection_context.json").exists()
     for name in ("snapshot_meta.json", "manifest.json"):
         assert "eee_private" not in json.loads((out / name).read_text())["upstream_pins"]
     text = _warehouse_text(out)
     assert EEE_PRIVATE_DATASET_REPO not in text
-    for eid in STUDY_IDS:
-        assert eid not in text
+    assert "minibench/model/c" not in text
+    public_shape = duckdb.connect().execute(
+        f"SELECT DISTINCT protocol_condition, composite_slug "
+        f"FROM read_parquet('{out}/fact_results.parquet') "
+        f"WHERE collection_id = 'test-study'"
+    ).fetchall()
+    assert public_shape == [(None, "mini-study")]
+    public_links = duckdb.connect().execute(
+        f"SELECT eee_record_url, instance_file_url "
+        f"FROM read_parquet('{out}/eval_results_view.parquet') "
+        f"WHERE collection_id = 'test-study'"
+    ).fetchall()
+    assert public_links
+    assert all(record_url is not None for record_url, _ in public_links)
+    assert all(instance_url is None for _, instance_url in public_links)
 
 
-def test_off_composite_guard_needs_the_private_exemption(
+def test_off_composite_exemption_fails_without_rollout_setting(
     world, monkeypatch, no_private_access
 ):
-    """The full OFF run passes the strict Stage E scoped-member guard only
-    because the private entry declares its composite."""
-    _write_curated(world / "curated.yaml", exempt=False)
-    with pytest.raises(RuntimeError, match="composite 'mini-study'"):
+    with pytest.raises(RuntimeError, match="curated scoped members failed"):
         _run(world, monkeypatch, include_private=False)
 
 
-def test_off_guard_fails_on_private_rows_in_public_corpus(
+def test_off_pre_ingest_revision_fails_without_rollout_setting(
     world, monkeypatch, no_private_access
 ):
-    write_eee_datastore(world / "eee", _study_files())
-    with pytest.raises(RuntimeError, match="private-source guard"):
+    for name in ("rec_a.json", "rec_b.json"):
+        path = world / "eee" / "data" / "minibench" / "dev" / "model" / name
+        path.unlink()
+    with pytest.raises(RuntimeError, match="curated collection entries"):
         _run(world, monkeypatch, include_private=False)
-    assert not (world / "warehouse").exists()
 
 
-def test_off_guard_checks_collection_id_tables():
-    con = duckdb.connect()
-    con.execute("CREATE TABLE fact_results AS SELECT 'other' AS collection_id")
-    held_out = {"test-study": {"merge_raw_keys": ["a/b"]}}
-    collections_src.assert_no_private_rows(con, held_out, where="test")
-    con.execute("UPDATE fact_results SET collection_id = 'test-study'")
-    with pytest.raises(RuntimeError, match="fact_results: 1 row"):
-        collections_src.assert_no_private_rows(con, held_out, where="test")
+def test_off_pre_ingest_revision_allowed_during_rollout(
+    world, monkeypatch, no_private_access
+):
+    for name in ("rec_a.json", "rec_b.json"):
+        path = world / "eee" / "data" / "minibench" / "dev" / "model" / name
+        path.unlink()
+    out = _run(
+        world,
+        monkeypatch,
+        include_private=False,
+        allow_zero_members=True,
+    )
+    assert [r[0] for r in _facts(out)] == ["minibench/ordinary/1"]
+    assert not (out / "collection_trajectories.parquet").exists()
 
 
 def test_active_collections_filter(world, monkeypatch):
     monkeypatch.setenv("COLLECTIONS_CURATED_PATH", str(world / "curated.yaml"))
     on = collections_src.active_collections(True)
     assert set(on.curated) == {"test-study"}
-    assert on.exempt_composites == frozenset() and on.held_out == {}
+    assert on.exempt_composites == frozenset()
+    assert on.optional_curated == frozenset()
     off = collections_src.active_collections(False)
-    assert off.curated == {}
-    assert off.exempt_composites == frozenset({"mini-study"})
-    assert set(off.held_out) == {"test-study"}
+    assert set(off.curated) == {"test-study"}
+    assert off.exempt_composites == frozenset()
+    assert off.optional_curated == frozenset()
+    rollout_off = collections_src.active_collections(
+        False, allow_zero_private_members=True
+    )
+    assert set(rollout_off.curated) == {"test-study"}
+    assert rollout_off.exempt_composites == frozenset({"mini-study"})
+    assert rollout_off.optional_curated == frozenset({"test-study"})
 
 
 # ---------------------------------------------------------------------------
@@ -445,13 +668,19 @@ def test_on_then_off_same_dir_leaves_no_on_only_file(world, monkeypatch):
     assert (on_out / "collection_trajectories.parquet").exists()
 
     _refuse_private(monkeypatch)
-    off_out = _run(world, monkeypatch, include_private=False)
+    off_out = _run(
+        world,
+        monkeypatch,
+        include_private=False,
+        allow_zero_members=True,
+    )
     assert off_out == on_out
     assert not (off_out / "collection_trajectories.parquet").exists()
-    assert [r[0] for r in _facts(off_out)] == ["minibench/ordinary/1"]
+    assert [r[0] for r in _facts(off_out)] == [
+        "minibench/model/a", "minibench/ordinary/1", "minibench/model/b",
+    ]
     text = _warehouse_text(off_out)
-    for eid in STUDY_IDS:
-        assert eid not in text
+    assert "minibench/model/c" not in text
 
 
 @pytest.mark.parametrize("from_stage", ["B", "C", "D", "I", "J"])
@@ -465,9 +694,20 @@ def test_on_cache_refused_by_off_resume(world, monkeypatch, from_stage):
 
 
 def test_off_cache_resume_matches(world, monkeypatch, no_private_access):
-    out = _run(world, monkeypatch, include_private=False)
+    out = _run(
+        world,
+        monkeypatch,
+        include_private=False,
+        allow_zero_members=True,
+    )
     first = (out / "eval_results_view.parquet").read_bytes()
-    out = _run(world, monkeypatch, include_private=False, from_stage="D")
+    out = _run(
+        world,
+        monkeypatch,
+        include_private=False,
+        allow_zero_members=True,
+        from_stage="D",
+    )
     assert (out / "eval_results_view.parquet").read_bytes() == first
 
 

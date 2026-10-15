@@ -1,4 +1,4 @@
-# Curated collection entries (see notes/collections-spec.md).
+# Curated collection entries define stable metadata and raw-key merges.
 #
 # A collection is the set of records submitted under one
 # (source_organization_name, source_name) pair; auto-generated stubs cover
@@ -14,13 +14,10 @@
 # runs receive correctness signals: the view layer's rollup exclusions
 # filter on it by name.
 #
-# `private_source` marks a collection whose extract is served from the
-# private dataset (EEE_PRIVATE_DATASET_REPO, `collections/<name>/`) and
-# applied only when EEE_INCLUDE_PRIVATE=1. With the toggle off the entry is
-# exempt from the curated-entry detach guard, the taxonomy composites
-# listed under `composites` (curated in the registry, produced only by this
-# collection) are exempt from the Stage E scoped-member guard, and any row
-# under its merge_raw_keys fails the run.
+# `private_source` marks an entry with a processed extract in
+# EEE_PRIVATE_DATASET_REPO (applied with EEE_INCLUDE_PRIVATE=1). Its
+# `composites` are exempt from the strict scoped-member guard while
+# EEE_PRIVATE_ALLOW_ZERO_MEMBERS=1.
 
 uk-aisi-inference-scaling:
   display_name: How Inference Compute Shapes Frontier LLM Evaluation
@@ -30,12 +27,7 @@ uk-aisi-inference-scaling:
   private_source:
     composites: [aisi-inference-scaling]
   merge_raw_keys:
-    # Which spelling is observed depends on the EEE revision: the current
-    # pin (2d9a8b23, post-rename-sweep) observes "Institute" on 732
-    # records plus 1 straggler "Initiative" record the sweep missed
-    # (PR #205/#206). Keep both until a pin lands where one side has
-    # fully disappeared, then drop the dead key (unobserved keys are
-    # warned per-run).
+    # The extract's member records use both spellings.
     - uk-ai-security-institute/how-inference-compute-shapes-frontier-llm-evaluation
     - uk-ai-security-initiative/how-inference-compute-shapes-frontier-llm-evaluation
   protocol_axes:

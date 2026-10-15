@@ -308,8 +308,9 @@ def run(
         settings.eee_local_dir, settings.hf_token, settings.refresh_eee,
         revision=settings.eee_revision,
     )
-    # The private collection source is touched only when the toggle is on;
-    # off, no request goes to its repo and its local dir is never read.
+    # The processed private extract is touched only when the toggle is on.
+    # Off, no request goes to its repo and public member records remain
+    # ordinary EEE input.
     private_collections_dir: Path | None = None
     private_revision: str | None = None
     private_collection_ids: frozenset[str] = frozenset()
@@ -329,11 +330,17 @@ def run(
             EEE_PRIVATE_DATASET_REPO, private_collections_dir,
             private_revision, sorted(private_collection_ids),
         )
-    active = collections_src.active_collections(settings.include_private_eee)
+    active = collections_src.active_collections(
+        settings.include_private_eee,
+        allow_zero_private_members=settings.eee_private_allow_zero_members,
+    )
     cache = StageCache(
         cache_root, snapshot_id, enabled=not no_cache,
         source_state={
             "include_private_eee": settings.include_private_eee,
+            "eee_private_allow_zero_members": (
+                settings.eee_private_allow_zero_members
+            ),
             "eee_private_revision": private_revision,
         },
     )
@@ -406,10 +413,6 @@ def run(
             collections_src.assert_cache_has_collections(
                 con, private_collections_dir
             )
-        collections_src.assert_no_private_rows(
-            con, active.held_out, where="restored stage cache",
-        )
-
         # The composite_config_map cache is one of stage A's outputs. A 0-row
         # restoration means a prior run wrote an empty map (e.g. taxonomy
         # seed dir was missing) — and silently restoring it now would
@@ -466,9 +469,6 @@ def run(
             n_eee = stages.stage_a_load_eee(
                 con, eee.iter_arrow_tables(eee_root, chosen, settings.hf_token)
             )
-            collections_src.assert_no_private_rows(
-                con, active.held_out, where="after Stage A load",
-            )
             log.info("  loaded %d EEE records (validated)", n_eee)
             n_cards = stages.stage_a_load_cards(con, cards)
             log.info("  loaded %d cards", n_cards)
@@ -509,12 +509,17 @@ def run(
             collections_src.apply_vendor_collections(
                 con, eee_root=eee_root, eee_revision=settings.eee_revision,
                 private_collections_dir=private_collections_dir,
+                private_revision=private_revision,
+                strict_membership=(configs is None and config_limit is None),
+                allow_zero_private_members=(
+                    settings.eee_private_allow_zero_members
+                ),
             )
         elif letter == "C":
             log.info("Stage C: resolving identities …")
             stages.stage_c_resolve_identities(con)
-            # Leak + new-record guard: zero surviving non-synthetic
-            # rows may match a registered collection's study source_name.
+            # New-record guard: every public record matching an adapted
+            # study source_name must be listed in that extract's manifest.
             collections_src.assert_no_member_leak(con)
         elif letter == "D":
             log.info("Stage D: flattening + joining dims …")
@@ -525,6 +530,9 @@ def run(
                 con,
                 strict_collections=(configs is None and config_limit is None),
                 include_private=settings.include_private_eee,
+                allow_zero_private_members=(
+                    settings.eee_private_allow_zero_members
+                ),
             )
         elif letter == "E":
             stage_e_stats = stages.stage_e_per_row_signals(
@@ -551,9 +559,6 @@ def run(
             log.info("Stage G: dim materialisation …")
             stages.stage_g_materialise_dim_tables(con, snapshot_id)
         elif letter == "I":
-            collections_src.assert_no_private_rows(
-                con, active.held_out, where="before warehouse write",
-            )
             out_dir = Path(warehouse_dir) / _snapshot_dir_name(snapshot_id)
             out_dir.mkdir(parents=True, exist_ok=True)
             log.info("Stage I: emitting parquets to %s", out_dir)
@@ -576,9 +581,6 @@ def run(
             if out_dir is None:
                 out_dir = Path(warehouse_dir) / _snapshot_dir_name(snapshot_id)
                 out_dir.mkdir(parents=True, exist_ok=True)
-            collections_src.assert_no_private_rows(
-                con, active.held_out, where="before warehouse write",
-            )
             log.info("Stage J: emitting view parquets to %s", out_dir)
             stages.stage_j_emit_view_parquets(con, out_dir, snapshot_id)
 
@@ -647,6 +649,7 @@ def run(
 
     # 12. Snapshot meta sidecar
     j_in_slice = STAGE_ORDER.index("J") in range(from_idx, to_idx + 1)
+    collection_adapter_accounting = _collection_adapter_accounting(con)
     meta = _build_snapshot_meta(
         snapshot_id=snapshot_id,
         chosen=chosen,
@@ -662,6 +665,7 @@ def run(
         registry_root=registry_root,
         cards_root=cards_root,
         private_revision=private_revision,
+        collection_adapter_accounting=collection_adapter_accounting,
     )
     # Same non-finite wire form as every other sidecar (nothing in the meta
     # carries a registry float today; the invariant is what matters).
@@ -750,6 +754,7 @@ def _build_snapshot_meta(
     registry_root: Path | None,
     cards_root: Path | None,
     private_revision: str | None = None,
+    collection_adapter_accounting: dict[str, dict] | None = None,
 ) -> dict:
     """Assemble `snapshot_meta.json` payload. Pure data: doesn't touch
     DuckDB. The HF-revision lookups talk to HF's HTTP API and are best-
@@ -828,6 +833,7 @@ def _build_snapshot_meta(
         # `write_manifest` so the warehouse manifest carries enough info to
         # diagnose stale-input runs without re-querying HF.
         "upstream_pins": upstream_pins,
+        "collection_adapter_accounting": collection_adapter_accounting or {},
         "tables": tables,
         "sidecars": sidecars,
         "row_counts": {
@@ -848,6 +854,54 @@ def _build_snapshot_meta(
         },
         "stage_a_drops": eee.drop_breakdown(),
     }
+
+
+def _collection_adapter_accounting(con) -> dict[str, dict]:
+    """Adapter checks and final collection row counts for operator review."""
+    try:
+        rows = con.execute(
+            "SELECT collection_id, members_total, members_present, "
+            "members_absent, members_absent_nonzero, expected_drop, dropped, "
+            "injected, private_revision "
+            "FROM collection_adapter_accounting ORDER BY collection_id"
+        ).fetchall()
+    except duckdb.CatalogException:
+        return {}
+
+    accounting: dict[str, dict] = {}
+    for row in rows:
+        collection_id = row[0]
+        if collection_id in accounting:
+            raise RuntimeError(
+                f"duplicate adapter accounting for collection {collection_id}"
+            )
+        accounting[collection_id] = {
+            "members_total": row[1],
+            "members_present": row[2],
+            "members_absent": row[3],
+            "members_absent_nonzero": row[4],
+            "expected_drop": row[5],
+            "dropped": row[6],
+            "injected": row[7],
+            "private_revision": row[8],
+            "fact_results": _collection_row_count(
+                con, "fact_results", collection_id
+            ),
+            "eval_results_view": _collection_row_count(
+                con, "eval_results_view", collection_id
+            ),
+        }
+    return accounting
+
+
+def _collection_row_count(con, table: str, collection_id: str) -> int | None:
+    try:
+        return con.execute(
+            f"SELECT count(*) FROM {table} WHERE collection_id = ?",
+            [collection_id],
+        ).fetchone()[0]
+    except duckdb.CatalogException:
+        return None
 
 
 def _table_count(con, table: str) -> int | None:

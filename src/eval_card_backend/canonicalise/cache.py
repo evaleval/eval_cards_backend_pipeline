@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 # whenever a stage's cached output gains, loses or re-types a column: a
 # `--from-stage` run against an older cache would otherwise restore the old
 # shape and fail deep inside a later stage's SQL with a binder error.
-CACHE_SCHEMA_VERSION = 14
+CACHE_SCHEMA_VERSION = 15
 
 _SCHEMA_MARKER = "_cache_schema.json"
 # Which EEE sources the cached tables were built from (private-source toggle
@@ -60,6 +60,7 @@ STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
         "collection_protocol_map",
         "collection_merge_map",
         "collection_study_slugs",
+        "collection_adapter_accounting",
         "collection_trajectories_raw",
     ),
     "C": ("results_resolved",),
@@ -183,7 +184,8 @@ class StageCache:
         raise RuntimeError(
             f"stage cache at {self._dir} was written with EEE sources "
             f"{found!r}, but this run uses {self.source_state!r} "
-            f"(EEE_INCLUDE_PRIVATE / EEE_PRIVATE_REVISION differ). Cached "
+            f"(EEE_INCLUDE_PRIVATE, EEE_PRIVATE_REVISION or "
+            f"EEE_PRIVATE_ALLOW_ZERO_MEMBERS differ). Cached "
             f"tables cannot cross a private-source change. Re-run from Stage A "
             f"or use another snapshot id."
         )

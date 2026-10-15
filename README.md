@@ -1,7 +1,7 @@
 # eval-card-backend
 
-Materialises evaluation artifacts from `evaleval/EEE_datastore` (plus,
-opt-in, collection extracts from a private dataset; see below),
+Materialises evaluation artifacts from `evaleval/EEE_datastore` (plus
+optional processed collection extracts from a private dataset; see below),
 `evaleval/auto-benchmarkcards`, and `evaleval/entity-registry-data` into
 a Parquet warehouse for the Eval Cards frontend.
 
@@ -134,43 +134,50 @@ them.
 | `BENCHMARK_METADATA_REFRESH` | unset | Set to `1` to force-refetch the cards. |
 | `ENTITY_REGISTRY_REFRESH` | unset | Set to `1` to force-refetch the registry. |
 | `HF_OPENNESS_PROBE` | `1` | Set to `0` to skip the open-weights backfill (offline bakes, or to pin a snapshot to exactly what the registry states). |
-| `EEE_INCLUDE_PRIVATE` | unset | Set to `1` to also apply the collection extracts of the private dataset (see below). |
+| `EEE_INCLUDE_PRIVATE` | unset | Set to `1` to replace public collection-member rows with processed private extract rows (see below). |
+| `EEE_PRIVATE_ALLOW_ZERO_MEMBERS` | unset | Set to `1` to allow a private extract whose member records are not public yet. |
 | `EEE_PRIVATE_DATASET_REPO` | `evaleval/aisi-inference-scaling-data` | The private dataset. |
 | `EEE_PRIVATE_REVISION` | unset | Commit sha of the private dataset; branches and tags are rejected. Unset resolves HEAD to a sha once per run. |
 | `EEE_PRIVATE_LOCAL_DATASET_DIR` | `.cache/eee_private` | Local cache for the private extracts, separate from the public snapshot. |
 
-### Private collection source
+### Processed private collection extract
 
-The UK AISI inference-scaling submission is not in `evaleval/EEE_datastore`.
-Its processed collection extract (the output of
-`scripts/collections/aisi_inference_scaling.py`: `manifest.json`,
-`results.parquet`, `trajectories.parquet`) lives in the private dataset
-`EEE_PRIVATE_DATASET_REPO` under `collections/aisi_inference_scaling/`;
-the raw records and transcripts are on no HF dataset. With
-`EEE_INCLUDE_PRIVATE=1` the pipeline downloads `collections/**` at the
-pinned revision into its own local dir (a marker records the commit, so a
-pinned re-run needs no network) and applies each extract with the
-collection adapter: every synthetic result and trajectory is injected, and
-nothing is dropped because no member record is loaded. These rows carry
-NULL `eee_record_url` and `instance_file_url`. `upstream_pins.eee_private`
-records the revision consumed. The token needs read access to the private
-dataset.
+Some collections are also served as a processed extract (`manifest.json`,
+`results.parquet`, `trajectories.parquet`) from the private dataset
+`EEE_PRIVATE_DATASET_REPO` under `collections/<name>/`, while their aggregate
+member records are public in `evaleval/EEE_datastore`.
 
-With the toggle off (the default) the pipeline makes no request to the
-private repo and never reads its local dir. The private collection's
-curated entry and taxonomy composite are exempt from the guards that
-expect it to be observed, and the run fails if rows under its raw
-collection keys are present anyway (after loading, after a cache restore,
-before any warehouse write). A stage cache records which sources built it
-and cannot be resumed across a toggle or private-revision change. A run
-that emits no collection trajectories or collection context removes those
-two files if an earlier run left them in the snapshot dir.
+With `EEE_INCLUDE_PRIVATE=1` the pipeline downloads `collections/**` at
+`EEE_PRIVATE_REVISION` into its own cache and applies each extract: it checks
+every public member record's result count against the manifest, drops those
+member rows, and injects the processed cells and trajectories. Manifest members
+absent from the public corpus are allowed only when the manifest gives them no
+results. A public record that carries the study's source name but is not a
+manifest member fails the run. A full run also fails when no members are
+public at all, unless `EEE_PRIVATE_ALLOW_ZERO_MEMBERS=1`. Injected cells keep
+NULL `eee_record_url` and `instance_file_url`. `EEE_PRIVATE_REVISION` is the
+extract's pin, independent of `EEE_REVISION`, and is recorded in
+`upstream_pins.eee_private`. The token needs read access to the private dataset.
 
-To update the extract: run the extractor against the local raw data
-(`--source-dir`), upload its three output files to
-`collections/aisi_inference_scaling/` in the private dataset, then set
-`EEE_PRIVATE_REVISION` in `.github/workflows/sync.yml` to the upload's
-commit.
+With the toggle off (the default) nothing private is read and the member
+records are processed as ordinary records, so protocol variants collapse into
+single cells and no trajectories or collection context are emitted. CI keeps
+the toggle on. A stage cache records the toggle and private revision that built
+it and cannot be resumed across a change to either.
+
+Each applied extract's accounting (members present and absent, rows dropped and
+injected, final row counts) is written to `collection_adapter_accounting` in
+`snapshot_meta.json` and `manifest.json` and printed in the Sync Pipeline step
+summary.
+
+To update an extract: run its extractor against the local raw data
+(`--source-dir`), upload the three files to the private dataset, then set
+`EEE_PRIVATE_REVISION` in `.github/workflows/sync.yml` to that commit.
+
+When member records first reach the public datastore: keep `EEE_REVISION`
+pinned until a flat rebuild includes them, then in one change move the pin to
+that commit and remove `EEE_PRIVATE_ALLOW_ZERO_MEMBERS` from the workflow, and
+check the accounting in the step summary.
 
 ### Open-weights backfill
 
@@ -260,5 +267,3 @@ what it would post unless `write` is on.
 3. If `warehouse/latest` is bad in the meantime, point the frontend
    Space's `SNAPSHOT_URL` at the last good dated folder
    (`warehouse/<snapshot_id>`); dated folders are never overwritten.
-
-

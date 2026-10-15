@@ -15,7 +15,8 @@ EEE_DATASET_REPO = os.environ.get("EEE_DATASET_REPO", "evaleval/EEE_datastore")
 # Private dataset holding processed collection extracts
 # (`collections/<name>/{manifest.json,results.parquet,trajectories.parquet}`).
 # Read only when `EEE_INCLUDE_PRIVATE=1`; with the toggle off nothing in the
-# pipeline touches this repo or its local directory.
+# pipeline touches this repo or its local directory, and public aggregate
+# member records remain ordinary input.
 EEE_PRIVATE_DATASET_REPO = os.environ.get(
     "EEE_PRIVATE_DATASET_REPO", "evaleval/aisi-inference-scaling-data"
 )
@@ -78,10 +79,12 @@ class Settings:
     eee_revision: str | None
     benchmark_metadata_revision: str | None
     registry_revision: str | None
-    # Private collection source (see EEE_PRIVATE_DATASET_REPO). Off by
-    # default. `eee_private_revision` must be a commit sha when set; unset
-    # resolves HEAD to a sha once per run.
+    # Processed private collection extract (see EEE_PRIVATE_DATASET_REPO). Off
+    # by default. `eee_private_revision` must be a commit sha when set; unset
+    # resolves HEAD to a sha once per run. This pin is independent of the
+    # public EEE datastore revision.
     include_private_eee: bool = False
+    eee_private_allow_zero_members: bool = False
     eee_private_revision: str | None = None
     eee_private_local_dir: str = DEFAULT_EEE_PRIVATE_LOCAL_DIR
 
@@ -113,6 +116,9 @@ class Settings:
             ),
             registry_revision=os.environ.get("ENTITY_REGISTRY_REVISION") or None,
             include_private_eee=os.environ.get("EEE_INCLUDE_PRIVATE") == "1",
+            eee_private_allow_zero_members=(
+                os.environ.get("EEE_PRIVATE_ALLOW_ZERO_MEMBERS") == "1"
+            ),
             eee_private_revision=_private_revision_from_env(),
             eee_private_local_dir=(
                 os.environ.get("EEE_PRIVATE_LOCAL_DATASET_DIR")
