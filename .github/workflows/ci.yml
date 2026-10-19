@@ -61,6 +61,10 @@ jobs:
       - name: Sync dependencies
         run: uv sync --all-groups
 
+      # Lint tooling is its own dependency group so a bake can sync without it.
+      - name: Install lint tooling
+        run: uv sync --group lint
+
       - name: Pre-commit hooks
         run: uv run pre-commit run --all-files --show-diff-on-failure
 

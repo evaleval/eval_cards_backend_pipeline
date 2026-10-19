@@ -485,10 +485,12 @@ dependencies = [
 dev = [
     { name = "jupyterlab" },
     { name = "pandas" },
-    { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-timeout" },
     { name = "ruff" },
+]
+lint = [
+    { name = "pre-commit" },
 ]
 
 [package.metadata]
@@ -506,11 +508,11 @@ requires-dist = [
 dev = [
     { name = "jupyterlab", specifier = ">=4" },
     { name = "pandas", specifier = ">=2" },
-    { name = "pre-commit", specifier = ">=4" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "ruff", specifier = ">=0.6" },
 ]
+lint = [{ name = "pre-commit", specifier = ">=4" }]
 
 [[package]]
 name = "eval-entity-resolver"

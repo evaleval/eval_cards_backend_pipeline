@@ -9,6 +9,7 @@ checked and the rules that past mistakes taught us.
 Every check runs the same way locally and in CI.
 
 ```bash
+uv sync --group lint                           # once per clone: pre-commit is not a dev dependency
 uv run pre-commit install                      # once per clone
 uv run pre-commit run --all-files              # ruff and file checks over the tree; hygiene over staged lines
 python3 scripts/check_code_hygiene.py --diff main...HEAD   # hygiene over a commit range

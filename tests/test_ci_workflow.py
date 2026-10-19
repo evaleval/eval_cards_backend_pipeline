@@ -21,6 +21,7 @@ SHARED_SETUP_STEPS = (
     "Configure resolver dep for CI",
     "Sync dependencies",
 )
+LINT_STEP = "Install lint tooling"
 PRE_COMMIT_STEP = "Pre-commit hooks"
 HYGIENE_PR_STEP = "Code hygiene on the pull request's added lines"
 HYGIENE_PUSH_STEP = "Code hygiene on the pushed commits' added lines"
@@ -89,7 +90,10 @@ def test_workflow_setup_steps_are_identical_to_sync_workflow(ci_workflow, sync_w
         assert ci_steps[i] == sync_steps[_index(sync_steps, name=name)], name
         positions.append(i)
     assert positions == sorted(positions)
-    assert positions[-1] < _index(ci_steps, name=PRE_COMMIT_STEP)
+    lint = _index(ci_steps, name=LINT_STEP)
+    assert positions[-1] < lint < _index(ci_steps, name=PRE_COMMIT_STEP)
+    assert ci_steps[lint]["run"] == "uv sync --group lint"
+    assert all(step.get("name") != LINT_STEP for step in sync_steps)
 
 
 def test_workflow_runs_hooks_then_hygiene_diff_then_tests(ci_workflow):
@@ -161,7 +165,12 @@ def test_pre_commit_ruff_rev_matches_the_locked_ruff_version(pre_commit_config):
     assert ruff_repo["rev"] == f"v{locked[0]}"
 
 
-def test_pre_commit_is_a_dev_dependency():
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    dev = pyproject["dependency-groups"]["dev"]
-    assert any(dep.split(">=")[0].strip() == "pre-commit" for dep in dev)
+def test_pre_commit_is_in_the_lint_group_only():
+    groups = tomllib.loads((ROOT / "pyproject.toml").read_text())["dependency-groups"]
+    names = {
+        group: {dep.split(">=")[0].strip() for dep in deps}
+        for group, deps in groups.items()
+    }
+    assert "pre-commit" in names["lint"]
+    assert "pre-commit" not in names["dev"]
+    assert names["lint"] == {"pre-commit"}

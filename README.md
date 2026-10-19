@@ -207,9 +207,11 @@ skipped by every rule; use it for a false positive. The hygiene hook reads
 the staged lines, so `pre-commit run --all-files` runs ruff and the file
 checks over the whole tree but the hygiene gate only over what is staged;
 `scripts/check_code_hygiene.py --diff <range>` checks a commit range.
-Install the hooks once per clone:
+`pre-commit` lives in the `lint` dependency group, which `uv sync` leaves
+out. Install it and the hooks once per clone:
 
 ```bash
+uv sync --group lint
 uv run pre-commit install
 ```
 
