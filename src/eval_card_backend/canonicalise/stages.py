@@ -394,9 +394,13 @@ _OBSERVATION_KEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("instance_rows", "instance_rows"),
 )
 
-# Fields a re-scrape can restate for one observation. Survivors that still
-# collide on the key without them are reported as content_dedup_residual.
-_LOOSER_KEY_EXCLUDES: frozenset[str] = frozenset({"evaluation_timestamp", "generation_args"})
+# Two fields a re-scrape can restate for one observation, reported apart:
+# survivors that collide once the stated eval time is dropped are the same
+# run re-dated; survivors that collide once generation_args is dropped are
+# either a re-emission with its arguments restated or a legitimate
+# generation-config variant, which only the source can tell apart.
+_TIMESTAMP_ONLY_EXCLUDES: frozenset[str] = frozenset({"evaluation_timestamp"})
+_GENERATION_ARGS_ONLY_EXCLUDES: frozenset[str] = frozenset({"generation_args"})
 
 
 def _observation_key_sql(*, exclude: frozenset[str] = frozenset()) -> str:
@@ -421,14 +425,15 @@ class StageEStats(NamedTuple):
     n_dropped_dedup: int        # fact_id collisions
     n_dropped_content_dedup: int  # same observation re-emitted in a new record
     post: int                   # final fact_results_signaled count
-    dedup_by_config: dict[str, dict[str, int]]  # see stage_e_dedup_by_config
+    # see stage_e_dedup_by_config; None when the staging table is unavailable
+    dedup_by_config: dict[str, dict[str, int]] | None
 
 log = logging.getLogger(__name__)
 
 
 _DEDUP_BY_CONFIG_KEYS = (
     "staging", "after_fact_id_pass", "after_content_pass",
-    "content_dedup_residual",
+    "residual_timestamp_only", "residual_generation_args_only",
 )
 
 
@@ -437,11 +442,12 @@ def stage_e_dedup_by_config(con) -> dict[str, dict[str, int]]:
     from `fact_results_staging` and `fact_results_signaled` so a fresh run
     and a from-cache rebuild report the same numbers.
 
-    `content_dedup_residual` counts survivors that still match another
-    survivor once the observation key drops evaluation_timestamp and
-    generation_args (rows minus distinct looser keys). Survivors are
-    matched back to staging on (source_record_path, result_idx) because
-    the key's evaluation_name is not carried into fact_results_signaled.
+    `residual_timestamp_only` counts survivors that still match another
+    survivor once the observation key drops evaluation_timestamp;
+    `residual_generation_args_only` does the same for generation_args
+    (each is rows minus distinct looser keys). Survivors are matched back
+    to staging on (source_record_path, result_idx) because the key's
+    evaluation_name is not carried into fact_results_signaled.
     """
     rows = con.execute(
         f"""
@@ -465,8 +471,11 @@ def stage_e_dedup_by_config(con) -> dict[str, dict[str, int]]:
         residual AS (
             SELECT source_config,
                    count(*) - COUNT(DISTINCT
-                       {_observation_key_sql(exclude=_LOOSER_KEY_EXCLUDES)}
-                   ) AS n
+                       {_observation_key_sql(exclude=_TIMESTAMP_ONLY_EXCLUDES)}
+                   ) AS n_timestamp,
+                   count(*) - COUNT(DISTINCT
+                       {_observation_key_sql(exclude=_GENERATION_ARGS_ONLY_EXCLUDES)}
+                   ) AS n_generation_args
             FROM fact_results_staging s
             SEMI JOIN fact_results_signaled f
               ON s.source_record_path IS NOT DISTINCT FROM f.source_record_path
@@ -477,7 +486,8 @@ def stage_e_dedup_by_config(con) -> dict[str, dict[str, int]]:
                st.n,
                COALESCE(fp.n, 0),
                COALESCE(cp.n, 0),
-               COALESCE(r.n, 0)
+               COALESCE(r.n_timestamp, 0),
+               COALESCE(r.n_generation_args, 0)
         FROM staging st
         LEFT JOIN fact_id_pass fp USING (source_config)
         LEFT JOIN content_pass cp USING (source_config)
@@ -492,9 +502,11 @@ def stage_e_dedup_by_config(con) -> dict[str, dict[str, int]]:
 
 
 def dedup_by_config_totals(
-    by_config: dict[str, dict[str, int]],
-) -> dict[str, int]:
-    """Sum each `stage_e_dedup_by_config` count over configs."""
+    by_config: dict[str, dict[str, int]] | None,
+) -> dict[str, int] | None:
+    """Sum each `stage_e_dedup_by_config` count over configs; None in, None out."""
+    if by_config is None:
+        return None
     return {
         key: sum(counts[key] for counts in by_config.values())
         for key in _DEDUP_BY_CONFIG_KEYS

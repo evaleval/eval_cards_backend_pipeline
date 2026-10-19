@@ -954,14 +954,15 @@ def _recover_stage_e_stats(con) -> "stages.StageEStats":
     """Row counts for `snapshot_meta.row_counts` when Stage E was restored
     from cache rather than run. Sentinel and fact-id survivor counts are
     pure SQL against `fact_results_staging`; the remaining pre/post delta
-    is the content dedup."""
+    is the content dedup. Without both Stage E tables the per-config
+    breakdown is unknown and stays None rather than reading as zero."""
     pre_count = _table_count(con, "fact_results_staging")
     post_count = _table_count(con, "fact_results_signaled")
     n_no_score = None
     n_sentinel = None
     n_dedup = None
     n_content_dedup = None
-    dedup_by_config: dict[str, dict[str, int]] = {}
+    dedup_by_config: dict[str, dict[str, int]] | None = None
     if pre_count is not None:
         try:
             n_no_score = con.execute(

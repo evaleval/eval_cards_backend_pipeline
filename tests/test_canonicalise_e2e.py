@@ -840,7 +840,7 @@ def _assert_dedup_by_config_sums_to_row_counts(snap: dict) -> None:
     totals = snap["dedup_by_config_totals"]
     keys = {
         "staging", "after_fact_id_pass", "after_content_pass",
-        "content_dedup_residual",
+        "residual_timestamp_only", "residual_generation_args_only",
     }
     assert set(snap["configs"]) == set(by_config)
     for counts in by_config.values():
@@ -862,14 +862,17 @@ def test_observation_key_renders_real_and_looser_struct_from_one_list():
     from eval_card_backend.canonicalise import stages
 
     real = stages._observation_key_sql()
-    looser = stages._observation_key_sql(exclude=stages._LOOSER_KEY_EXCLUDES)
-    assert real.startswith("struct_pack(") and looser.startswith("struct_pack(")
+    no_ts = stages._observation_key_sql(exclude=stages._TIMESTAMP_ONLY_EXCLUDES)
+    no_args = stages._observation_key_sql(exclude=stages._GENERATION_ARGS_ONLY_EXCLUDES)
+    assert all(s.startswith("struct_pack(") for s in (real, no_ts, no_args))
     assert "evaluation_timestamp := evaluation_timestamp" in real
     assert "generation_args := generation_args_json" in real
-    assert "evaluation_timestamp" not in looser
-    assert "generation_args :=" not in looser
-    assert "generation_details := generation_additional_details" in looser
-    assert len(real.split(", ")) == len(looser.split(", ")) + 2
+    assert "evaluation_timestamp" not in no_ts
+    assert "generation_args := generation_args_json" in no_ts
+    assert "generation_args :=" not in no_args
+    assert "evaluation_timestamp := evaluation_timestamp" in no_args
+    assert "generation_details := generation_additional_details" in no_args
+    assert len(real.split(", ")) == len(no_ts.split(", ")) + 1 == len(no_args.split(", ")) + 1
     with pytest.raises(ValueError):
         stages._observation_key_sql(exclude=frozenset({"retrieved_timestamp"}))
 
@@ -965,7 +968,7 @@ def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
     _assert_dedup_by_config_sums_to_row_counts(snap)
     assert snap["dedup_by_config"] == {"minibench": {
         "staging": 2, "after_fact_id_pass": 1, "after_content_pass": 1,
-        "content_dedup_residual": 0,
+        "residual_timestamp_only": 0, "residual_generation_args_only": 0,
     }}
 
 
@@ -1123,24 +1126,25 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
     assert snap["row_counts"]["dropped_rows_content_dedup"] == 2
     _assert_dedup_by_config_sums_to_row_counts(snap)
     # minibench's residual is same_new vs different_generation: equal on
-    # every key field except generation_args.
+    # every key field except generation_args. ts-source's is ts_a vs ts_b:
+    # equal except for the stated evaluation time.
     assert snap["dedup_by_config"] == {
         "minibench": {
             "staging": 8, "after_fact_id_pass": 8, "after_content_pass": 6,
-            "content_dedup_residual": 1,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 1,
         },
         "other-source": {
             "staging": 1, "after_fact_id_pass": 1, "after_content_pass": 1,
-            "content_dedup_residual": 0,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 0,
         },
         "ts-source": {
             "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
-            "content_dedup_residual": 1,
+            "residual_timestamp_only": 1, "residual_generation_args_only": 0,
         },
     }
     assert snap["dedup_by_config_totals"] == {
         "staging": 11, "after_fact_id_pass": 11, "after_content_pass": 9,
-        "content_dedup_residual": 2,
+        "residual_timestamp_only": 1, "residual_generation_args_only": 1,
     }
 
     # A from-cache rebuild recovers the same counts from the cached tables.

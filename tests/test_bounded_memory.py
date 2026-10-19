@@ -108,6 +108,8 @@ def test_recover_stage_e_stats_without_tables_is_zero():
     con = duckdb.connect()
     s = pipeline._recover_stage_e_stats(con)
     assert (s.pre, s.post, s.n_dropped_dedup) == (0, 0, 0)
+    assert s.dedup_by_config is None
+    assert stages.dedup_by_config_totals(s.dedup_by_config) is None
     assert pipeline._configs_from_eee_raw(con) == []
 
 
