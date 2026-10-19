@@ -11,6 +11,10 @@ shapes together with the version they were generated at.
 Regenerate the fingerprint (after bumping the version) with:
 
     UPDATE_CACHE_FINGERPRINT=1 HF_HUB_OFFLINE=1 uv run pytest tests/test_cache_schema_fingerprint.py -q
+
+Regeneration refuses to record changed shapes under the version already on
+file: the bump comes first, so a regenerated fingerprint always names a
+version no earlier cache was written at.
 """
 from __future__ import annotations
 
@@ -50,16 +54,48 @@ def _parquet_shape(path: Path) -> Shape:
     return [[name, col_type] for name, col_type, *_ in rows]
 
 
+def regeneration_refusal(
+    recorded: dict | None, shapes: dict[str, Shape | None],
+) -> str | None:
+    """Why the fingerprint must not be rewritten from `shapes`, or None.
+
+    A rewrite is refused when the recorded version equals the code's
+    CACHE_SCHEMA_VERSION and any table shape differs from the record: the
+    caches written at that version hold the old shapes, so the version has
+    to move before the record does."""
+    if recorded is None or recorded["cache_schema_version"] != CACHE_SCHEMA_VERSION:
+        return None
+    produced = {table: shape for table, shape in shapes.items() if shape is not None}
+    changed = sorted(
+        table for table in set(produced) | set(recorded["tables"])
+        if produced.get(table) != recorded["tables"].get(table)
+    )
+    if not changed:
+        return None
+    return (
+        f"table shapes changed ({', '.join(changed)}) but CACHE_SCHEMA_VERSION "
+        f"is still {CACHE_SCHEMA_VERSION}, the version the fingerprint already "
+        f"records; bump the version in cache.py first, then regenerate"
+    )
+
+
 @pytest.fixture(scope="module")
 def actual_shapes(fixture_corpus_build) -> dict[str, Shape | None]:
     """Shape of every STAGE_OUTPUTS table in the fixture run's cache;
     `None` when the run did not cache that table. With
-    UPDATE_CACHE_FINGERPRINT=1 the fingerprint file is rewritten first."""
+    UPDATE_CACHE_FINGERPRINT=1 the fingerprint file is rewritten first,
+    unless that would record changed shapes under the version on file."""
     shapes: dict[str, Shape | None] = {}
     for table in ALL_TABLES:
         path = fixture_corpus_build.cache_dir / f"{table}.parquet"
         shapes[table] = _parquet_shape(path) if path.exists() else None
     if os.environ.get("UPDATE_CACHE_FINGERPRINT") == "1":
+        recorded = (
+            json.loads(FINGERPRINT_PATH.read_text()) if FINGERPRINT_PATH.exists() else None
+        )
+        refusal = regeneration_refusal(recorded, shapes)
+        if refusal:
+            pytest.fail(f"fingerprint not regenerated: {refusal}")
         payload = {
             "cache_schema_version": CACHE_SCHEMA_VERSION,
             "tables": {
@@ -175,3 +211,29 @@ def test_cached_shape_is_fingerprinted(table, fingerprint, actual_shapes):
         + "; ".join(c for c in changes if c)
         + f") and {_version_hint(fingerprint)}"
     )
+
+
+_SHAPES = {"a": [["x", "INTEGER"]], "b": [["y", "VARCHAR"]], "c": None}
+
+
+def _record(version: int, tables: dict) -> dict:
+    return {"cache_schema_version": version, "tables": tables}
+
+
+def test_regeneration_is_refused_for_changed_shapes_under_the_recorded_version():
+    recorded = _record(CACHE_SCHEMA_VERSION, {"a": [["x", "INTEGER"]], "b": [["y", "INTEGER"]]})
+    refusal = regeneration_refusal(recorded, _SHAPES)
+    assert refusal is not None
+    assert "(b)" in refusal and "bump the version" in refusal
+
+    added = _record(CACHE_SCHEMA_VERSION, {"a": [["x", "INTEGER"]]})
+    assert "(b)" in regeneration_refusal(added, _SHAPES)
+    dropped = _record(CACHE_SCHEMA_VERSION, {**recorded["tables"], "b": _SHAPES["b"], "z": []})
+    assert "(z)" in regeneration_refusal(dropped, _SHAPES)
+
+
+def test_regeneration_is_allowed_after_a_bump_or_without_a_change():
+    changed = {"a": [["x", "INTEGER"]], "b": [["y", "INTEGER"]]}
+    assert regeneration_refusal(_record(CACHE_SCHEMA_VERSION - 1, changed), _SHAPES) is None
+    assert regeneration_refusal(_record(CACHE_SCHEMA_VERSION, {"a": _SHAPES["a"], "b": _SHAPES["b"]}), _SHAPES) is None
+    assert regeneration_refusal(None, _SHAPES) is None
