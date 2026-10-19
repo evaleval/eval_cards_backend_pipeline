@@ -10,9 +10,12 @@ comments must stand alone.
 
 Checks only lines ADDED in the staged diff, so existing occurrences don't
 block unrelated commits. `--diff <range>` checks the lines added in a git
-revision range instead (CI runs `--diff origin/main...HEAD` on a pull
-request). Bypass a false positive with `git commit --no-verify` (and
-consider tightening the offending rule below).
+revision range instead (CI runs it over the pull request or the pushed
+range). A line containing `hygiene: ok` is skipped by every rule; use it
+for a false positive (and consider tightening the offending rule below).
+
+Exit status: 0 clean, 1 problems found, 2 when git could not produce the
+diff (not a repository, unknown range).
 
 To add a rule, append to RULES. A rule fires when its pattern matches
 the line and, if it has one, its `confirm` callback agrees.
@@ -32,6 +35,13 @@ class Rule(NamedTuple):
     pattern: re.Pattern
     hint: str
     confirm: Callable[[str], bool] | None = None
+
+
+OPT_OUT = "hygiene: ok"
+
+
+class GitUnavailable(Exception):
+    """`git diff` could not run or failed."""
 
 
 # A path a reader is meant to open: a document, by extension. Runtime data
@@ -148,7 +158,6 @@ EXCLUDED_DIR_PARTS = {"notes", "specs", "docs", "vendor", "node_modules", "depre
 EXCLUDED_PATHS = {
     "scripts/check_code_hygiene.py",
     "tests/test_check_code_hygiene.py",
-    "hooks/pre-commit",
 }
 
 
@@ -168,11 +177,19 @@ def added_lines(diff_target: str = "--cached"):
     `diff_target` is `--cached` for the staged changes or a revision range
     such as `origin/main...HEAD`.
     """
-    diff = subprocess.run(
-        ["git", "diff", "--unified=0", "--no-color", "--diff-filter=ACMR", diff_target],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    return parse_added_lines(diff)
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--unified=0", "--no-color", "--diff-filter=ACMR", diff_target],
+            capture_output=True, text=True,
+        )
+    except OSError as exc:
+        raise GitUnavailable(f"cannot run git: {exc}") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.strip().splitlines()
+        raise GitUnavailable(
+            f"git diff {diff_target} failed" + (f": {detail[0]}" if detail else "")
+        )
+    return parse_added_lines(proc.stdout)
 
 
 def parse_added_lines(diff: str):
@@ -191,6 +208,8 @@ def parse_added_lines(diff: str):
 
 
 def matching_rules(text: str) -> list[Rule]:
+    if OPT_OUT in text:
+        return []
     return [
         rule for rule in RULES
         if rule.pattern.search(text) and (rule.confirm is None or rule.confirm(text))
@@ -216,12 +235,16 @@ def main(argv: list[str] | None = None) -> int:
              "origin/main...HEAD) instead of the staged changes",
     )
     args = parser.parse_args(argv)
-    if args.diff is None:
-        scope, bypass = "staged changes", ", or bypass once with: git commit --no-verify"
-        findings = find_problems(added_lines())
-    else:
-        scope, bypass = f"diff {args.diff}", ""
-        findings = find_problems(added_lines(args.diff))
+    try:
+        if args.diff is None:
+            scope, bypass = "staged changes", ", or bypass once with: git commit --no-verify"
+            findings = find_problems(added_lines())
+        else:
+            scope, bypass = f"diff {args.diff}", ""
+            findings = find_problems(added_lines(args.diff))
+    except GitUnavailable as exc:
+        print(f"code-hygiene: {exc}", file=sys.stderr)
+        return 2
     if not findings:
         return 0
     print(f"code-hygiene: {len(findings)} problem(s) in {scope}\n", file=sys.stderr)
@@ -229,7 +252,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {path}:{lineno}  [{rule.name}]", file=sys.stderr)
         print(f"      {text.strip()[:120]}", file=sys.stderr)
         print(f"      -> {rule.hint}\n", file=sys.stderr)
-    print(f"Fix the lines above{bypass}", file=sys.stderr)
+    print(
+        f"Fix the lines above, mark a false positive with '{OPT_OUT}'{bypass}",
+        file=sys.stderr,
+    )
     return 1
 
 

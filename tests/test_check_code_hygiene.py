@@ -96,6 +96,11 @@ def test_every_rule_has_a_case():
     assert {name for name, _, _ in CASES} == {rule.name for rule in hygiene.RULES}
 
 
+@pytest.mark.parametrize("_,line,__", CASES, ids=[c[0] for c in CASES])
+def test_the_opt_out_marker_silences_every_rule(_, line, __, in_repo):
+    assert hygiene.matching_rules(f"{line}  # hygiene: ok") == []
+
+
 @pytest.mark.parametrize("rule,line,_", CASES, ids=[c[0] for c in CASES])
 def test_rule_fires_on_the_kind_of_line_it_was_written_for(rule, line, _, in_repo):
     assert rule in {r.name for r in hygiene.matching_rules(line)}
@@ -132,6 +137,8 @@ def test_ignored_paths_only_reports_documents_inside_the_repo(line, cited, in_re
         ("DEPRECATED_old/x.py", False),
         ("scripts/check_code_hygiene.py", False),
         ("tests/test_check_code_hygiene.py", False),
+        ("hooks/pre-commit", False),
+        ("hooks/pre-commit.py", True),
     ],
 )
 def test_is_checked(path, checked):
@@ -245,6 +252,39 @@ def test_staged_mode_reports_a_cited_document_at_an_ignored_path(repo):
     assert "src/mod.py:3  [ignored-path-ref]" in proc.stderr
     assert "src/mod.py:4" not in proc.stderr
     assert "gitignored" in proc.stderr
+
+
+def test_staged_mode_skips_lines_marked_hygiene_ok(repo):
+    _write(
+        repo, "src/mod.py",
+        "# Phase 1 lookup\nx = 1\n# see spec §3 for the fold  (hygiene: ok)\n"
+        "# Phase 2 follows\n",
+    )
+    _git(repo, "add", "-A")
+
+    proc = _run(repo)
+
+    assert proc.returncode == 1
+    assert "src/mod.py:3" not in proc.stderr
+    assert "src/mod.py:4  [phase-ref]" in proc.stderr
+    assert "hygiene: ok" in proc.stderr
+
+
+def test_outside_a_repository_exits_2_with_one_line(tmp_path):
+    proc = _run(tmp_path)
+
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert proc.stderr.count("\n") == 1
+    assert proc.stderr.startswith("code-hygiene: git diff --cached failed")
+    assert "Traceback" not in proc.stderr
+
+
+def test_an_unknown_range_exits_2(repo):
+    proc = _run(repo, "--diff", "no-such-ref...HEAD")
+
+    assert proc.returncode == 2
+    assert proc.stderr.startswith("code-hygiene: git diff no-such-ref...HEAD failed")
 
 
 def test_staged_mode_passes_clean_changes_and_ignores_the_working_tree(repo):

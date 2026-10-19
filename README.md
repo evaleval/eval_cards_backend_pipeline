@@ -202,7 +202,9 @@ Three checks run as pre-commit hooks: `ruff` (lint only, no rewrites), the
 pre-commit-hooks file checks (YAML and TOML parse, no merge-conflict
 markers, no large files, no trailing whitespace) and `scripts/check_code_hygiene.py`, which rejects
 added comments that point at a spec section, a phase, a working session, or
-describe what the code did before. Install the hooks once per clone:
+describe what the code did before. A line containing `hygiene: ok` is
+skipped by every rule; use it for a false positive. Install the hooks once
+per clone:
 
 ```bash
 uv run pre-commit install
