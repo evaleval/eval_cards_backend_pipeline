@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Code-hygiene gate for staged changes. Runs from hooks/pre-commit.
+"""Code-hygiene gate for added lines. Runs from the pre-commit hook and in CI.
 
 Blocks comments/code that reference ephemeral working artifacts: spec
 sections, decision labels, phase/session tags, and tombstones describing
@@ -8,14 +8,17 @@ inside the working session that produced them; the committed code and its
 own comments must stand alone.
 
 Checks only lines ADDED in the staged diff, so existing occurrences don't
-block unrelated commits. Bypass a false positive with `git commit
---no-verify` (and consider tightening the offending rule below).
+block unrelated commits. `--diff <range>` checks the lines added in a git
+revision range instead (CI runs `--diff origin/main...HEAD` on a pull
+request). Bypass a false positive with `git commit --no-verify` (and
+consider tightening the offending rule below).
 
 To add a rule, append to RULES.
 """
 
 from __future__ import annotations
 
+import argparse
 import re
 import subprocess
 import sys
@@ -95,7 +98,11 @@ CHECKED_EXTENSIONS = {
 # Design docs may legitimately carry section numbering; frozen trees are
 # not held to current hygiene.
 EXCLUDED_DIR_PARTS = {"notes", "specs", "docs", "vendor", "node_modules", "deprecated_refs"}
-EXCLUDED_PATHS = {"scripts/check_code_hygiene.py", "hooks/pre-commit"}
+EXCLUDED_PATHS = {
+    "scripts/check_code_hygiene.py",
+    "tests/test_check_code_hygiene.py",
+    "hooks/pre-commit",
+}
 
 
 def is_checked(path: str) -> bool:
@@ -108,12 +115,21 @@ def is_checked(path: str) -> bool:
     return dot != -1 and parts[-1][dot:] in CHECKED_EXTENSIONS
 
 
-def staged_added_lines():
-    """Yield (path, line_number, text) for every line added in the staged diff."""
+def added_lines(diff_target: str = "--cached"):
+    """Yield (path, line_number, text) for every line added in a git diff.
+
+    `diff_target` is `--cached` for the staged changes or a revision range
+    such as `origin/main...HEAD`.
+    """
     diff = subprocess.run(
-        ["git", "diff", "--cached", "--unified=0", "--no-color", "--diff-filter=ACMR"],
+        ["git", "diff", "--unified=0", "--no-color", "--diff-filter=ACMR", diff_target],
         capture_output=True, text=True, check=True,
     ).stdout
+    return parse_added_lines(diff)
+
+
+def parse_added_lines(diff: str):
+    """Yield (path, line_number, text) for every added line in unified diff text."""
     path, lineno = None, 0
     for raw in diff.splitlines():
         if raw.startswith("+++ b/"):
@@ -127,22 +143,42 @@ def staged_added_lines():
             lineno += 1
 
 
-def main() -> int:
+def matching_rules(text: str) -> list[Rule]:
+    return [rule for rule in RULES if rule.pattern.search(text)]
+
+
+def find_problems(lines) -> list[tuple[str, int, Rule, str]]:
     findings = []
-    for path, lineno, text in staged_added_lines():
+    for path, lineno, text in lines:
         if not is_checked(path):
             continue
-        for rule in RULES:
-            if rule.pattern.search(text):
-                findings.append((path, lineno, rule, text))
+        for rule in matching_rules(text):
+            findings.append((path, lineno, rule, text))
+    return findings
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--diff", metavar="RANGE", default=None,
+        help="check the lines added in this git revision range (for example "
+             "origin/main...HEAD) instead of the staged changes",
+    )
+    args = parser.parse_args(argv)
+    if args.diff is None:
+        scope, bypass = "staged changes", ", or bypass once with: git commit --no-verify"
+        findings = find_problems(added_lines())
+    else:
+        scope, bypass = f"diff {args.diff}", ""
+        findings = find_problems(added_lines(args.diff))
     if not findings:
         return 0
-    print(f"code-hygiene: {len(findings)} problem(s) in staged changes\n", file=sys.stderr)
+    print(f"code-hygiene: {len(findings)} problem(s) in {scope}\n", file=sys.stderr)
     for path, lineno, rule, text in findings:
         print(f"  {path}:{lineno}  [{rule.name}]", file=sys.stderr)
         print(f"      {text.strip()[:120]}", file=sys.stderr)
         print(f"      -> {rule.hint}\n", file=sys.stderr)
-    print("Fix the lines above, or bypass once with: git commit --no-verify", file=sys.stderr)
+    print(f"Fix the lines above{bypass}", file=sys.stderr)
     return 1
 
 

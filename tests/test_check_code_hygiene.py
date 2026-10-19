@@ -1,0 +1,237 @@
+"""`scripts/check_code_hygiene.py`.
+
+Every rule is tried against a line of the kind it was written for and a
+near-miss that must pass, then both diff modes run the script for real
+against a throwaway git repo.
+"""
+from __future__ import annotations
+
+import importlib.util
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_code_hygiene.py"
+
+
+def _load_script():
+    spec = importlib.util.spec_from_file_location("check_code_hygiene", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+hygiene = _load_script()
+
+# (rule, a line that must fire it, a near-miss that must not). The firing
+# lines marked "committed" were added to this repo before the gate existed
+# (found with `git log -p`); the rest are made up, no past commit had one.
+CASES = [
+    (
+        "spec-section-ref",
+        "# only aggregate root-scope metrics; spec §8.5b is",  # committed
+        "# only aggregate root-scope metrics",
+    ),
+    (
+        "spec-label-ref",
+        "# Additive merged-view link (spec P6): the canonical benchmark id when a",  # committed
+        "# Additive merged-view link: the canonical benchmark id when one exists",
+    ),
+    (
+        "spec-deixis",
+        '"""Materialize ``aggregate__<suite_key>`` rows per spec reshape/05.',  # committed
+        '"""Materialize ``aggregate__<suite_key>`` rows, one per suite.',
+    ),
+    (
+        "section-number-ref",
+        "# Dedup order follows section 4(b) of the design notes.",  # made up
+        "# sections are sorted by display order",
+    ),
+    (
+        "design-point-ref",
+        "Grain rules (spec design pt 7): a benchmark with >=1 top-level",  # committed
+        "Grain rules: a benchmark with >=1 top-level",
+    ),
+    (
+        "phase-ref",
+        "# Phase 1: direct lookup by the primary identifiers. metadata_lookup is",  # committed
+        "# two-phase commit across the stage caches",
+    ),
+    (
+        "session-ref",
+        "# `notes/provenance-investigation.md` Session 5g/5h). Falls back to",  # committed
+        "# one DuckDB session per pipeline run",
+    ),
+    (
+        "tombstone-previously",
+        "-- rule as evals_view.source_data). Was previously hard-coded",  # committed
+        "-- previously-seen ids are skipped",
+    ),
+    (
+        "tombstone-used-to",
+        "# this column used to be nullable",  # made up
+        "# the cache is used to skip stages A-D",
+    ),
+    (
+        "tombstone-dated-change",
+        "# renamed on 2026-08-16 because the view layer dropped the old key",  # made up
+        "# snapshot ids are dated, e.g. 2026-08-16T13-44-51Z",
+    ),
+]
+
+
+def test_every_rule_has_a_case():
+    assert {name for name, _, _ in CASES} == {rule.name for rule in hygiene.RULES}
+
+
+@pytest.mark.parametrize("rule,line,_", CASES, ids=[c[0] for c in CASES])
+def test_rule_fires_on_the_kind_of_line_it_was_written_for(rule, line, _):
+    assert rule in {r.name for r in hygiene.matching_rules(line)}
+
+
+@pytest.mark.parametrize("rule,_,line", CASES, ids=[c[0] for c in CASES])
+def test_rule_stays_quiet_on_a_near_miss(rule, _, line):
+    assert hygiene.matching_rules(line) == []
+
+
+@pytest.mark.parametrize(
+    "path,checked",
+    [
+        ("src/eval_card_backend/x.py", True),
+        ("tests/test_x.py", True),
+        (".github/workflows/ci.yml", True),
+        ("pyproject.toml", True),
+        ("README.md", False),
+        ("notes/spec.py", False),
+        ("DEPRECATED_old/x.py", False),
+        ("scripts/check_code_hygiene.py", False),
+        ("tests/test_check_code_hygiene.py", False),
+    ],
+)
+def test_is_checked(path, checked):
+    assert hygiene.is_checked(path) is checked
+
+
+def test_parse_added_lines_numbers_lines_from_hunk_headers():
+    diff = (
+        "diff --git a/src/a.py b/src/a.py\n"
+        "--- a/src/a.py\n"
+        "+++ b/src/a.py\n"
+        "@@ -3,0 +4,2 @@\n"
+        "+one\n"
+        "+two\n"
+        "@@ -10 +12 @@\n"
+        "-old\n"
+        "+new\n"
+        "diff --git a/notes/b.md b/notes/b.md\n"
+        "--- a/notes/b.md\n"
+        "+++ b/notes/b.md\n"
+        "@@ -0,0 +1 @@\n"
+        "+# Phase 9\n"
+    )
+    assert list(hygiene.parse_added_lines(diff)) == [
+        ("src/a.py", 4, "one"),
+        ("src/a.py", 5, "two"),
+        ("src/a.py", 12, "new"),
+        ("notes/b.md", 1, "# Phase 9"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# The script against a real repo
+# ---------------------------------------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "core.hooksPath=/dev/null", *args],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+
+
+def _commit(repo: Path, message: str) -> None:
+    _git(repo, "add", "-A")
+    _git(
+        repo, "-c", "user.name=t", "-c", "user.email=t@example.com",
+        "commit", "-q", "--no-verify", "-m", message,
+    )
+
+
+def _write(repo: Path, rel: str, text: str) -> None:
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def _run(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        cwd=repo, capture_output=True, text=True,
+    )
+
+
+@pytest.fixture
+def repo(tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    # A pre-existing offender: never reported, only added lines are.
+    _write(tmp_path, "src/mod.py", "# Phase 1 lookup\nx = 1\n")
+    _commit(tmp_path, "base")
+    return tmp_path
+
+
+def test_staged_mode_reports_added_lines_in_checked_files_only(repo):
+    _write(repo, "src/mod.py", "# Phase 1 lookup\nx = 1\n# see spec §3 for the fold\n")
+    _write(repo, "notes/design.md", "# Phase 2\n")
+    _git(repo, "add", "-A")
+
+    proc = _run(repo)
+
+    assert proc.returncode == 1
+    assert "problem(s) in staged changes" in proc.stderr
+    assert "src/mod.py:3  [spec-section-ref]" in proc.stderr
+    assert "src/mod.py:3  [spec-deixis]" in proc.stderr
+    assert "phase-ref" not in proc.stderr
+    assert "notes/" not in proc.stderr
+    assert "--no-verify" in proc.stderr
+
+
+def test_staged_mode_passes_clean_changes_and_ignores_the_working_tree(repo):
+    _write(repo, "src/mod.py", "# Phase 1 lookup\nx = 2\n")
+    _git(repo, "add", "-A")
+    _write(repo, "src/mod.py", "# Phase 1 lookup\nx = 2\n# Session 9 leftover\n")
+
+    proc = _run(repo)
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr == ""
+
+
+def test_diff_mode_checks_the_commit_range_and_not_the_index(repo):
+    _write(repo, "src/mod.py", "# Phase 1 lookup\nx = 1\nY = 2  # was previously 3\n")
+    _commit(repo, "offending commit")
+    _write(repo, "src/other.py", "z = 1\n")
+    _git(repo, "add", "-A")
+
+    proc = _run(repo, "--diff", "HEAD~1...HEAD")
+
+    assert proc.returncode == 1
+    assert "problem(s) in diff HEAD~1...HEAD" in proc.stderr
+    assert "src/mod.py:3  [tombstone-previously]" in proc.stderr
+    assert "phase-ref" not in proc.stderr
+    assert "--no-verify" not in proc.stderr
+    assert _run(repo).returncode == 0
+
+
+def test_diff_mode_passes_when_the_range_only_removes_or_moves_offenders(repo):
+    _write(repo, "src/mod.py", "x = 1\n")
+    _commit(repo, "drop the comment")
+
+    proc = _run(repo, "--diff", "HEAD~1...HEAD")
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr == ""
