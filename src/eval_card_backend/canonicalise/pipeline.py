@@ -846,6 +846,10 @@ def _build_snapshot_meta(
             "comparability_groups_metric_unit_inconsistent": n_unit_inconsistent,
             "synthesised_id_collisions": n_synth_collisions,
         },
+        "dedup_by_config": stage_e_stats.dedup_by_config,
+        "dedup_by_config_totals": stages.dedup_by_config_totals(
+            stage_e_stats.dedup_by_config
+        ),
         "stage_a_drops": eee.drop_breakdown(),
     }
 
@@ -946,6 +950,7 @@ def _recover_stage_e_stats(con) -> "stages.StageEStats":
     n_sentinel = None
     n_dedup = None
     n_content_dedup = None
+    dedup_by_config: dict[str, dict[str, int]] = {}
     if pre_count is not None:
         try:
             n_no_score = con.execute(
@@ -969,6 +974,7 @@ def _recover_stage_e_stats(con) -> "stages.StageEStats":
                 ).fetchone()[0]
                 n_dedup = max(0, pre_dedup - fact_id_survivors)
                 n_content_dedup = max(0, fact_id_survivors - post_count)
+                dedup_by_config = stages.stage_e_dedup_by_config(con)
         except duckdb.CatalogException:
             log.warning(
                 "fact_results_staging missing; Stage E breakdowns = None"
@@ -982,6 +988,7 @@ def _recover_stage_e_stats(con) -> "stages.StageEStats":
             n_content_dedup if n_content_dedup is not None else 0
         ),
         post=post_count if post_count is not None else 0,
+        dedup_by_config=dedup_by_config,
     )
 
 

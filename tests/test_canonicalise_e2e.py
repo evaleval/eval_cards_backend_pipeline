@@ -833,6 +833,46 @@ def test_pipeline_drops_score_sentinel_when_scale_excludes_it(tmp_path, monkeypa
     assert snap["row_counts"]["fact_results"] == 2
 
 
+def _assert_dedup_by_config_sums_to_row_counts(snap: dict) -> None:
+    """Per-config dedup counts must add up to the global row_counts."""
+    by_config = snap["dedup_by_config"]
+    totals = snap["dedup_by_config_totals"]
+    keys = {
+        "staging", "after_fact_id_pass", "after_content_pass",
+        "content_dedup_residual",
+    }
+    assert set(snap["configs"]) == set(by_config)
+    for counts in by_config.values():
+        assert set(counts) == keys
+        assert all(isinstance(v, int) for v in counts.values())
+    assert totals == {
+        k: sum(c[k] for c in by_config.values()) for k in keys
+    }
+    rc = snap["row_counts"]
+    assert totals["staging"] == rc["fact_results_pre_drop"]
+    assert totals["after_fact_id_pass"] == (
+        rc["fact_results_pre_drop"] - rc["dropped_rows_no_score"]
+        - rc["dropped_rows_sentinel"] - rc["dropped_rows_dedup"]
+    )
+    assert totals["after_content_pass"] == rc["fact_results"]
+
+
+def test_observation_key_renders_real_and_looser_struct_from_one_list():
+    from eval_card_backend.canonicalise import stages
+
+    real = stages._observation_key_sql()
+    looser = stages._observation_key_sql(exclude=stages._LOOSER_KEY_EXCLUDES)
+    assert real.startswith("struct_pack(") and looser.startswith("struct_pack(")
+    assert "evaluation_timestamp := evaluation_timestamp" in real
+    assert "generation_args := generation_args_json" in real
+    assert "evaluation_timestamp" not in looser
+    assert "generation_args :=" not in looser
+    assert "generation_details := generation_additional_details" in looser
+    assert len(real.split(", ")) == len(looser.split(", ")) + 2
+    with pytest.raises(ValueError):
+        stages._observation_key_sql(exclude=frozenset({"retrieved_timestamp"}))
+
+
 def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
     """Two EEE records with the same evaluation_id collide on fact_id.
     Pipeline must keep the row with the latest retrieved_timestamp and surface
@@ -921,6 +961,11 @@ def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
     assert snap["row_counts"]["fact_results"] == 1
     assert snap["row_counts"]["dropped_rows_dedup"] == 1
     assert snap["row_counts"]["dropped_rows_no_score"] == 0
+    _assert_dedup_by_config_sums_to_row_counts(snap)
+    assert snap["dedup_by_config"] == {"minibench": {
+        "staging": 2, "after_fact_id_pass": 1, "after_content_pass": 1,
+        "content_dedup_residual": 0,
+    }}
 
 
 def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatch):
@@ -928,6 +973,9 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
 
     The content key must still retain changed values, source configs, and
     generation conditions. Equal-timestamp ties have a deterministic winner.
+    snapshot_meta reports the per-config counts at each dedup boundary, and
+    the residual of survivors that differ only in evaluation_timestamp or
+    generation_args, identically on a fresh run and a from-cache rebuild.
     """
     pytest.importorskip("duckdb")
 
@@ -946,12 +994,13 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
         score: float,
         *,
         temperature: float = 0.0,
+        evaluated: str = "2026-04-29T00:00:00Z",
     ) -> dict:
         return {
             "evaluation_id": evaluation_id,
             "schema_version": "0.2.2",
             "retrieved_timestamp": retrieved,
-            "evaluation_timestamp": "2026-04-29T00:00:00Z",
+            "evaluation_timestamp": evaluated,
             "model_info": {
                 "developer": "openai", "name": "GPT-4o",
                 "id": "openai/gpt-4o", "inference_platform": "openai-api",
@@ -1019,6 +1068,14 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
         ("other-source", "other.json", json.dumps(_record(
             "other_source", "2026-05-03T00:00:00Z", 0.8,
         ))),
+        # Same content under two stated evaluation times: both survive the
+        # content pass and show up as that config's residual.
+        ("ts-source", "ts-a.json", json.dumps(_record(
+            "ts_a", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-28T00:00:00Z",
+        ))),
+        ("ts-source", "ts-b.json", json.dumps(_record(
+            "ts_b", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-29T00:00:00Z",
+        ))),
     ]
     write_eee_datastore(eee_root, records)
 
@@ -1030,14 +1087,14 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
     from eval_card_backend.canonicalise import pipeline
     from eval_card_backend.config import Settings
 
-    out_dir = pipeline.run(
-        Settings.from_env(),
+    run_kwargs = dict(
         snapshot_id="2026-05-03T00:00:00Z",
         warehouse_dir=str(warehouse),
         registry_local_dir=str(reg_root),
         taxonomy_seed_dir=str(seed_root),
         cache_root=str(tmp_path / "cache"),
     )
+    out_dir = pipeline.run(Settings.from_env(), **run_kwargs)
 
     import duckdb
 
@@ -1045,7 +1102,7 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
     rows = duckdb.connect().execute(
         f"SELECT source_config, evaluation_id, score, temperature "
         f"FROM read_parquet('{fact_path}') "
-        f"ORDER BY source_config, score, temperature"
+        f"ORDER BY source_config, score, temperature, evaluation_id"
     ).fetchall()
     assert rows == [
         ("minibench", "two_channels", 0.6, 0.0),
@@ -1055,12 +1112,42 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
         ("minibench", "different_generation", 0.8, 0.7),
         ("minibench", "different_value", 0.9, 0.0),
         ("other-source", "other_source", 0.8, 0.0),
+        ("ts-source", "ts_a", 0.8, 0.0),
+        ("ts-source", "ts_b", 0.8, 0.0),
     ]
 
     snap = json.loads((out_dir / "snapshot_meta.json").read_text())
-    assert snap["row_counts"]["fact_results"] == 7
+    assert snap["row_counts"]["fact_results"] == 9
     assert snap["row_counts"]["dropped_rows_dedup"] == 0
     assert snap["row_counts"]["dropped_rows_content_dedup"] == 2
+    _assert_dedup_by_config_sums_to_row_counts(snap)
+    # minibench's residual is same_new vs different_generation: equal on
+    # every key field except generation_args.
+    assert snap["dedup_by_config"] == {
+        "minibench": {
+            "staging": 8, "after_fact_id_pass": 8, "after_content_pass": 6,
+            "content_dedup_residual": 1,
+        },
+        "other-source": {
+            "staging": 1, "after_fact_id_pass": 1, "after_content_pass": 1,
+            "content_dedup_residual": 0,
+        },
+        "ts-source": {
+            "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
+            "content_dedup_residual": 1,
+        },
+    }
+    assert snap["dedup_by_config_totals"] == {
+        "staging": 11, "after_fact_id_pass": 11, "after_content_pass": 9,
+        "content_dedup_residual": 2,
+    }
+
+    # A from-cache rebuild recovers the same counts from the cached tables.
+    out_dir2 = pipeline.run(Settings.from_env(), **run_kwargs, from_stage="F")
+    snap2 = json.loads((out_dir2 / "snapshot_meta.json").read_text())
+    assert snap2["row_counts"] == snap["row_counts"]
+    assert snap2["dedup_by_config"] == snap["dedup_by_config"]
+    assert snap2["dedup_by_config_totals"] == snap["dedup_by_config_totals"]
 
 
 def test_pipeline_dedup_orders_mixed_retrieved_timestamp_formats(
@@ -1172,6 +1259,7 @@ def test_pipeline_dedup_orders_mixed_retrieved_timestamp_formats(
     snap = json.loads((out_dir / "snapshot_meta.json").read_text())
     assert snap["row_counts"]["dropped_rows_dedup"] == 1
     assert snap["row_counts"]["dropped_rows_content_dedup"] == 2
+    _assert_dedup_by_config_sums_to_row_counts(snap)
 
 
 def test_metric_name_pre_step_end_to_end(tmp_path, monkeypatch):

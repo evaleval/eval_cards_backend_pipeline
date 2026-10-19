@@ -328,6 +328,90 @@ def org_display_normalize_sql(column_expr: str) -> str:
     )
 
 
+# Stage E observation key: (struct field, staging column) in struct order.
+# Rows equal on every field are one observation re-emitted under fresh ids.
+_OBSERVATION_KEY_FIELDS: tuple[tuple[str, str], ...] = (
+    # Reporter. source_config is load-bearing: observations from
+    # different leaderboards are independent even when every
+    # other field agrees. org_raw protects multi-reporter configs.
+    ("source_config", "source_config"),
+    ("reporting_org", "org_raw"),
+    ("evaluator_relationship", "evaluator_relationship"),
+    ("source_type", "source_type"),
+
+    # Model and benchmark identity. Raw benchmark spelling is
+    # substantive in configs whose broad canonical fallback can
+    # cover several measurements (notably Artificial Analysis).
+    ("model_raw", "model_raw"),
+    ("inference_platform", "inference_platform"),
+    ("evaluation_name", "evaluation_name"),
+    ("benchmark_raw", "benchmark_raw"),
+    ("benchmark_id", "benchmark_id"),
+    ("benchmark_subset", "benchmark_subset"),
+    ("slice_key", "slice_key"),
+    ("slice_name", "slice_name"),
+    ("aggregate_level", "aggregate_level"),
+    ("observation_role", "observation_role"),
+    ("collection_id", "collection_id"),
+
+    # Metric identity. Declared bounds, unit and direction are
+    # left out: a re-scrape restates them (Artificial Analysis
+    # derives bounds from observed values each run) without
+    # changing the observation; the surviving row keeps the
+    # latest declaration.
+    ("metric_raw", "metric_raw"),
+    ("metric_id", "metric_id"),
+    ("metric_key", "metric_key"),
+    ("metric_qualifier", "metric_qualifier"),
+    ("split", "split"),
+
+    # Measurement and the source-stated eval time. The same value
+    # re-reported for the same (model, benchmark, metric, split)
+    # under the same conditions is one observation; uncertainty
+    # fields are left out because re-scrapes restate them with
+    # rounding drift. retrieved_timestamp is intentionally
+    # absent: it says when we scraped the row, not when the
+    # evaluation ran.
+    ("score", "score"),
+    ("n_samples", "n_samples"),
+    ("evaluation_timestamp", "evaluation_timestamp"),
+
+    # Evaluation conditions that change what was measured. The
+    # typed generation_args struct and its additional details
+    # stay in the key: a submission's filter or reasoning
+    # variants can share a value and are still distinct runs.
+    ("generation_args", "generation_args_json"),
+    ("generation_details", "generation_additional_details"),
+    ("agent_scaffold", "agent_scaffold_raw"),
+    ("harness_raw", "harness_raw"),
+    ("harness_id", "harness_id"),
+    ("eval_library_name", "eval_library_name"),
+    ("eval_library_version", "eval_library_version"),
+    ("protocol_condition", "protocol_condition"),
+    ("judge_condition", "judge_condition"),
+    ("instance_checksum", "instance_checksum"),
+    ("instance_hash_algorithm", "instance_hash_algorithm"),
+    ("instance_rows", "instance_rows"),
+)
+
+# Fields a re-scrape can restate for one observation. Survivors that still
+# collide on the key without them are reported as content_dedup_residual.
+_LOOSER_KEY_EXCLUDES: frozenset[str] = frozenset({"evaluation_timestamp", "generation_args"})
+
+
+def _observation_key_sql(*, exclude: frozenset[str] = frozenset()) -> str:
+    """Render the observation key as a `struct_pack(...)` over the staging
+    columns, leaving out the fields named in `exclude`."""
+    unknown = exclude - {alias for alias, _ in _OBSERVATION_KEY_FIELDS}
+    if unknown:
+        raise ValueError(f"not observation key fields: {sorted(unknown)}")
+    fields = ", ".join(
+        f"{alias} := {column}"
+        for alias, column in _OBSERVATION_KEY_FIELDS if alias not in exclude
+    )
+    return f"struct_pack({fields})"
+
+
 class StageEStats(NamedTuple):
     """Row-count breakdown for Stage E. Exposed so the orchestrator can
     populate snapshot_meta with each drop reason separately."""
@@ -337,8 +421,84 @@ class StageEStats(NamedTuple):
     n_dropped_dedup: int        # fact_id collisions
     n_dropped_content_dedup: int  # same observation re-emitted in a new record
     post: int                   # final fact_results_signaled count
+    dedup_by_config: dict[str, dict[str, int]]  # see stage_e_dedup_by_config
 
 log = logging.getLogger(__name__)
+
+
+_DEDUP_BY_CONFIG_KEYS = (
+    "staging", "after_fact_id_pass", "after_content_pass",
+    "content_dedup_residual",
+)
+
+
+def stage_e_dedup_by_config(con) -> dict[str, dict[str, int]]:
+    """Per-source_config row counts at each Stage E dedup boundary, read
+    from `fact_results_staging` and `fact_results_signaled` so a fresh run
+    and a from-cache rebuild report the same numbers.
+
+    `content_dedup_residual` counts survivors that still match another
+    survivor once the observation key drops evaluation_timestamp and
+    generation_args (rows minus distinct looser keys). Survivors are
+    matched back to staging on (source_record_path, result_idx) because
+    the key's evaluation_name is not carried into fact_results_signaled.
+    """
+    rows = con.execute(
+        f"""
+        WITH staging AS (
+            SELECT source_config, count(*) AS n
+            FROM fact_results_staging GROUP BY 1
+        ),
+        fact_id_pass AS (
+            SELECT source_config,
+                   COUNT(DISTINCT fact_id)
+                 + COUNT(*) FILTER (WHERE fact_id IS NULL) AS n
+            FROM fact_results_staging
+            WHERE score IS NOT NULL
+              AND NOT ({_SENTINEL_DROP_PREDICATE})
+            GROUP BY 1
+        ),
+        content_pass AS (
+            SELECT source_config, count(*) AS n
+            FROM fact_results_signaled GROUP BY 1
+        ),
+        residual AS (
+            SELECT source_config,
+                   count(*) - COUNT(DISTINCT
+                       {_observation_key_sql(exclude=_LOOSER_KEY_EXCLUDES)}
+                   ) AS n
+            FROM fact_results_staging s
+            SEMI JOIN fact_results_signaled f
+              ON s.source_record_path IS NOT DISTINCT FROM f.source_record_path
+             AND s.result_idx IS NOT DISTINCT FROM f.result_idx
+            GROUP BY 1
+        )
+        SELECT st.source_config,
+               st.n,
+               COALESCE(fp.n, 0),
+               COALESCE(cp.n, 0),
+               COALESCE(r.n, 0)
+        FROM staging st
+        LEFT JOIN fact_id_pass fp USING (source_config)
+        LEFT JOIN content_pass cp USING (source_config)
+        LEFT JOIN residual r USING (source_config)
+        ORDER BY st.source_config
+        """
+    ).fetchall()
+    return {
+        config: dict(zip(_DEDUP_BY_CONFIG_KEYS, (int(c) for c in counts)))
+        for config, *counts in rows
+    }
+
+
+def dedup_by_config_totals(
+    by_config: dict[str, dict[str, int]],
+) -> dict[str, int]:
+    """Sum each `stage_e_dedup_by_config` count over configs."""
+    return {
+        key: sum(counts[key] for counts in by_config.values())
+        for key in _DEDUP_BY_CONFIG_KEYS
+    }
 
 
 # What a cell made only of PART observations is worth, when the registry does
@@ -3041,69 +3201,7 @@ def stage_e_per_row_signals(
             WHERE _dedup_rank = 1
         ),
         content_keyed AS (
-            SELECT *, struct_pack(
-                -- Reporter. source_config is load-bearing: observations from
-                -- different leaderboards are independent even when every
-                -- other field agrees. org_raw protects multi-reporter configs.
-                source_config                 := source_config,
-                reporting_org                 := org_raw,
-                evaluator_relationship       := evaluator_relationship,
-                source_type                   := source_type,
-
-                -- Model and benchmark identity. Raw benchmark spelling is
-                -- substantive in configs whose broad canonical fallback can
-                -- cover several measurements (notably Artificial Analysis).
-                model_raw                     := model_raw,
-                inference_platform            := inference_platform,
-                evaluation_name               := evaluation_name,
-                benchmark_raw                 := benchmark_raw,
-                benchmark_id                  := benchmark_id,
-                benchmark_subset              := benchmark_subset,
-                slice_key                     := slice_key,
-                slice_name                    := slice_name,
-                aggregate_level               := aggregate_level,
-                observation_role              := observation_role,
-                collection_id                 := collection_id,
-
-                -- Metric identity. Declared bounds, unit and direction are
-                -- left out: a re-scrape restates them (Artificial Analysis
-                -- derives bounds from observed values each run) without
-                -- changing the observation; the surviving row keeps the
-                -- latest declaration.
-                metric_raw                    := metric_raw,
-                metric_id                     := metric_id,
-                metric_key                    := metric_key,
-                metric_qualifier              := metric_qualifier,
-                split                         := split,
-
-                -- Measurement and the source-stated eval time. The same value
-                -- re-reported for the same (model, benchmark, metric, split)
-                -- under the same conditions is one observation; uncertainty
-                -- fields are left out because re-scrapes restate them with
-                -- rounding drift. retrieved_timestamp is intentionally
-                -- absent: it says when we scraped the row, not when the
-                -- evaluation ran.
-                score                         := score,
-                n_samples                     := n_samples,
-                evaluation_timestamp          := evaluation_timestamp,
-
-                -- Evaluation conditions that change what was measured. The
-                -- typed generation_args struct and its additional details
-                -- stay in the key: a submission's filter or reasoning
-                -- variants can share a value and are still distinct runs.
-                generation_args               := generation_args_json,
-                generation_details            := generation_additional_details,
-                agent_scaffold                 := agent_scaffold_raw,
-                harness_raw                   := harness_raw,
-                harness_id                    := harness_id,
-                eval_library_name             := eval_library_name,
-                eval_library_version          := eval_library_version,
-                protocol_condition            := protocol_condition,
-                judge_condition               := judge_condition,
-                instance_checksum             := instance_checksum,
-                instance_hash_algorithm       := instance_hash_algorithm,
-                instance_rows                 := instance_rows
-            ) AS _observation_key
+            SELECT *, {_observation_key_sql()} AS _observation_key
             FROM fact_id_deduped
         ),
         content_ranked AS (
@@ -3177,6 +3275,7 @@ def stage_e_per_row_signals(
         n_dropped_dedup=n_dropped_dedup,
         n_dropped_content_dedup=n_dropped_content_dedup,
         post=post,
+        dedup_by_config=stage_e_dedup_by_config(con),
     )
 
 
