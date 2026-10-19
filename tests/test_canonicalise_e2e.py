@@ -858,6 +858,52 @@ def _assert_dedup_by_config_sums_to_row_counts(snap: dict) -> None:
     assert totals["after_content_pass"] == rc["fact_results"]
 
 
+def test_observation_key_fields_are_pinned():
+    """Every field in the Stage E observation key decides what counts as one
+    observation; adding or dropping one changes which rows survive the
+    content pass, so the list changes only deliberately, here and there."""
+    from eval_card_backend.canonicalise import stages
+
+    assert stages._OBSERVATION_KEY_FIELDS == (
+        ("source_config", "source_config"),
+        ("reporting_org", "org_raw"),
+        ("evaluator_relationship", "evaluator_relationship"),
+        ("source_type", "source_type"),
+        ("model_raw", "model_raw"),
+        ("inference_platform", "inference_platform"),
+        ("evaluation_name", "evaluation_name"),
+        ("benchmark_raw", "benchmark_raw"),
+        ("benchmark_id", "benchmark_id"),
+        ("benchmark_subset", "benchmark_subset"),
+        ("slice_key", "slice_key"),
+        ("slice_name", "slice_name"),
+        ("aggregate_level", "aggregate_level"),
+        ("observation_role", "observation_role"),
+        ("collection_id", "collection_id"),
+        ("metric_raw", "metric_raw"),
+        ("metric_id", "metric_id"),
+        ("metric_key", "metric_key"),
+        ("metric_qualifier", "metric_qualifier"),
+        ("split", "split"),
+        ("score", "score"),
+        ("n_samples", "n_samples"),
+        ("evaluation_timestamp", "evaluation_timestamp"),
+        ("generation_args", "generation_args_json"),
+        ("generation_details", "generation_additional_details"),
+        ("agent_scaffold", "agent_scaffold_raw"),
+        ("harness_raw", "harness_raw"),
+        ("harness_id", "harness_id"),
+        ("eval_library_name", "eval_library_name"),
+        ("eval_library_version", "eval_library_version"),
+        ("protocol_condition", "protocol_condition"),
+        ("judge_condition", "judge_condition"),
+        ("instance_checksum", "instance_checksum"),
+        ("instance_hash_algorithm", "instance_hash_algorithm"),
+        ("instance_rows", "instance_rows"),
+    )
+    assert len(stages._OBSERVATION_KEY_FIELDS) == 35
+
+
 def test_observation_key_renders_real_and_looser_struct_from_one_list():
     from eval_card_backend.canonicalise import stages
 
@@ -1081,6 +1127,33 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
             "ts_b", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-29T00:00:00Z",
         ))),
     ]
+
+    def _with(record: dict, **fields) -> dict:
+        """The one result of `record` with `fields` set on it."""
+        result = record["evaluation_results"][0]
+        for key, value in fields.items():
+            if key == "hf_split":
+                result["source_data"]["hf_split"] = value
+            else:
+                result[key] = value
+        return record
+
+    records += [
+        # Same value on two dataset splits: two observations.
+        ("split-source", "split-test.json", json.dumps(_with(
+            _record("split_test", "2026-05-03T00:00:00Z", 0.8), hf_split="test",
+        ))),
+        ("split-source", "split-validation.json", json.dumps(_with(
+            _record("split_validation", "2026-05-03T00:00:00Z", 0.8), hf_split="validation",
+        ))),
+        # Same value on two slices of one benchmark: two observations.
+        ("slice-source", "slice-a.json", json.dumps(_with(
+            _record("slice_a", "2026-05-03T00:00:00Z", 0.8), evaluation_name="minibench.part_a",
+        ))),
+        ("slice-source", "slice-b.json", json.dumps(_with(
+            _record("slice_b", "2026-05-03T00:00:00Z", 0.8), evaluation_name="minibench.part_b",
+        ))),
+    ]
     write_eee_datastore(eee_root, records)
 
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
@@ -1116,12 +1189,31 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
         ("minibench", "different_generation", 0.8, 0.7),
         ("minibench", "different_value", 0.9, 0.0),
         ("other-source", "other_source", 0.8, 0.0),
+        ("slice-source", "slice_a", 0.8, 0.0),
+        ("slice-source", "slice_b", 0.8, 0.0),
+        ("split-source", "split_test", 0.8, 0.0),
+        ("split-source", "split_validation", 0.8, 0.0),
         ("ts-source", "ts_a", 0.8, 0.0),
         ("ts-source", "ts_b", 0.8, 0.0),
     ]
+    axes = duckdb.connect().execute(
+        f"SELECT evaluation_id, benchmark_id, split, slice_key "
+        f"FROM read_parquet('{fact_path}') "
+        f"WHERE source_config IN ('split-source', 'slice-source') "
+        f"ORDER BY evaluation_id"
+    ).fetchall()
+    # slice_key is the cleaned raw name once a benchmark has more than one
+    # raw spelling in the snapshot, so the whole-benchmark rows carry
+    # "minibench" rather than NULL.
+    assert axes == [
+        ("slice_a", "minibench", None, "minibench part a"),
+        ("slice_b", "minibench", None, "minibench part b"),
+        ("split_test", "minibench", "test", "minibench"),
+        ("split_validation", "minibench", "validation", "minibench"),
+    ]
 
     snap = json.loads((out_dir / "snapshot_meta.json").read_text())
-    assert snap["row_counts"]["fact_results"] == 9
+    assert snap["row_counts"]["fact_results"] == 13
     assert snap["row_counts"]["dropped_rows_dedup"] == 0
     assert snap["row_counts"]["dropped_rows_content_dedup"] == 2
     _assert_dedup_by_config_sums_to_row_counts(snap)
@@ -1137,13 +1229,21 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
             "staging": 1, "after_fact_id_pass": 1, "after_content_pass": 1,
             "residual_timestamp_only": 0, "residual_generation_args_only": 0,
         },
+        "slice-source": {
+            "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+        },
+        "split-source": {
+            "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+        },
         "ts-source": {
             "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
             "residual_timestamp_only": 1, "residual_generation_args_only": 0,
         },
     }
     assert snap["dedup_by_config_totals"] == {
-        "staging": 11, "after_fact_id_pass": 11, "after_content_pass": 9,
+        "staging": 15, "after_fact_id_pass": 15, "after_content_pass": 13,
         "residual_timestamp_only": 1, "residual_generation_args_only": 1,
     }
 
