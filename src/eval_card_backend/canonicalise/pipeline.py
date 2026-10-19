@@ -66,6 +66,7 @@ from eval_card_backend.sources import (
     eee,
     registry as registry_src,
 )
+from eval_card_backend.sources._revision_cache import is_hand_built
 
 log = logging.getLogger(__name__)
 
@@ -115,12 +116,17 @@ def _upstream_pin(
     pinned: str | None,
     cached: str | None,
     hf_token: str | None,
+    hand_built: bool = False,
 ) -> dict:
     """One `upstream_pins` entry, stamped at the revision the run consumed.
 
     `revision_source` says how that revision was established:
       - ``"pin"``        an explicit ``*_REVISION`` env pin, which the
                          download honoured.
+      - ``"hand-built"`` pinned, but the directory holds a hand-built tree
+                         with no download record, which the loader keeps
+                         as is. ``sha`` is still the pin: it names what the
+                         run was asked to read, not what it read.
       - ``"local_cache"`` unpinned: the revision the on-disk snapshot was
                          downloaded at, read back from the cache's own
                          metadata. Unpinned runs reuse the cache without
@@ -132,7 +138,10 @@ def _upstream_pin(
                          rule out.
     """
     revision = pinned or cached
-    source = "pin" if pinned else ("local_cache" if cached else "unknown")
+    if pinned:
+        source = "hand-built" if cached is None and hand_built else "pin"
+    else:
+        source = "local_cache" if cached else "unknown"
     if revision is None:
         return {
             "repo_id": repo_id, "sha": None, "last_modified": None,
@@ -795,12 +804,14 @@ def _build_snapshot_meta(
         pinned=settings.registry_revision,
         cached=registry_src.cached_revision(registry_root),
         hf_token=settings.hf_token,
+        hand_built=registry_root is not None and is_hand_built(registry_root),
     )
     cards_pin = _upstream_pin(
         BENCHMARK_METADATA_DATASET_REPO,
         pinned=settings.benchmark_metadata_revision,
         cached=benchmark_cards.cached_revision(cards_root),
         hf_token=settings.hf_token,
+        hand_built=cards_root is not None and is_hand_built(cards_root),
     )
 
     upstream_pins = {

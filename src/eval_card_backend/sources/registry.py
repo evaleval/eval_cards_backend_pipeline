@@ -138,7 +138,14 @@ def ensure_snapshot(
     # wiping or fetching into the caller's directory would be wrong whatever
     # the pin says. force_refresh above is the explicit way past this.
     if _has_registry_data(target) and _is_hand_built(target):
-        log.info("registry hand-built snapshot at %s — nothing to sync", target)
+        if revision:
+            log.warning(
+                "registry hand-built snapshot at %s — nothing to sync; "
+                "the pinned revision %s is not applied to it",
+                target, revision,
+            )
+        else:
+            log.info("registry hand-built snapshot at %s — nothing to sync", target)
         return target
     if _has_registry_data(target) and _cache_revision_ok(target, revision):
         return target
