@@ -3956,19 +3956,35 @@ def ts_cast_sql(column_expr: str) -> str:
     )
 
 
+# An ISO-8601 time followed by an explicit zone (`Z`, `+02:00`, `-0700`,
+# `+02`). A bare date's `-01` is not a zone: the time must come first.
+_ISO_WITH_ZONE_RE = r"\d{2}:\d{2}(:\d{2}(\.\d+)?)?\s*([Zz]|[+-]\d{2}(:?\d{2})?)$"
+
+
 def retrieved_instant_sql(column_expr: str) -> str:
     """Return the SQL expression that parses a `retrieved_timestamp` string
-    to a naive UTC TIMESTAMP for ordering: ISO-8601 via the string cast,
-    epoch seconds via `make_timestamp(micros)`, NULL for anything else.
-    Unlike `ts_cast_sql`, the epoch branch does not pass through
-    TIMESTAMPTZ, so the result does not move with the session time zone
-    and two rows order the same on every machine.
+    to a naive UTC TIMESTAMP for ordering. Three shapes are accepted and
+    anything else is NULL:
+
+    - A number is Unix epoch seconds, accepted only between 1e9 and 4e9
+      (2001 to 2096): a bare `20260501` or epoch milliseconds would
+      otherwise parse as a date in 1970 or the year 58305.
+    - An ISO-8601 string with an explicit zone goes through TIMESTAMPTZ and
+      `epoch_us`, so `+02:00` shifts the instant instead of being dropped.
+    - An ISO-8601 string without a zone is read as UTC by the plain cast.
+
+    No branch reads the session time zone, so two rows order the same on
+    every machine.
     """
+    as_double = f"TRY_CAST({column_expr} AS DOUBLE)"
     return (
-        f"COALESCE("
-        f"TRY_CAST({column_expr} AS TIMESTAMP), "
-        f"make_timestamp(TRY_CAST(TRY_CAST({column_expr} AS DOUBLE) * 1000000 AS BIGINT))"
-        f")"
+        f"CASE "
+        f"WHEN {as_double} IS NOT NULL THEN "
+        f"CASE WHEN {as_double} BETWEEN 1e9 AND 4e9 "
+        f"THEN make_timestamp(CAST({as_double} * 1000000 AS BIGINT)) END "
+        f"WHEN regexp_matches({column_expr}, '{_ISO_WITH_ZONE_RE}') "
+        f"THEN make_timestamp(epoch_us(TRY_CAST({column_expr} AS TIMESTAMPTZ))) "
+        f"ELSE TRY_CAST({column_expr} AS TIMESTAMP) END"
     )
 
 

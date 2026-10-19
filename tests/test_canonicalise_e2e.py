@@ -8,6 +8,7 @@ Skipped if duckdb isn't installed (it's now a hard dep so this is just paranoia)
 """
 from __future__ import annotations
 
+import datetime
 import json
 from pathlib import Path
 
@@ -1148,6 +1149,57 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
     assert snap2["row_counts"] == snap["row_counts"]
     assert snap2["dedup_by_config"] == snap["dedup_by_config"]
     assert snap2["dedup_by_config_totals"] == snap["dedup_by_config_totals"]
+
+
+_RETRIEVED_INSTANT_CASES = [
+    ("2026-05-01T00:00:00+02:00", datetime.datetime(2026, 4, 30, 22, 0)),
+    ("2026-05-01T00:00:00-07:00", datetime.datetime(2026, 5, 1, 7, 0)),
+    ("2026-05-01T00:00:00Z", datetime.datetime(2026, 5, 1, 0, 0)),
+    ("2026-05-01T00:00:00", datetime.datetime(2026, 5, 1, 0, 0)),
+    ("2026-05-01", datetime.datetime(2026, 5, 1, 0, 0)),
+    ("1777766400", datetime.datetime(2026, 5, 3, 0, 0)),
+    ("1777766400.5", datetime.datetime(2026, 5, 3, 0, 0, 0, 500000)),
+    ("20260501", None),
+    ("1777766400000", None),
+    ("inf", None),
+    ("nan", None),
+    ("", None),
+    (None, None),
+]
+
+
+@pytest.mark.parametrize("time_zone", ["Asia/Tokyo", "America/Los_Angeles"])
+def test_retrieved_instant_sql_is_utc_bounded_and_session_zone_independent(time_zone):
+    """An explicit offset shifts the instant, a zoneless string is UTC, an
+    epoch outside 2001..2096 (a bare date digit-string, milliseconds, inf)
+    is NULL rather than a far-off year, and none of it moves with the
+    session time zone."""
+    import duckdb
+
+    from eval_card_backend.canonicalise import stages
+
+    con = duckdb.connect()
+    con.execute(f"SET TimeZone = '{time_zone}'")
+    con.execute("CREATE TABLE t (i INTEGER, retrieved_timestamp VARCHAR)")
+    con.executemany(
+        "INSERT INTO t VALUES (?, ?)",
+        [(i, raw) for i, (raw, _) in enumerate(_RETRIEVED_INSTANT_CASES)],
+    )
+    rows = con.execute(
+        f"SELECT i, {stages.retrieved_instant_sql('retrieved_timestamp')} "
+        f"FROM t ORDER BY i"
+    ).fetchall()
+    assert [parsed for _, parsed in rows] == [
+        expected for _, expected in _RETRIEVED_INSTANT_CASES
+    ]
+    # The +02:00 retrieval (30 Apr 22:00Z) orders before the epoch retrieval
+    # on 3 May, as instants, not as text.
+    ordered = con.execute(
+        f"SELECT retrieved_timestamp FROM t "
+        f"WHERE retrieved_timestamp IN ('2026-05-01T00:00:00+02:00', '1777766400') "
+        f"ORDER BY {stages.retrieved_instant_sql('retrieved_timestamp')}"
+    ).fetchall()
+    assert [r[0] for r in ordered] == ["2026-05-01T00:00:00+02:00", "1777766400"]
 
 
 def test_pipeline_dedup_orders_mixed_retrieved_timestamp_formats(
