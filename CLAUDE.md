@@ -35,7 +35,7 @@ test) rather than adding more prose here.
 | --- | --- |
 | Comments state the rule in place. No spec sections, phase or session tags, no "previously did X" tombstones. | `scripts/check_code_hygiene.py` (pre-commit and CI) |
 | Committed code never cites a gitignored path. `notes/` is deprecated and stays ignored. | `check_code_hygiene.py` rule `ignored-path-ref` |
-| Data hotfixes live in `canonicalise/resolution_hotfixes.py`, `canonicalise/hierarchy_hotfixes.py` or `metric_meta_hotfix.py`, each with an upstream pointer and a "Remove when" condition. Existing exceptions are grandfathered and may only shrink. | `tests/test_hotfix_lifecycle.py` |
+| Data hotfixes live in `canonicalise/resolution_hotfixes.py`, `canonicalise/hierarchy_hotfixes.py` or `metric_meta_hotfix.py`, each with an upstream pointer and a "Remove when" condition. Existing exceptions are grandfathered with a content hash: the list may only shrink and the tables do not grow. | `tests/test_hotfix_lifecycle.py` |
 | A cached stage table that changes shape bumps `CACHE_SCHEMA_VERSION`. Regenerate the fingerprint with `UPDATE_CACHE_FINGERPRINT=1 HF_HUB_OFFLINE=1 uv run pytest tests/test_cache_schema_fingerprint.py -q`. | `tests/test_cache_schema_fingerprint.py` |
 | Two bakes of the same inputs produce byte-identical outputs. Aggregations are ordered or provably exact. | `tests/test_double_build_determinism.py` |
 | Published counts are distinct counts, never sums over a view that repeats rows. | `tests/test_count_grain.py` |

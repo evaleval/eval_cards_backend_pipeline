@@ -26,7 +26,7 @@ ENTITY_REGISTRY_DATASET_REPO = "evaleval/entity-registry-data"
 # relative strings, so a bake started from a subdirectory silently forked a
 # second empty cache (and a second warehouse) next to itself instead of
 # reusing the repo's. CI runs from the repo root, so the resolved paths are
-# unchanged there. Explicit overrides (the env vars below, --warehouse-dir,
+# unchanged there. Paths given explicitly (the env vars below, --warehouse-dir,
 # --registry-local-dir) are still honoured exactly as given.
 DEFAULT_EEE_LOCAL_DIR = str(REPO_ROOT / ".cache" / "eee_datastore")
 # Separate from the public snapshot dir so a public cache (and the CI cache

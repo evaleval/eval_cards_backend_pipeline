@@ -74,11 +74,23 @@ _provenance_counter: Counter[tuple[str, str]] = Counter()
 
 
 def reset_provenance_counter() -> None:
+    """Clear the per-run provenance counts before a bake.
+
+    TODO(upstream): the counter exists to measure how often this module's
+    heuristics fill `metric_kind` / `metric_unit` that the registry's
+    `canonical_metrics` does not carry.
+    Remove when: the module retires (see RETIREMENT in the module docstring).
+    """
     _provenance_counter.clear()
 
 
 def log_metric_meta_summary(log) -> None:
-    """Pipeline.run() calls this at end of run alongside other summaries."""
+    """Pipeline.run() calls this at end of run alongside other summaries.
+
+    TODO(upstream): the share of rows filled by `heuristic_*` sources is the
+    measure of how much metric metadata the registry still lacks.
+    Remove when: the module retires (see RETIREMENT in the module docstring).
+    """
     if not _provenance_counter:
         return
     log.info("--- metric-meta hotfix provenance ---")
@@ -105,6 +117,11 @@ def log_metric_meta_summary(log) -> None:
 # Order matters: most-specific first. ASCII metric names are common but case
 # varies; match case-insensitively. Word-boundary anchors avoid `accuracy`
 # matching `inaccuracy_rate`, etc.
+#
+# TODO(upstream): `canonical_metrics` has no `metric_kind` column, so the
+# kind is inferred from the metric name for rows whose EEE record omits it.
+# Remove when: the registry populates `metric_kind` for the metrics EEE
+# reports; the regex layer then never fires.
 # ---------------------------------------------------------------------------
 
 _NAME_TO_METRIC_KIND_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -231,6 +248,13 @@ def derive_metric_meta(
     (`binary | continuous | levels`), passed alongside the rest so the
     proportion-shape heuristic can fire when EEE records omit score_type
     but the registry knows it.
+
+    TODO(upstream): the registry's `canonical_metrics` carries no
+    `metric_kind` / `metric_unit`, and most EEE records leave both NULL, so
+    the heuristic layers below fill them.
+    Remove when: `canonical_metrics` gains populated `metric_kind` /
+    `metric_unit` columns and Stage D reads them from the JOINed row (see
+    RETIREMENT in the module docstring).
     """
     if not isinstance(eee_metric_config, dict):
         eee_metric_config = {}

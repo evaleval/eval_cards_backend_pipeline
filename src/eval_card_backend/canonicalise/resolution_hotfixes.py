@@ -66,6 +66,12 @@ def fix_helm_composite_aggregates(con) -> None:
 
     Fires only on rows where `benchmark_raw` is one of the aggregate
     labels within one of the six HELM composite source_configs.
+
+    TODO(upstream): HELM ingestion emits the composite aggregate with the
+    metric name in the benchmark field and a generic rank/score in the
+    metric field.
+    Remove when: HELM ingestion puts the aggregate metric in the metric
+    field; the rows then resolve cleanly on their own.
     """
     mapping_values = ", ".join(
         f"('{sc}', '{bid}', '{mid}')"
@@ -185,6 +191,13 @@ def fix_scorer_wrapper_benchmarks(con) -> None:
     `benchmark_raw` matches the wrapper shape. Runs before
     `fix_vague_metric_labels` so l2-bench's bare "mean" metric gets
     namespaced to `l2-bench.mean` once the benchmark is assigned.
+
+    TODO(upstream): the inspect_ai/harbor converter writes the whole
+    "<metric> on <task> for scorer <scorer>" label into evaluation_name,
+    so every record mints its own unresolvable benchmark.
+    Remove when: the upstream submissions carry the real benchmark name in
+    evaluation_name; `_SCORER_WRAPPER_MAP` and the `l2-bench.mean`
+    placeholder canonical go with it.
     """
     mapping_values = ", ".join(
         f"('{sc}', '{bid}')" for sc, bid in _SCORER_WRAPPER_MAP.items()

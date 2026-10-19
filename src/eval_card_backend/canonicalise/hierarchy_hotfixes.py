@@ -70,6 +70,12 @@ def consolidate_air_bench(families: list[dict]) -> None:
       - Drops the standalone air-bench-2024 family
       - Strips AIR-Bench rows from non-HELM families
       - Plants all AIR-Bench eval ids under helm > helm-air-bench
+
+    TODO(upstream): the registry has no family/composite structure for
+    AIR-Bench 2024 and no scoped aliases, so its rows resolve into three
+    places.
+    Remove when: the registry models AIR-Bench 2024 under HELM with scoped
+    aliases, so every row resolves there before the hierarchy is built.
     """
     air_bench_eval_ids: set[str] = set()
 
