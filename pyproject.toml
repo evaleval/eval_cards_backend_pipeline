@@ -50,4 +50,5 @@ dev = [
     "jupyterlab>=4",
     # pandas is dev-only (e2e fixtures + ad-hoc inspection); not in the hot path.
     "pandas>=2",
+    "pre-commit>=4",
 ]

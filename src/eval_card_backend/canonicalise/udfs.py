@@ -117,7 +117,7 @@ def compute_completeness_by_benchmark_py(
 def variant_parent_id_py(parents_json: str | None) -> str | None:
     """Extract the first `variant` edge id from the registry's
     `canonical_models.parents` column. Returns the in-family parent id
-    or NULL when no variant edge is present. 
+    or NULL when no variant edge is present.
     Tolerant of NULL / empty / malformed input."""
     from eval_entity_resolver.canonical_store import (
         decode_parents,

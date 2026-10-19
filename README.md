@@ -196,6 +196,27 @@ uv run pytest
 Tests use hand-built fixtures under `tests/fixtures/` and don't require
 HF credentials.
 
+## Development checks
+
+Three checks run as pre-commit hooks: `ruff` (lint only, no rewrites), the
+pre-commit-hooks file checks (YAML and TOML parse, no merge-conflict
+markers, no large files, no trailing whitespace) and `scripts/check_code_hygiene.py`, which rejects
+added comments that point at a spec section, a phase, a working session, or
+describe what the code did before. Install the hooks once per clone:
+
+```bash
+uv run pre-commit install
+```
+
+`pre-commit install` refuses while `core.hooksPath` is set (this repo has
+used one for git-lfs); either unset it or run the hooks by hand with
+`uv run pre-commit run --all-files`.
+
+CI (`.github/workflows/ci.yml`) runs the same hooks on every pull request
+and push to `main`, then the hygiene gate over the pull request's added
+lines (`scripts/check_code_hygiene.py --diff origin/<base>...HEAD`) and
+the test suite.
+
 ## Continuous integration
 
 `.github/workflows/sync.yml` runs the pipeline daily, then publishes the
