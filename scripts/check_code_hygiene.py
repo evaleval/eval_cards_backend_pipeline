@@ -2,10 +2,11 @@
 """Code-hygiene gate for added lines. Runs from the pre-commit hook and in CI.
 
 Blocks comments/code that reference ephemeral working artifacts: spec
-sections, decision labels, phase/session tags, and tombstones describing
-what the code used to do. Rationale: those references are only meaningful
-inside the working session that produced them; the committed code and its
-own comments must stand alone.
+sections, decision labels, phase/session tags, tombstones describing
+what the code used to do, and documents at gitignored paths. Rationale:
+those references are only meaningful inside the working session (or on
+the working machine) that produced them; the committed code and its own
+comments must stand alone.
 
 Checks only lines ADDED in the staged diff, so existing occurrences don't
 block unrelated commits. `--diff <range>` checks the lines added in a git
@@ -13,7 +14,8 @@ revision range instead (CI runs `--diff origin/main...HEAD` on a pull
 request). Bypass a false positive with `git commit --no-verify` (and
 consider tightening the offending rule below).
 
-To add a rule, append to RULES.
+To add a rule, append to RULES. A rule fires when its pattern matches
+the line and, if it has one, its `confirm` callback agrees.
 """
 
 from __future__ import annotations
@@ -22,13 +24,51 @@ import argparse
 import re
 import subprocess
 import sys
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 
 class Rule(NamedTuple):
     name: str
     pattern: re.Pattern
     hint: str
+    confirm: Callable[[str], bool] | None = None
+
+
+# A path a reader is meant to open: a document, by extension. Runtime data
+# paths (`warehouse/<snapshot>/x.json`, `.cache/...`) are also gitignored
+# but code describes them rather than citing them, so data extensions and
+# bare directory names stay out of this pattern on purpose.
+DOC_PATH_RE = re.compile(r"(?<![\w./-])(?!\.\.)[\w.-]*(?:/[\w.-]+)*\.(?:md|txt|rst)\b")
+
+_ignored_cache: dict[str, bool] = {}
+
+
+def ignored_paths(paths) -> set[str]:
+    """Return the subset of `paths` matched by the repo's ignore rules.
+
+    One `git check-ignore --stdin` call covers every path not seen before;
+    results are cached for the life of the process. Paths that cannot be
+    inside the repo (absolute or `..`-relative) are skipped.
+    """
+    paths = list(paths)
+    pending = sorted({
+        p for p in paths
+        if p not in _ignored_cache and not p.startswith(("/", ".."))
+    })
+    if pending:
+        proc = subprocess.run(
+            ["git", "check-ignore", "--no-index", "--stdin"],
+            input="\n".join(pending), capture_output=True, text=True,
+        )
+        # exit 0: some path is ignored; 1: none is; anything else: git failed.
+        hits = set(proc.stdout.splitlines()) if proc.returncode in (0, 1) else set()
+        for p in pending:
+            _ignored_cache[p] = p in hits
+    return {p for p in paths if _ignored_cache.get(p)}
+
+
+def cites_ignored_path(text: str) -> bool:
+    return bool(ignored_paths(DOC_PATH_RE.findall(text)))
 
 
 RULES = [
@@ -87,6 +127,13 @@ RULES = [
         re.compile(r"\b(renamed|removed|deleted|moved|dropped|changed)\s+(on|in)\s+20\d\d", re.I),
         "Dated change notes belong in the commit message, not the file.",
     ),
+    Rule(
+        "ignored-path-ref",
+        DOC_PATH_RE,
+        "This path is gitignored, so readers and CI cannot follow it. "
+        "State the rule inline instead.",
+        confirm=cites_ignored_path,
+    ),
 ]
 
 CHECKED_EXTENSIONS = {
@@ -144,14 +191,18 @@ def parse_added_lines(diff: str):
 
 
 def matching_rules(text: str) -> list[Rule]:
-    return [rule for rule in RULES if rule.pattern.search(text)]
+    return [
+        rule for rule in RULES
+        if rule.pattern.search(text) and (rule.confirm is None or rule.confirm(text))
+    ]
 
 
 def find_problems(lines) -> list[tuple[str, int, Rule, str]]:
+    lines = [(path, lineno, text) for path, lineno, text in lines if is_checked(path)]
+    # Warm the ignore cache with one git call instead of one per line.
+    ignored_paths(tok for _, _, text in lines for tok in DOC_PATH_RE.findall(text))
     findings = []
     for path, lineno, text in lines:
-        if not is_checked(path):
-            continue
         for rule in matching_rules(text):
             findings.append((path, lineno, rule, text))
     return findings

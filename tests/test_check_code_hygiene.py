@@ -2,7 +2,9 @@
 
 Every rule is tried against a line of the kind it was written for and a
 near-miss that must pass, then both diff modes run the script for real
-against a throwaway git repo.
+against a throwaway git repo. The rule cases run inside that repo too,
+whose `.gitignore` ignores `notes/`, so `ignored-path-ref` is judged
+against a known ignore list rather than this repo's.
 """
 from __future__ import annotations
 
@@ -82,6 +84,11 @@ CASES = [
         "# renamed on 2026-08-16 because the view layer dropped the old key",  # made up
         "# snapshot ids are dated, e.g. 2026-08-16T13-44-51Z",
     ),
+    (
+        "ignored-path-ref",
+        "# Curated collection entries (see notes/collections-spec.md).",  # committed
+        "# Curated collection entries (see README.md).",
+    ),
 ]
 
 
@@ -90,13 +97,27 @@ def test_every_rule_has_a_case():
 
 
 @pytest.mark.parametrize("rule,line,_", CASES, ids=[c[0] for c in CASES])
-def test_rule_fires_on_the_kind_of_line_it_was_written_for(rule, line, _):
+def test_rule_fires_on_the_kind_of_line_it_was_written_for(rule, line, _, in_repo):
     assert rule in {r.name for r in hygiene.matching_rules(line)}
 
 
 @pytest.mark.parametrize("rule,_,line", CASES, ids=[c[0] for c in CASES])
-def test_rule_stays_quiet_on_a_near_miss(rule, _, line):
+def test_rule_stays_quiet_on_a_near_miss(rule, _, line, in_repo):
     assert hygiene.matching_rules(line) == []
+
+
+@pytest.mark.parametrize(
+    "line,cited",
+    [
+        ("# see notes/spec.md and notes/sub/more.txt", {"notes/spec.md", "notes/sub/more.txt"}),
+        ("# README.md explains it; so does docs/guide.rst", set()),
+        ("# ../other-repo/notes/x.md and /abs/notes/y.md are outside the repo", set()),
+        ("# https://example.org/notes/z.md is a URL, not a path", set()),
+        ("# notes/report.json is data, not a document", set()),
+    ],
+)
+def test_ignored_paths_only_reports_documents_inside_the_repo(line, cited, in_repo):
+    assert hygiene.ignored_paths(hygiene.DOC_PATH_RE.findall(line)) == cited
 
 
 @pytest.mark.parametrize(
@@ -178,15 +199,25 @@ def _run(repo: Path, *args: str) -> subprocess.CompletedProcess:
 @pytest.fixture
 def repo(tmp_path):
     _git(tmp_path, "init", "-q", "-b", "main")
+    _write(tmp_path, ".gitignore", "notes/\n")
     # A pre-existing offender: never reported, only added lines are.
     _write(tmp_path, "src/mod.py", "# Phase 1 lookup\nx = 1\n")
     _commit(tmp_path, "base")
     return tmp_path
 
 
+@pytest.fixture
+def in_repo(repo, monkeypatch):
+    """Run the loaded module's git calls inside the throwaway repo."""
+    monkeypatch.chdir(repo)
+    hygiene._ignored_cache.clear()
+    yield repo
+    hygiene._ignored_cache.clear()
+
+
 def test_staged_mode_reports_added_lines_in_checked_files_only(repo):
     _write(repo, "src/mod.py", "# Phase 1 lookup\nx = 1\n# see spec §3 for the fold\n")
-    _write(repo, "notes/design.md", "# Phase 2\n")
+    _write(repo, "docs/design.md", "# Phase 2\n")
     _git(repo, "add", "-A")
 
     proc = _run(repo)
@@ -196,8 +227,24 @@ def test_staged_mode_reports_added_lines_in_checked_files_only(repo):
     assert "src/mod.py:3  [spec-section-ref]" in proc.stderr
     assert "src/mod.py:3  [spec-deixis]" in proc.stderr
     assert "phase-ref" not in proc.stderr
-    assert "notes/" not in proc.stderr
+    assert "docs/" not in proc.stderr
     assert "--no-verify" in proc.stderr
+
+
+def test_staged_mode_reports_a_cited_document_at_an_ignored_path(repo):
+    _write(repo, "README.md", "# tracked\n")
+    _write(
+        repo, "src/mod.py",
+        "# Phase 1 lookup\nx = 1\n# rule from notes/design.md\n# see README.md\n",
+    )
+    _git(repo, "add", "-A")
+
+    proc = _run(repo)
+
+    assert proc.returncode == 1
+    assert "src/mod.py:3  [ignored-path-ref]" in proc.stderr
+    assert "src/mod.py:4" not in proc.stderr
+    assert "gitignored" in proc.stderr
 
 
 def test_staged_mode_passes_clean_changes_and_ignores_the_working_tree(repo):
