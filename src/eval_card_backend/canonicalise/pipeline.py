@@ -892,8 +892,8 @@ def _connect_duckdb() -> tuple[duckdb.DuckDBPyConnection, Path]:
     """Open a file-backed DuckDB in a private temp dir so the buffer manager
     can page tables out under `memory_limit` instead of growing until the
     host kills the process. `CANONICALISE_MEMORY_LIMIT` (e.g. `10GB`) sets
-    the limit; unset leaves DuckDB's default. The dir is removed by
-    `_close_duckdb`."""
+    the limit and `CANONICALISE_DUCKDB_THREADS` the worker count; unset
+    leaves DuckDB's defaults. The dir is removed by `_close_duckdb`."""
     import tempfile
 
     db_dir = Path(tempfile.mkdtemp(prefix="canonicalise-duckdb-"))
@@ -902,6 +902,9 @@ def _connect_duckdb() -> tuple[duckdb.DuckDBPyConnection, Path]:
     limit = os.environ.get("CANONICALISE_MEMORY_LIMIT")
     if limit:
         con.execute(f"SET memory_limit = '{limit}'")
+    threads = os.environ.get("CANONICALISE_DUCKDB_THREADS")
+    if threads:
+        con.execute(f"SET threads = {int(threads)}")
     log.info(
         "duckdb: file-backed at %s, memory_limit=%s, threads=%s",
         db_dir,

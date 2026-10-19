@@ -12,6 +12,10 @@ two warehouses by sha256.
 is the wall-clock stamp of the run itself, the one field that is allowed to
 differ between two builds of one snapshot.
 
+The second build runs DuckDB on one thread while the first uses the
+default worker count, so a tie that scan order happens to settle the same
+way twice on one machine is given a different scan order here.
+
 On a mismatch the failure lists, per file, the first differing rows (for
 parquet, via DuckDB) or the first differing key path (for JSON).
 """
@@ -33,11 +37,24 @@ VOLATILE_JSON_KEYS: dict[str, frozenset[str]] = {
 
 @pytest.fixture(scope="module")
 def second_build(tmp_path_factory, _taxonomy_seed_stub, _collections_stub):
-    return build_fixture_corpus(
-        tmp_path_factory.mktemp("fixture_corpus_rebuild"),
-        seed_dir=_taxonomy_seed_stub,
-        collections_dir=_collections_stub,
-    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("CANONICALISE_DUCKDB_THREADS", "1")
+        return build_fixture_corpus(
+            tmp_path_factory.mktemp("fixture_corpus_rebuild"),
+            seed_dir=_taxonomy_seed_stub,
+            collections_dir=_collections_stub,
+        )
+
+
+def test_duckdb_thread_count_follows_the_environment(monkeypatch):
+    from eval_card_backend.canonicalise import pipeline
+
+    monkeypatch.setenv("CANONICALISE_DUCKDB_THREADS", "1")
+    con, db_dir = pipeline._connect_duckdb()
+    try:
+        assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 1
+    finally:
+        pipeline._close_duckdb(con, db_dir)
 
 
 def _output_files(out_dir: Path) -> dict[str, Path]:
