@@ -203,21 +203,25 @@ pre-commit-hooks file checks (YAML and TOML parse, no merge-conflict
 markers, no large files, no trailing whitespace) and `scripts/check_code_hygiene.py`, which rejects
 added comments that point at a spec section, a phase, a working session, or
 describe what the code did before. A line containing `hygiene: ok` is
-skipped by every rule; use it for a false positive. Install the hooks once
-per clone:
+skipped by every rule; use it for a false positive. The hygiene hook reads
+the staged lines, so `pre-commit run --all-files` runs ruff and the file
+checks over the whole tree but the hygiene gate only over what is staged;
+`scripts/check_code_hygiene.py --diff <range>` checks a commit range.
+Install the hooks once per clone:
 
 ```bash
 uv run pre-commit install
 ```
 
-`pre-commit install` refuses while `core.hooksPath` is set (this repo has
-used one for git-lfs); either unset it or run the hooks by hand with
+`pre-commit install` refuses while `core.hooksPath` is set (this repo's
+hooks directory held the git-lfs hooks and the hygiene pre-commit hook);
+either unset it or run the hooks by hand with
 `uv run pre-commit run --all-files`.
 
 CI (`.github/workflows/ci.yml`) runs the same hooks on every pull request
-and push to `main`, then the hygiene gate over the pull request's added
-lines (`scripts/check_code_hygiene.py --diff origin/<base>...HEAD`) and
-the test suite.
+and push to `main`, then the hygiene gate over the added lines of the pull
+request (`scripts/check_code_hygiene.py --diff origin/<base>...HEAD`) or of
+the push (`--diff <before>...<sha>`), and the test suite.
 
 ## Continuous integration
 

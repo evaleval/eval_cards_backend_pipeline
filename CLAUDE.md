@@ -10,13 +10,15 @@ Every check runs the same way locally and in CI.
 
 ```bash
 uv run pre-commit install                      # once per clone
-uv run pre-commit run --all-files              # ruff, file checks, code hygiene
+uv run pre-commit run --all-files              # ruff and file checks over the tree; hygiene over staged lines
+python3 scripts/check_code_hygiene.py --diff main...HEAD   # hygiene over a commit range
 HF_HUB_OFFLINE=1 uv run pytest tests/ -q --timeout=120
 ```
 
-`.github/workflows/ci.yml` runs all of the above on every pull request and
-push to main. Its dependency setup is copied from `sync.yml` and a test fails
-if the two drift.
+`.github/workflows/ci.yml` runs the hooks, the hygiene gate over the added
+lines of the pull request or the push, and the tests on every pull request
+and push to main. Its dependency setup is copied from `sync.yml` and a test
+fails if the two drift.
 
 Pipeline output verification is separate from the test suite: the daily sync
 run compares the new snapshot with the published one (`scripts/ci_publish_warehouse.py`)

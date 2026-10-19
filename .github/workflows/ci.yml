@@ -66,6 +66,20 @@ jobs:
         if: github.event_name == 'pull_request'
         run: python3 scripts/check_code_hygiene.py --diff origin/${{ github.base_ref || 'main' }}...HEAD
 
+      # `before` is all zeros when the push creates the branch; fall back to
+      # the last commit then.
+      - name: Code hygiene on the pushed commits' added lines
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            range="HEAD~1...HEAD"
+          else
+            range="$BEFORE...${{ github.sha }}"
+          fi
+          python3 scripts/check_code_hygiene.py --diff "$range"
+
       - name: Run tests
         env:
           HF_HUB_OFFLINE: "1"

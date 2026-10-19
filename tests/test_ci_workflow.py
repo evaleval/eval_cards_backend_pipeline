@@ -22,7 +22,8 @@ SHARED_SETUP_STEPS = (
     "Sync dependencies",
 )
 PRE_COMMIT_STEP = "Pre-commit hooks"
-HYGIENE_STEP = "Code hygiene on the pull request's added lines"
+HYGIENE_PR_STEP = "Code hygiene on the pull request's added lines"
+HYGIENE_PUSH_STEP = "Code hygiene on the pushed commits' added lines"
 TESTS_STEP = "Run tests"
 
 
@@ -94,18 +95,27 @@ def test_workflow_setup_steps_are_identical_to_sync_workflow(ci_workflow, sync_w
 def test_workflow_runs_hooks_then_hygiene_diff_then_tests(ci_workflow):
     steps = _steps(ci_workflow, "checks")
     hooks = _index(steps, name=PRE_COMMIT_STEP)
-    hygiene = _index(steps, name=HYGIENE_STEP)
+    hygiene_pr = _index(steps, name=HYGIENE_PR_STEP)
+    hygiene_push = _index(steps, name=HYGIENE_PUSH_STEP)
     tests = _index(steps, name=TESTS_STEP)
-    assert hooks < hygiene < tests
+    assert hooks < hygiene_pr < hygiene_push < tests
 
     assert steps[hooks]["run"] == "uv run pre-commit run --all-files --show-diff-on-failure"
     assert "if" not in steps[hooks]
 
-    assert steps[hygiene]["if"] == "github.event_name == 'pull_request'"
-    assert steps[hygiene]["run"] == (
+    assert steps[hygiene_pr]["if"] == "github.event_name == 'pull_request'"
+    assert steps[hygiene_pr]["run"] == (
         "python3 scripts/check_code_hygiene.py "
         "--diff origin/${{ github.base_ref || 'main' }}...HEAD"
     )
+
+    assert steps[hygiene_push]["if"] == "github.event_name == 'push'"
+    assert steps[hygiene_push]["env"] == {"BEFORE": "${{ github.event.before }}"}
+    push_run = steps[hygiene_push]["run"]
+    assert 'range="$BEFORE...${{ github.sha }}"' in push_run
+    assert '"$BEFORE" = "0000000000000000000000000000000000000000"' in push_run
+    assert 'range="HEAD~1...HEAD"' in push_run
+    assert push_run.rstrip().endswith('python3 scripts/check_code_hygiene.py --diff "$range"')
 
     assert steps[tests]["run"] == "uv run pytest tests/ -q --timeout=120"
     assert steps[tests]["env"] == {"HF_HUB_OFFLINE": "1"}
@@ -119,7 +129,7 @@ def test_pre_commit_config_declares_the_expected_hooks(pre_commit_config):
         for hook in repo["hooks"]
     }
     assert set(hooks) == {
-        "ruff",
+        "ruff-check",
         "check-yaml",
         "check-toml",
         "check-merge-conflict",
@@ -137,7 +147,7 @@ def test_pre_commit_config_declares_the_expected_hooks(pre_commit_config):
         "always_run": True,
         "stages": ["pre-commit"],
     }
-    assert "args" not in hooks["ruff"][1]
+    assert "args" not in hooks["ruff-check"][1]
 
 
 def test_pre_commit_ruff_rev_matches_the_locked_ruff_version(pre_commit_config):
