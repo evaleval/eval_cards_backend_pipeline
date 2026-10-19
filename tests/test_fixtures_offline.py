@@ -7,10 +7,16 @@ runs. A loader handed a pinned revision and a directory with no download
 marker has to recognise a hand-built corpus and return it untouched: nothing
 deleted, nothing fetched into it. Every hub entry point raises here, so a
 loader that reaches for the network fails the test rather than hanging on it.
+
+Each loader runs on a copy of its fixture directory under `tmp_path`: a
+loader that regresses to wiping or fetching destroys the copy, never the
+committed fixtures.
 """
 from __future__ import annotations
 
 from pathlib import Path
+
+import shutil
 
 import huggingface_hub
 import pytest
@@ -68,23 +74,26 @@ def _tree(root: Path) -> dict[str, int]:
 
 @pytest.mark.parametrize("loader", sorted(LOADERS))
 def test_fixture_dir_is_returned_untouched_under_a_revision_pin(
-    loader, monkeypatch, no_network,
+    loader, tmp_path, monkeypatch, no_network,
 ):
     module, fixture_dir, env_var, field = LOADERS[loader]
     monkeypatch.setenv(env_var, PIN)
     settings = Settings.from_env()
     assert getattr(settings, field) == PIN
 
-    before = _tree(fixture_dir)
+    copy = tmp_path / fixture_dir.name
+    shutil.copytree(fixture_dir, copy)
+    before = _tree(copy)
+    assert before == _tree(fixture_dir)
     assert before, f"{fixture_dir} holds no fixture files"
 
     out = module.ensure_snapshot(
-        str(fixture_dir), None, False, revision=getattr(settings, field),
+        str(copy), None, False, revision=getattr(settings, field),
     )
 
-    assert out == fixture_dir.resolve()
-    assert _tree(fixture_dir) == before
-    assert not (fixture_dir / ".pinned_revision").exists()
+    assert out == copy.resolve()
+    assert _tree(copy) == before
+    assert not (copy / ".pinned_revision").exists()
 
 
 def test_every_pin_the_suite_strips_has_a_loader_here():
