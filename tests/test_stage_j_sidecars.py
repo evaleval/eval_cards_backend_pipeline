@@ -813,7 +813,7 @@ def _connection_with_merged(out_dir: Path):
     `merged_evals_view` is populated and the comparison index holds merged
     entries beside the per-source ones.
     """
-    from eval_card_backend.canonicalise import sidecars, stages
+    from eval_card_backend.canonicalise import stages
     from eval_card_backend.canonicalise.resolver_setup import register_udfs
     from eval_card_backend.sources import registry as registry_src
     from eval_entity_resolver import Resolver

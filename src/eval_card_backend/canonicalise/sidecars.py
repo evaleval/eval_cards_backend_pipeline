@@ -1669,7 +1669,6 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
     DuckDB connection (Stage A loaded them via taxonomy.py). Composites
     without a curated family_id become singleton families.
     """
-    import json as _json
     from collections import defaultdict
 
     # --- Pull family / composite curation from registry tables ---
@@ -2068,8 +2067,8 @@ def _merge_family_tags(family_tags: list, benchmarks: list[dict]) -> dict:
         bench_tags = b.get("tags") or {}
         for d in bench_tags.get("domains") or []:
             domains.add(d)
-        for l in bench_tags.get("languages") or []:
-            languages.add(l)
+        for lang in bench_tags.get("languages") or []:
+            languages.add(lang)
         for t in bench_tags.get("tasks") or []:
             tasks.add(t)
     return {

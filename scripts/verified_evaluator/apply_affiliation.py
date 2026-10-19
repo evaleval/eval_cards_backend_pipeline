@@ -182,7 +182,7 @@ def classify(submitter: str, source_org: str, attributed: bool,
         # direct-commit author for provenance either way.
         if (source_org or "").strip() in VALIDATED_ORGS:
             return True, (
-                f"continuation batch of established first-party channel"
+                "continuation batch of established first-party channel"
                 + (f" (direct-push by {direct_author})" if direct_author else "")
             )
         if direct_author:
