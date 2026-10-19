@@ -314,6 +314,25 @@ def test_diff_mode_checks_the_commit_range_and_not_the_index(repo):
     assert _run(repo).returncode == 0
 
 
+def test_diff_prefix_and_external_diff_config_cannot_blank_the_parser(repo):
+    """`diff.noprefix`, `diff.mnemonicPrefix` and `diff.external` change how
+    `git diff` prints headers; the gate must still see every added line."""
+    _git(repo, "config", "diff.noprefix", "true")
+    _git(repo, "config", "diff.mnemonicPrefix", "true")
+    _git(repo, "config", "diff.external", "/usr/bin/true")
+    _write(repo, "src/mod.py", "# Phase 1 lookup\nx = 1\nY = 2  # was previously 3\n")
+    _git(repo, "add", "-A")
+
+    staged = _run(repo)
+    assert staged.returncode == 1, staged.stderr
+    assert "src/mod.py:3  [tombstone-previously]" in staged.stderr
+
+    _commit(repo, "offending commit")
+    ranged = _run(repo, "--diff", "HEAD~1...HEAD")
+    assert ranged.returncode == 1, ranged.stderr
+    assert "src/mod.py:3  [tombstone-previously]" in ranged.stderr
+
+
 def test_diff_mode_passes_when_the_range_only_removes_or_moves_offenders(repo):
     _write(repo, "src/mod.py", "x = 1\n")
     _commit(repo, "drop the comment")

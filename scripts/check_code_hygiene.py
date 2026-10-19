@@ -175,11 +175,16 @@ def added_lines(diff_target: str = "--cached"):
     """Yield (path, line_number, text) for every line added in a git diff.
 
     `diff_target` is `--cached` for the staged changes or a revision range
-    such as `origin/main...HEAD`.
+    such as `origin/main...HEAD`. The prefix and external-diff flags pin the
+    header format `parse_added_lines` reads, whatever the user's git config.
     """
     try:
         proc = subprocess.run(
-            ["git", "diff", "--unified=0", "--no-color", "--diff-filter=ACMR", diff_target],
+            [
+                "git", "diff", "--unified=0", "--no-color", "--no-ext-diff",
+                "--src-prefix=a/", "--dst-prefix=b/", "--diff-filter=ACMR",
+                diff_target,
+            ],
             capture_output=True, text=True,
         )
     except OSError as exc:
