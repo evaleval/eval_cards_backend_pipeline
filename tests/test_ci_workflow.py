@@ -69,7 +69,7 @@ def test_workflow_job_shape_concurrency_and_permissions(ci_workflow):
     assert job["timeout-minutes"] == 20
     assert ci_workflow["concurrency"] == {
         "group": "ci-${{ github.ref }}",
-        "cancel-in-progress": True,
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
     }
     assert ci_workflow["permissions"] == {"contents": "read"}
 
