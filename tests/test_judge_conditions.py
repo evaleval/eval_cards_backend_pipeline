@@ -796,7 +796,7 @@ def test_non_headline_rows_are_never_ranked(facts):
 
 
 # ---------------------------------------------------------------------------
-# Review follow-ups (notes/issue47/REVIEW-backend-diff.md)
+# Review follow-ups
 # ---------------------------------------------------------------------------
 
 

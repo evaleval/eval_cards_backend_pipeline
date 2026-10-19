@@ -8,8 +8,7 @@ materialises three small in-memory tables on the DuckDB connection:
 - `family_membership(family_id, family_display_name, benchmark_id)`
 - `slice_promotions(benchmark_id)`
 
-Composite `configs` members come in two forms (composite-partition
-spec, notes/composite-partition-spec.md): a bare config string
+Composite `configs` members come in two forms: a bare config string
 (matches the whole config, specificity 1) or a scoped mapping
 `{config, org[, source]}` (specificity 2/3). `org` is the org_token
 (registry org id, or kebab of the raw org string for unresolved orgs);

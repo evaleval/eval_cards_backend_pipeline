@@ -1,4 +1,4 @@
-"""Collections (notes/collections-spec.md): collection_id derivation,
+"""Collections: collection_id derivation,
 vendored collection adapters, and the protocol-aware view policy.
 
 The adapter tests build a miniature protocol-varied "study" out of the e2e

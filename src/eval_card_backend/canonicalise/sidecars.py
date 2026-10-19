@@ -1547,7 +1547,7 @@ def write_hierarchy(con, out_dir: Path, snapshot_meta: dict) -> Path:
     hierarchy_hotfixes.group_same_bench_across_sources(family_records, curated_ids)
 
     # Systematic dedup (permanent pipeline logic). Both passes are
-    # score-gated (notes/data-model-invariants.md) — only true echoes
+    # score-gated (scores agree within 1e-9 across shared models) — only true echoes
     # (matching scores) are collapsed; independent cross-source
     # evaluations of the same benchmark are preserved.
     hierarchy_dedup.consolidate_dedicated_home_benchmarks(family_records, con)

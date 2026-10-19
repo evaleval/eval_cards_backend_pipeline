@@ -1,7 +1,8 @@
 """Collections: submission-channel tagging + vendored collection adapters.
 
-Implements notes/collections-spec.md (Deliverable A + the canonicalise-time
-half of Deliverable B):
+Two parts: tagging every fact row with a collection id, and the
+canonicalise-time half of collection reassembly (the extractor half runs
+by hand):
 
 - **collection_id derivation**: every fact row is keyed to the
   (`source_organization_name`, `source_name`) pair it arrived under, via a

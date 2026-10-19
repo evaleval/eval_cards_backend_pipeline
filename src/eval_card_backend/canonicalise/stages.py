@@ -3175,10 +3175,9 @@ def stage_e_per_row_signals(
 def _apply_composite_partitions(
     con, *, strict: bool, exempt: frozenset[str] = frozenset()
 ) -> None:
-    """Composite org-partition pass (notes/composite-partition-spec.md),
-    applied to `fact_results_signaled` — the post-supersession
-    population, so a superseded row can never split a page whose
-    surviving rows are single-org.
+    """Composite org-partition pass, applied to `fact_results_signaled` —
+    the post-supersession population, so a superseded row can never split
+    a page whose surviving rows are single-org.
 
     1. **Scoped-member guard**: a curated (config, org[, source]) member
        matching zero surviving rows is a hard error while its config

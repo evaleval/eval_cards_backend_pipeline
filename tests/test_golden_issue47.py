@@ -7,9 +7,9 @@ artifacts only — readable, internally consistent, and still describing rules
 the registry fixture carries — so a silent edit or a drifted rename rule
 shows up as a failure rather than as a reinterpreted golden.
 
-The executed full-corpus gate is `notes/issue47/GOLDEN-runG-H.md`: runs G and
-H over the pinned corpus, byte-identical across every parquet and sidecar,
-with the corpus invariants and the flag counts recorded there.
+The executed full-corpus gate was two runs over the pinned corpus,
+byte-identical across every parquet and sidecar (ignoring
+snapshot_meta.generated_at) with zero headline-uniqueness violations.
 
 Both files are pinned to one corpus (header comment: EEE revision, registry
 cache, baseline code revision, snapshot id).
