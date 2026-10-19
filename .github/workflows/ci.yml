@@ -59,7 +59,7 @@ jobs:
         run: python3 scripts/ci_install_resolver.py
 
       - name: Sync dependencies
-        run: uv sync --all-groups
+        run: uv sync --group dev
 
       # Lint tooling is its own dependency group so a bake can sync without it.
       - name: Install lint tooling
