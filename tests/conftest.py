@@ -79,3 +79,16 @@ def _set_taxonomy_seed_env(monkeypatch, _taxonomy_seed_stub, _collections_stub) 
     # Clear the pins so no test inherits them regardless of the ambient environment.
     for _rev_var in _PINNED_ENV_VARS:
         monkeypatch.delenv(_rev_var, raising=False)
+
+
+@pytest.fixture(scope="session")
+def fixture_corpus_build(tmp_path_factory, _taxonomy_seed_stub, _collections_stub):
+    """One full pipeline run over `tests/fixtures/`, shared by the tests
+    that inspect a whole warehouse (see `tests/fixture_corpus.py`)."""
+    from tests.fixture_corpus import build_fixture_corpus
+
+    return build_fixture_corpus(
+        tmp_path_factory.mktemp("fixture_corpus"),
+        seed_dir=_taxonomy_seed_stub,
+        collections_dir=_collections_stub,
+    )
