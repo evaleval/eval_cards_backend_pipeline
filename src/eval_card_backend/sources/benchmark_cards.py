@@ -8,6 +8,7 @@ Two on-disk shapes are supported:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -18,11 +19,14 @@ from huggingface_hub import snapshot_download
 from eval_card_backend.config import BENCHMARK_METADATA_DATASET_REPO
 from eval_card_backend.sources._revision_cache import (
     cache_revision_ok as _cache_revision_ok,
+    is_hand_built as _is_hand_built,
     cached_revision,  # re-exported: the revision this cache actually holds
     write_cache_revision as _write_cache_revision,
 )
 
 __all__ = ["cached_revision", "ensure_snapshot", "load_cards"]
+
+log = logging.getLogger(__name__)
 
 
 def _has_cached(target: Path) -> bool:
@@ -42,6 +46,13 @@ def ensure_snapshot(
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
 
+    # Files on disk with no record of a download are a hand-built corpus
+    # (test fixtures, a locally seeded registry): the tree IS the source, and
+    # wiping or fetching into the caller's directory would be wrong whatever
+    # the pin says. force_refresh above is the explicit way past this.
+    if _has_cached(target) and _is_hand_built(target):
+        log.info("benchmark cards hand-built snapshot at %s — nothing to sync", target)
+        return target
     if _has_cached(target) and _cache_revision_ok(target, revision):
         return target
     if _has_cached(target):

@@ -12,6 +12,13 @@ from pathlib import Path
 
 _MARKER = ".pinned_revision"
 
+# `huggingface_hub` writes one metadata file per downloaded file under the
+# local dir; its first line is the commit hash the file came from. Unlike
+# `_MARKER` it is written on *every* download, pinned or not, so it tracks
+# what is actually on disk.
+_HF_DOWNLOAD_META_DIR = Path(".cache") / "huggingface" / "download"
+_MAX_METADATA_SCAN = 4096
+
 
 def cache_revision_ok(target: Path, revision: str | None) -> bool:
     """True when the cache at `target` may be reused for `revision`.
@@ -27,6 +34,19 @@ def cache_revision_ok(target: Path, revision: str | None) -> bool:
     return marker.read_text(encoding="utf-8").strip() == revision
 
 
+def is_hand_built(target: Path) -> bool:
+    """True when nothing records a download into `target`: no marker and no
+    `huggingface_hub` download metadata. Files there were put in place by
+    hand (a test fixture, a `seed --local` registry) and are the corpus
+    itself, so a revision pin must not read them as a stale cache.
+    """
+    target = Path(target)
+    return (
+        not (target / _MARKER).exists()
+        and not (target / _HF_DOWNLOAD_META_DIR).is_dir()
+    )
+
+
 def write_cache_revision(target: Path, revision: str | None) -> None:
     """Record the revision a cache was downloaded at. No-op when latest."""
     if revision is None:
@@ -39,12 +59,6 @@ def clear_cache_revision(target: Path) -> None:
     (target / _MARKER).unlink(missing_ok=True)
 
 
-# `huggingface_hub` writes one metadata file per downloaded file under the
-# local dir; its first line is the commit hash the file came from. Unlike
-# `_MARKER` it is written on *every* download, pinned or not, so it tracks
-# what is actually on disk.
-_HF_DOWNLOAD_META_DIR = Path(".cache") / "huggingface" / "download"
-_MAX_METADATA_SCAN = 4096
 
 
 def hf_download_commit(target: Path, filename: str) -> str | None:
