@@ -6,7 +6,9 @@ keys are derived. They compensate for upstream data issues that can't be
 expressed as registry aliases because the fix depends on a *cross-field*
 condition the resolver can't see (it resolves each field independently).
 
-Every function has a lifecycle annotation: what removes the need for it.
+Every function has a lifecycle annotation: a `TODO(upstream):` line naming
+the upstream defect and a `Remove when:` line naming the condition that
+retires it (tests/test_hotfix_lifecycle.py checks).
 All functions mutate `results_resolved` in place via the DuckDB connection.
 
 NOTE: several hotfixes below match on literal ``metric_raw`` values ('mean',
@@ -30,9 +32,9 @@ log = logging.getLogger(__name__)
 # metric resolve independently, so there's no field the metric resolver
 # can read that says "this rank is really a mean-win-rate", and aliasing
 # `rank` → `mean win rate` would be both fragile (future data) and
-# semantically false. When HELM ingestion is corrected to put the
-# aggregate metric in the metric field, delete this function — the rows
-# will then resolve cleanly on their own.
+# semantically false.
+# Remove when: HELM ingestion puts the aggregate metric in the metric
+# field; the rows then resolve cleanly on their own.
 #
 # Until then: for exactly the malformed rows (benchmark_raw is the
 # aggregate label within a HELM composite), correct the field placement —
@@ -104,7 +106,8 @@ def fix_helm_composite_aggregates(con) -> None:
 # Until the source emits real metric names, namespace them by benchmark so
 # they (a) display and (b) stay distinct. Matching placeholder canonicals
 # live in metrics.yaml (lower_is_better unset → direction stays per-row).
-# When the source is fixed, delete this + those placeholder canonicals.
+# Remove when: the source emits real metric names; the placeholder
+# canonicals go with it.
 
 
 def fix_vague_metric_labels(con) -> None:
@@ -152,10 +155,11 @@ def fix_vague_metric_labels(con) -> None:
 # Each record therefore mints a unique unresolvable benchmark, and the
 # frontend fans one benchmark out into N single-model "benchmarks".
 # A registry alias can't repair this: aliases are literal strings and the
-# set is open (every new model/run mints a new one). When the upstream
-# submissions carry the real benchmark name in evaluation_name, delete
-# this function, its map, and the `l2-bench.mean` placeholder canonical
-# in the registry's metrics.yaml (seeded for the same reason).
+# set is open (every new model/run mints a new one).
+# Remove when: the upstream submissions carry the real benchmark name in
+# evaluation_name; the map below and the `l2-bench.mean` placeholder
+# canonical in the registry's metrics.yaml (seeded for the same reason)
+# go with it.
 #
 # Scope is deliberately enumerated: only these source_configs, only rows
 # whose benchmark_raw matches the wrapper shape. The task-variant suffixes
@@ -209,7 +213,8 @@ def fix_scorer_wrapper_benchmarks(con) -> None:
 # column literally "score" (values 34–89, anti-correlated with accuracy),
 # so the resolver lands it on the generic `score` canonical. A registry
 # alias can't fix a raw called "score" without breaking `score` everywhere
-# else. Delete this when the EEE hle ingestion relabels the column; the
+# else.
+# Remove when: the EEE hle ingestion relabels the column; the
 # (hle, score → accuracy) registry fold stays valid on its own then.
 # Until then this MUST run before apply_metric_folds — the fold would
 # otherwise sweep these calibration rows into the accuracy view.
@@ -246,7 +251,8 @@ def fix_hle_calibration_error(con) -> None:
 # rate; both arrive as raw "score". Different counting style = different
 # metric (maintainer ruling 2026-08-16) — re-key HAL's rows to the
 # scicode.main canonical so the merged default table never mixes the
-# two. Delete when the EEE hal-scicode ingestion labels the metric.
+# two.
+# Remove when: the EEE hal-scicode ingestion labels the metric.
 
 
 def fix_scicode_hal_main_rate(con) -> None:

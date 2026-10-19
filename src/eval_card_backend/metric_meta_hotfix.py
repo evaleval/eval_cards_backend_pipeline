@@ -7,7 +7,7 @@ PURPOSE
     (`signals/comparability.py:compute_threshold`) and `score_scale_anomaly`.
 
 WHY HOTFIX
-    Both upstream sources of this metadata are partially populated:
+    TODO(upstream): both sources of this metadata are partially populated:
       - The registry's `canonical_metrics` table only carries `score_type`,
         `min_score`, `max_score`, and `lower_is_better` today; it has no
         `metric_kind` or `metric_unit`.
@@ -23,9 +23,9 @@ WHY HOTFIX
     (always-false silently).
 
 RETIREMENT
-    When eval-entity-registry's `canonical_metrics` gains real `metric_kind`
-    / `metric_unit` columns AND coverage is verified against EEE's actual
-    vocabulary, retire by:
+    Remove when: eval-entity-registry's `canonical_metrics` gains real
+    `metric_kind` / `metric_unit` columns AND coverage is verified against
+    EEE's actual vocabulary. Retire by:
       1. Stage A loads the new columns directly from canonical_metrics.
       2. Stage D reads metric_kind / metric_unit / min / max / lower
          straight from the JOINed canonical_metrics row.

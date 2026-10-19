@@ -2,7 +2,9 @@
 
 Each function compensates for an upstream data issue that should be
 fixed at the source (registry seed, resolver aliases, or EEE data).
-Every function has a lifecycle annotation: what removes the need for it.
+Every function has a lifecycle annotation: a `TODO(upstream):` line naming
+the upstream defect and a `Remove when:` line naming the condition that
+retires it (tests/test_hotfix_lifecycle.py checks).
 
 All functions mutate the families list in place.
 """
@@ -30,6 +32,9 @@ def _family_benchmark_count(fam: dict) -> int:
 
 
 # ── 1. Consolidate AIR-Bench under HELM ──────────────────────────────
+# TODO(upstream): the registry has no family/composite structure for
+# AIR-Bench 2024, so its rows surface three times: under helm, misresolved
+# into agentharm, and as a standalone family.
 # Remove when: registry models AIR-Bench 2024 with proper
 # family/composite structure and scoped aliases prevent
 # cross-family contamination.
@@ -142,6 +147,9 @@ def consolidate_air_bench(families: list[dict]) -> None:
 
 
 # ── 2. Dedup "vals ai" aliases within vals-ai family ─────────────────
+# TODO(upstream): the registry alias store lacks the "vals ai <X>"
+# spellings the vals.ai feed publishes alongside the canonical key, so
+# each one mints a duplicate sibling of X.
 # Remove when: vals.ai aliases are fully covered in the registry
 # alias store, so the resolver maps "vals ai X" → canonical X
 # before the hierarchy is built.
@@ -207,6 +215,9 @@ def dedup_vals_ai_aliases(families: list[dict]) -> None:
 
 
 # ── 3. Group single-bench families sharing a benchmark key ───────────
+# TODO(upstream): the frontend has no way to de-emphasise a thin
+# single-bench family, so independent sources of one benchmark read as
+# duplicate cards.
 # Remove when: a pipeline flag (`is_thin_family`) or frontend visual
 # de-emphasis replaces this merge. The underlying model is correct
 # (each family is an independent evaluation campaign); this is a
