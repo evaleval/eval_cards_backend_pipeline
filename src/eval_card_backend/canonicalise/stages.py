@@ -2967,10 +2967,16 @@ def stage_e_per_row_signals(
         source_table="fact_results_staging", key_col="source_record_path",
     )
     con.execute(
-        """
+        f"""
         CREATE TEMP TABLE _e_keep AS
         WITH _e_narrow AS (
             SELECT rowid AS _rid,
+                   -- retrieved_timestamp is a VARCHAR holding either epoch
+                   -- seconds or ISO-8601; text order would rank every ISO
+                   -- string above every epoch string, so both passes order
+                   -- on the parsed instant and keep the raw string as the
+                   -- next key so unparseable values still order totally.
+                   {retrieved_instant_sql("retrieved_timestamp")} AS _retrieved_at,
                    fact_id, retrieved_timestamp, evaluation_id,
                    evaluation_result_id, source_record_path,
                    source_config, org_raw, evaluator_relationship, source_type,
@@ -3020,7 +3026,8 @@ def stage_e_per_row_signals(
                 CASE WHEN fact_id IS NULL THEN 1
                      ELSE ROW_NUMBER() OVER (
                          PARTITION BY fact_id
-                         ORDER BY retrieved_timestamp DESC NULLS LAST,
+                         ORDER BY _retrieved_at DESC NULLS LAST,
+                                  retrieved_timestamp DESC NULLS LAST,
                                   evaluation_id DESC,
                                   evaluation_result_id DESC,
                                   source_record_path DESC
@@ -3102,7 +3109,8 @@ def stage_e_per_row_signals(
         content_ranked AS (
             SELECT *, ROW_NUMBER() OVER (
                 PARTITION BY _observation_key
-                ORDER BY retrieved_timestamp DESC NULLS LAST,
+                ORDER BY _retrieved_at DESC NULLS LAST,
+                         retrieved_timestamp DESC NULLS LAST,
                          evaluation_id DESC NULLS LAST,
                          evaluation_result_id DESC NULLS LAST,
                          source_record_path DESC NULLS LAST,
@@ -3845,6 +3853,22 @@ def ts_cast_sql(column_expr: str) -> str:
         f"COALESCE("
         f"TRY_CAST({column_expr} AS TIMESTAMP), "
         f"TRY_CAST(to_timestamp(TRY_CAST({column_expr} AS DOUBLE)) AS TIMESTAMP)"
+        f")"
+    )
+
+
+def retrieved_instant_sql(column_expr: str) -> str:
+    """Return the SQL expression that parses a `retrieved_timestamp` string
+    to a naive UTC TIMESTAMP for ordering: ISO-8601 via the string cast,
+    epoch seconds via `make_timestamp(micros)`, NULL for anything else.
+    Unlike `ts_cast_sql`, the epoch branch does not pass through
+    TIMESTAMPTZ, so the result does not move with the session time zone
+    and two rows order the same on every machine.
+    """
+    return (
+        f"COALESCE("
+        f"TRY_CAST({column_expr} AS TIMESTAMP), "
+        f"make_timestamp(TRY_CAST(TRY_CAST({column_expr} AS DOUBLE) * 1000000 AS BIGINT))"
         f")"
     )
 
