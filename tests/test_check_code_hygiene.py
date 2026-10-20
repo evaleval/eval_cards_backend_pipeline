@@ -125,6 +125,30 @@ def test_ignored_paths_only_reports_documents_inside_the_repo(line, cited, in_re
     assert hygiene.ignored_paths(hygiene.DOC_PATH_RE.findall(line)) == cited
 
 
+def test_ignored_paths_reads_non_ascii_paths(in_repo):
+    paths = ["notes/café.md", "notes/设计.md", "README.md"]
+    assert hygiene.ignored_paths(paths) == {"notes/café.md", "notes/设计.md"}
+    assert hygiene.cites_ignored_path("# see notes/café.md")
+
+
+def test_ignored_paths_raises_when_git_fails_and_caches_nothing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    hygiene._ignored_cache.clear()
+
+    with pytest.raises(hygiene.GitUnavailable):
+        hygiene.ignored_paths(["notes/x.md"])
+    assert hygiene._ignored_cache == {}
+
+
+def test_ignored_paths_raises_when_git_cannot_run(in_repo, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+
+    with pytest.raises(hygiene.GitUnavailable):
+        hygiene.ignored_paths(["notes/x.md"])
+    assert hygiene._ignored_cache == {}
+
+
 @pytest.mark.parametrize(
     "path,checked",
     [
@@ -285,6 +309,16 @@ def test_staged_mode_reports_a_cited_document_at_an_ignored_path(repo):
     assert "src/mod.py:3  [ignored-path-ref]" in proc.stderr
     assert "src/mod.py:4" not in proc.stderr
     assert "gitignored" in proc.stderr
+
+
+def test_staged_mode_reports_a_non_ascii_document_at_an_ignored_path(repo):
+    _write(repo, "src/mod.py", "# Phase 1 lookup\nx = 1\n# see notes/设计.md\n")
+    _git(repo, "add", "-A")
+
+    proc = _run(repo)
+
+    assert proc.returncode == 1, proc.stderr
+    assert "src/mod.py:3  [ignored-path-ref]" in proc.stderr
 
 
 def test_staged_mode_skips_lines_marked_hygiene_ok(repo):

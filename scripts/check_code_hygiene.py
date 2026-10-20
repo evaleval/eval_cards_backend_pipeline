@@ -15,7 +15,7 @@ range). A line containing `hygiene: ok` is skipped by every rule; use it
 for a false positive (and consider tightening the offending rule below).
 
 Exit status: 0 clean, 1 problems found, 2 when git could not produce the
-diff (not a repository, unknown range).
+diff or read the ignore rules (not a repository, unknown range).
 
 To add a rule, append to RULES. A rule fires when its pattern matches
 the line and, if it has one, its `confirm` callback agrees.
@@ -41,7 +41,7 @@ OPT_OUT = "hygiene: ok"
 
 
 class GitUnavailable(Exception):
-    """`git diff` could not run or failed."""
+    """`git diff` or `git check-ignore` could not run or failed."""
 
 
 # A path a reader is meant to open: a document, by extension. Runtime data
@@ -56,9 +56,11 @@ _ignored_cache: dict[str, bool] = {}
 def ignored_paths(paths) -> set[str]:
     """Return the subset of `paths` matched by the repo's ignore rules.
 
-    One `git check-ignore --stdin` call covers every path not seen before;
-    results are cached for the life of the process. Paths that cannot be
-    inside the repo (absolute or `..`-relative) are skipped.
+    One `git check-ignore --stdin -z` call covers every path not seen
+    before; NUL-delimited paths come back unquoted, whatever characters they
+    hold. Results are cached for the life of the process. Paths that cannot
+    be inside the repo (absolute or `..`-relative) are skipped. Raises
+    GitUnavailable when git cannot run or fails.
     """
     paths = list(paths)
     pending = sorted({
@@ -66,12 +68,21 @@ def ignored_paths(paths) -> set[str]:
         if p not in _ignored_cache and not p.startswith(("/", ".."))
     })
     if pending:
-        proc = subprocess.run(
-            ["git", "check-ignore", "--no-index", "--stdin"],
-            input="\n".join(pending), capture_output=True, text=True,
-        )
+        try:
+            proc = subprocess.run(
+                ["git", "check-ignore", "--no-index", "--stdin", "-z"],
+                input="\0".join(pending) + "\0", capture_output=True,
+                text=True, encoding="utf-8", errors="surrogateescape",
+            )
+        except OSError as exc:
+            raise GitUnavailable(f"cannot run git: {exc}") from exc
         # exit 0: some path is ignored; 1: none is; anything else: git failed.
-        hits = set(proc.stdout.splitlines()) if proc.returncode in (0, 1) else set()
+        if proc.returncode not in (0, 1):
+            detail = proc.stderr.strip().splitlines()
+            raise GitUnavailable(
+                "git check-ignore failed" + (f": {detail[0]}" if detail else "")
+            )
+        hits = set(proc.stdout.split("\0"))
         for p in pending:
             _ignored_cache[p] = p in hits
     return {p for p in paths if _ignored_cache.get(p)}
