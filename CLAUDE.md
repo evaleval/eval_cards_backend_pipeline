@@ -35,8 +35,10 @@ fails if the two drift.
 Pipeline output verification is separate from the test suite: the daily sync
 run compares the new snapshot with the published one (`scripts/ci_publish_warehouse.py`)
 and `snapshot_meta.json` records row counts, Stage A drops and per-config
-dedup counts (`dedup_by_config`, with the survivors that still collide once
-the stated eval time, or the generation arguments, is left out of the key).
+dedup counts (`dedup_by_config`, with three overlapping residual counters:
+survivors that still collide once the stated eval time, the generation
+arguments, or both are left out of the key). A Stage E row-count
+conservation failure stops the bake; the residual counters only report.
 Treat a change in those numbers as something to explain, not something to
 accept.
 
