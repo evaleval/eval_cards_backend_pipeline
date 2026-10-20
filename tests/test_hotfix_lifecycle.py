@@ -17,14 +17,16 @@ or whose leading comment or docstring says so (`hotfix`, `override`,
 `producer-local`, `correction`, `workaround`), whatever the right-hand side
 is. Inside a function or class body the same test applies to CONSTANT_CASE
 names; a lower-case local variable is not a table. The tables that already
-exist are grandfathered in
-ALLOWED_TABLES_OUTSIDE_HOTFIX_MODULES together with a hash of their source,
-so the list may only shrink and an entry added to one of them is a deliberate
-change that updates the hash.
+exist are grandfathered in ALLOWED_TABLES_OUTSIDE_HOTFIX_MODULES together
+with a hash of their assignment. The list may only shrink, and the tables
+are frozen: a change to one goes upstream or moves the table into a hotfix
+module, never into a new hash.
 
-This is a tripwire against copying the pattern, not a proof: a table under a
-neutral name with a neutral comment passes. The scanner catches the habit of
-naming and describing the thing honestly; review catches the rest.
+These checks are edit tripwires against copying the pattern, not a proof: a
+table under a neutral name with a neutral comment passes, and an assignment
+hash does not change when the table is mutated later by subscript
+assignment or `.update(...)`. The scanner catches the habit of naming and
+describing the thing honestly; review catches the rest.
 """
 from __future__ import annotations
 
@@ -476,13 +478,17 @@ def test_the_allowlist_only_shrinks():
 def test_grandfathered_tables_are_unchanged():
     found = tables_outside_hotfix_modules()
     changed = [
-        f'    "{symbol}": "{found[symbol]}",'
+        f"  {symbol}"
         for symbol, recorded in sorted(ALLOWED_TABLES_OUTSIDE_HOTFIX_MODULES.items())
         if symbol in found and found[symbol] != recorded
     ]
     assert not changed, (
-        "grandfathered tables changed content. They are frozen: the fix goes"
-        " upstream or into a hotfix module. If the change is deliberate,"
-        " update the entries to:\n"
+        "grandfathered tables changed content:\n"
         + "\n".join(changed)
+        + "\nThey are frozen and their hashes are not updated. Instead of"
+        " editing one in place, remove the table, fix the data upstream, or"
+        " move the table into canonicalise/resolution_hotfixes.py or"
+        " canonicalise/hierarchy_hotfixes.py beside a hotfix function whose"
+        " docstring carries 'TODO(upstream):' and 'Remove when:' lines, then"
+        " delete its entry from ALLOWED_TABLES_OUTSIDE_HOTFIX_MODULES."
     )
