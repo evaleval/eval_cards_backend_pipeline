@@ -15,6 +15,16 @@ import pytest
 FIXTURES = Path(__file__).parent / "fixtures"
 SNAPSHOT_ID = "2026-04-30T00:00:00Z"
 
+# Every variable through which `Settings.from_env()` turns on a source
+# refresh, a revision pin or the private source. The fixture builder and
+# conftest strip them all; test_fixtures_offline checks this list against
+# what config.py reads.
+UPSTREAM_ENV_VARS = (
+    "EEE_REFRESH_SNAPSHOT", "ENTITY_REGISTRY_REFRESH", "BENCHMARK_METADATA_REFRESH",
+    "EEE_REVISION", "ENTITY_REGISTRY_REVISION", "BENCHMARK_METADATA_REVISION",
+    "EEE_INCLUDE_PRIVATE", "EEE_PRIVATE_REVISION",
+)
+
 
 @dataclass(frozen=True)
 class CorpusBuild:
@@ -52,8 +62,8 @@ def build_fixture_corpus(
         mp.setenv(
             "BENCHMARK_METADATA_LOCAL_DIR", str(FIXTURES / "auto_benchmarkcards")
         )
-        mp.delenv("EEE_REFRESH_SNAPSHOT", raising=False)
-        mp.delenv("BENCHMARK_METADATA_REFRESH", raising=False)
+        for var in UPSTREAM_ENV_VARS:
+            mp.delenv(var, raising=False)
 
         from eval_card_backend.canonicalise import pipeline
         from eval_card_backend.canonicalise.cache import StageCache

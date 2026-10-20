@@ -800,6 +800,7 @@ def _build_snapshot_meta(
         pinned=settings.eee_revision,
         cached=eee.cached_revision(eee_root),
         hf_token=settings.hf_token,
+        hand_built=eee_root is not None and eee.is_hand_built(eee_root),
     )
     registry_pin = _upstream_pin(
         ENTITY_REGISTRY_DATASET_REPO,
@@ -827,6 +828,9 @@ def _build_snapshot_meta(
             pinned=settings.eee_private_revision,
             cached=private_revision,
             hf_token=settings.hf_token,
+            # ensure_private_collections returns no commit only for a
+            # hand-built dir, which it keeps as is.
+            hand_built=private_revision is None,
         )
 
     row_counts = {

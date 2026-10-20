@@ -186,8 +186,10 @@ def ensure_private_collections(
     marker; a dir whose marker already names it is reused without
     downloading, so a pinned re-run needs no network. A changed revision
     replaces the whole collections dir, so no extract of an older commit
-    survives. With no revision requested, a dir that holds extracts but no
-    marker is hand-built and is used as is. Only called when
+    survives. A dir carrying the `.hand_built` sentinel, or, with no
+    revision requested, one that holds extracts but no marker, is hand-built
+    and is used as is; the commit returned for it is None. A refresh of a
+    dir with the sentinel raises `HandBuiltRefreshRefused`. Only called when
     `EEE_INCLUDE_PRIVATE=1`.
     """
     import shutil
@@ -198,11 +200,18 @@ def ensure_private_collections(
     from eval_card_backend.sources._revision_cache import (
         _MARKER,
         cache_revision_ok,
+        has_sentinel,
+        log_hand_built,
+        refuse_hand_built_refresh,
         write_cache_revision,
     )
 
     target = Path(local_dir).resolve()
     coll_dir = target / "collections"
+    refuse_hand_built_refresh(target, "private collections", force_refresh)
+    if has_sentinel(target):
+        log_hand_built(log, "private collections", coll_dir, revision)
+        return coll_dir, None
     has_marker = (target / _MARKER).exists()
     if (
         revision is None and not has_marker and not force_refresh

@@ -1,4 +1,4 @@
-"""Hand-built source directories stay offline under an upstream revision pin.
+"""Hand-built source directories stay offline under a revision pin or refresh.
 
 The sync workflow exports EEE_REVISION, ENTITY_REGISTRY_REVISION and
 BENCHMARK_METADATA_REVISION before it runs the tests, and module- and
@@ -6,7 +6,10 @@ session-scoped fixtures build `Settings` before conftest's per-test cleanup
 runs. A loader handed a pinned revision and a directory with no download
 marker has to recognise a hand-built corpus and return it untouched: nothing
 deleted, nothing fetched into it. Every hub entry point raises here, so a
-loader that reaches for the network fails the test rather than hanging on it.
+loader that reaches for the network fails the test rather than hanging on it,
+and every call is recorded, since the loaders catch the error and fall back.
+A refresh flag aimed at a directory carrying the `.hand_built` sentinel is
+refused outright: that directory is the corpus, not a cache.
 
 Each loader runs on a copy of its fixture directory under `tmp_path`: a
 loader that regresses to wiping or fetching destroys the copy, never the
@@ -14,8 +17,10 @@ committed fixtures.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -32,33 +37,42 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 PIN = "f" * 40
 OTHER = "e" * 40
 
+# loader: (module, fixture dir, pin env var, pin field, refresh env var,
+# refresh field)
 LOADERS = {
-    "eee": (eee_src, FIXTURES / "eee", "EEE_REVISION", "eee_revision"),
+    "eee": (
+        eee_src, FIXTURES / "eee", "EEE_REVISION", "eee_revision",
+        "EEE_REFRESH_SNAPSHOT", "refresh_eee",
+    ),
     "registry": (
         registry_src, FIXTURES / "entity_registry",
         "ENTITY_REGISTRY_REVISION", "registry_revision",
+        "ENTITY_REGISTRY_REFRESH", "refresh_registry",
     ),
     "cards": (
         cards_src, FIXTURES / "auto_benchmarkcards",
         "BENCHMARK_METADATA_REVISION", "benchmark_metadata_revision",
+        "BENCHMARK_METADATA_REFRESH", "refresh_benchmark_metadata",
     ),
 }
 
 
-def _network(*args, **kwargs):
-    raise AssertionError("network")
-
-
-class _NoApi:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def __getattr__(self, name):
-        return _network
-
-
 @pytest.fixture
 def no_network(monkeypatch):
+    """Make every hub entry point raise, and return the list of attempts."""
+    calls: list[str] = []
+
+    def _network(*args, **kwargs):
+        calls.append(repr((args, kwargs)))
+        raise AssertionError("network")
+
+    class _NoApi:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __getattr__(self, name):
+            return _network
+
     for name in ("snapshot_download", "hf_hub_download"):
         monkeypatch.setattr(huggingface_hub, name, _network)
     monkeypatch.setattr(huggingface_hub, "HfApi", _NoApi)
@@ -66,11 +80,13 @@ def no_network(monkeypatch):
     monkeypatch.setattr(eee_src, "HfApi", _NoApi)
     monkeypatch.setattr(registry_src, "snapshot_download", _network)
     monkeypatch.setattr(cards_src, "snapshot_download", _network)
+    return calls
 
 
-def _tree(root: Path) -> dict[str, int]:
+def _tree(root: Path) -> dict[str, str]:
+    """`relative path -> sha256` of every file under `root`."""
     return {
-        p.relative_to(root).as_posix(): p.stat().st_size
+        p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in root.rglob("*") if p.is_file()
     }
 
@@ -79,7 +95,7 @@ def _tree(root: Path) -> dict[str, int]:
 def test_fixture_dir_is_returned_untouched_under_a_revision_pin(
     loader, tmp_path, monkeypatch, no_network,
 ):
-    module, fixture_dir, env_var, field = LOADERS[loader]
+    module, fixture_dir, env_var, field, _, _ = LOADERS[loader]
     monkeypatch.setenv(env_var, PIN)
     settings = Settings.from_env()
     assert getattr(settings, field) == PIN
@@ -97,6 +113,7 @@ def test_fixture_dir_is_returned_untouched_under_a_revision_pin(
     assert out == copy.resolve()
     assert _tree(copy) == before
     assert not (copy / ".pinned_revision").exists()
+    assert no_network == []
 
 
 def _pollute(copy: Path) -> None:
@@ -119,7 +136,7 @@ def test_polluted_fixture_copy_is_returned_untouched_under_a_pin(
     """The sentinel, not the absence of download records, says a directory
     is hand-built: a fixture a past download left its markers in still
     stays as it is under a pin, instead of reading as a stale cache."""
-    module, fixture_dir, _, _ = LOADERS[loader]
+    module, fixture_dir, *_ = LOADERS[loader]
     copy = tmp_path / fixture_dir.name
     shutil.copytree(fixture_dir, copy)
     _pollute(copy)
@@ -129,11 +146,88 @@ def test_polluted_fixture_copy_is_returned_untouched_under_a_pin(
 
     assert out == copy.resolve()
     assert _tree(copy) == before
+    assert no_network == []
+
+
+@pytest.mark.parametrize("loader", sorted(LOADERS))
+@pytest.mark.parametrize("polluted", [False, True], ids=["clean", "polluted"])
+@pytest.mark.parametrize("pinned", [False, True], ids=["unpinned", "pinned"])
+def test_a_refresh_of_a_hand_built_dir_is_refused(
+    loader, polluted, pinned, tmp_path, monkeypatch, no_network,
+):
+    """A refresh flag aimed at a directory with the sentinel raises, naming
+    the directory, before anything is deleted or fetched into it."""
+    module, fixture_dir, pin_var, pin_field, refresh_var, refresh_field = LOADERS[loader]
+    monkeypatch.setenv(refresh_var, "1")
+    if pinned:
+        monkeypatch.setenv(pin_var, PIN)
+    settings = Settings.from_env()
+    assert getattr(settings, refresh_field) is True
+
+    copy = tmp_path / fixture_dir.name
+    shutil.copytree(fixture_dir, copy)
+    if polluted:
+        _pollute(copy)
+    before = _tree(copy)
+
+    with pytest.raises(_revision_cache.HandBuiltRefreshRefused) as exc:
+        module.ensure_snapshot(
+            str(copy), None, getattr(settings, refresh_field),
+            revision=getattr(settings, pin_field),
+        )
+
+    assert str(copy.resolve()) in str(exc.value)
+    assert _tree(copy) == before
+    assert no_network == []
+
+
+def _private_collections_dir(root: Path) -> Path:
+    manifest = root / "collections" / "x" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}")
+    (root / _revision_cache.HAND_BUILT_SENTINEL).touch()
+    return root
+
+
+@pytest.mark.parametrize("pin", [None, PIN], ids=["unpinned", "pinned"])
+def test_private_collections_refresh_of_a_hand_built_dir_is_refused(
+    pin, tmp_path, no_network,
+):
+    from eval_card_backend.sources import collections as collections_src
+
+    root = _private_collections_dir(tmp_path / "priv")
+    before = _tree(root)
+
+    with pytest.raises(_revision_cache.HandBuiltRefreshRefused):
+        collections_src.ensure_private_collections(str(root), None, True, revision=pin)
+
+    assert _tree(root) == before
+    assert no_network == []
+
+
+@pytest.mark.parametrize("pin", [None, PIN], ids=["unpinned", "pinned"])
+def test_private_collections_hand_built_dir_is_kept_under_a_pin(
+    pin, tmp_path, no_network,
+):
+    from eval_card_backend.sources import collections as collections_src
+
+    root = _private_collections_dir(tmp_path / "priv")
+    (root / ".pinned_revision").write_text(OTHER)
+    before = _tree(root)
+
+    coll, rev = collections_src.ensure_private_collections(
+        str(root), None, False, revision=pin,
+    )
+
+    assert coll == (root / "collections").resolve()
+    assert rev is None
+    assert _tree(root) == before
+    assert no_network == []
 
 
 def test_every_fixture_dir_carries_the_hand_built_sentinel():
     dirs = {d for d in FIXTURES.iterdir() if d.is_dir()}
-    assert {fixture_dir for _, fixture_dir, _, _ in LOADERS.values()} <= dirs
+    assert {entry[1] for entry in LOADERS.values()} <= dirs
     missing = sorted(
         d.name for d in dirs
         if not (d / _revision_cache.HAND_BUILT_SENTINEL).is_file()
@@ -156,7 +250,7 @@ def test_hand_built_dir_under_a_pin_is_logged_at_warning(
 ):
     """A pin the loader cannot apply is worth a warning naming the directory
     and the pin; without a pin the same path is routine and stays at INFO."""
-    module, fixture_dir, _, _ = LOADERS[loader]
+    module, fixture_dir, *_ = LOADERS[loader]
     copy = tmp_path / fixture_dir.name
     shutil.copytree(fixture_dir, copy)
 
@@ -244,7 +338,7 @@ def test_every_pin_the_suite_strips_has_a_loader_here():
     # The private extract's pin names a commit of a different repo; its
     # loader keeps a hand-built directory as-is and is tested with it.
     pins.discard("EEE_PRIVATE_REVISION")
-    assert pins == {env_var for _, _, env_var, _ in LOADERS.values()}
+    assert pins == {entry[2] for entry in LOADERS.values()}
 
 
 @pytest.mark.parametrize("loader", ["registry", "cards"])
@@ -254,14 +348,14 @@ def test_a_downloaded_cache_under_another_pin_is_still_refreshed(
     """The guard reads the absence of any download record, not of the marker
     alone: a cache the hub wrote without a pin carries its metadata files and
     must still be replaced when a pin arrives, or a stale cache defeats it."""
-    module, fixture_dir, _, _ = LOADERS[loader]
+    module, fixture_dir, *_ = LOADERS[loader]
     target = tmp_path / "cache"
     # A hub download never writes the sentinel; only the data files are mirrored.
-    for rel, size in _tree(fixture_dir).items():
+    for rel in _tree(fixture_dir):
         if rel == _revision_cache.HAND_BUILT_SENTINEL:
             continue
         (target / rel).parent.mkdir(parents=True, exist_ok=True)
-        (target / rel).write_bytes(b"x" * size)
+        (target / rel).write_bytes(b"x")
     meta = target / ".cache" / "huggingface" / "download" / "README.md.metadata"
     meta.parent.mkdir(parents=True)
     meta.write_text("e" * 40 + "\n")
@@ -280,3 +374,190 @@ def test_a_downloaded_cache_under_another_pin_is_still_refreshed(
     assert out == target.resolve()
     assert [c["revision"] for c in calls] == [PIN]
     assert (target / ".pinned_revision").read_text() == PIN
+
+
+def _env_vars_settings_reads(monkeypatch) -> set[str]:
+    read: set[str] = set()
+
+    class _Recorder(dict):
+        def get(self, key, default=None):
+            read.add(key)
+            return super().get(key, default)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "environ", _Recorder())
+        Settings.from_env()
+    return read
+
+
+def _selects_upstream_data(field: str) -> bool:
+    return (
+        field.startswith("refresh_") or field.endswith("_revision")
+        or field == "include_private_eee"
+    )
+
+
+def test_fixture_helper_strips_every_refresh_and_pin_variable(monkeypatch):
+    """The list the fixture builder and conftest strip is exactly the set of
+    variables through which `Settings.from_env()` turns on a refresh, a pin
+    or the private source, so a new one cannot be missed."""
+    from tests.fixture_corpus import UPSTREAM_ENV_VARS
+
+    baseline = Settings.from_env()
+    selecting: set[str] = set()
+    for var in _env_vars_settings_reads(monkeypatch):
+        for value in ("1", "a" * 40):
+            with monkeypatch.context() as mp:
+                mp.setenv(var, value)
+                try:
+                    settings = Settings.from_env()
+                except ValueError:
+                    continue
+            changed = {
+                f for f in vars(settings) if getattr(settings, f) != getattr(baseline, f)
+            }
+            if any(_selects_upstream_data(f) for f in changed):
+                selecting.add(var)
+
+    assert selecting
+    assert set(UPSTREAM_ENV_VARS) == selecting
+
+
+def test_fixture_builder_ignores_inherited_refresh_and_pin_variables(
+    tmp_path, monkeypatch, no_network, _taxonomy_seed_stub, _collections_stub,
+):
+    """A refresh flag or pin exported in the shell does not reach the
+    loaders through the fixture builder: the registry copy it bakes from is
+    neither deleted nor rewritten."""
+    from tests.fixture_corpus import build_fixture_corpus
+
+    registry = tmp_path / "entity_registry"
+    shutil.copytree(FIXTURES / "entity_registry", registry)
+    before = _tree(registry)
+    for _, _, pin_var, _, refresh_var, _ in LOADERS.values():
+        monkeypatch.setenv(refresh_var, "1")
+        monkeypatch.setenv(pin_var, PIN)
+
+    real_rmtree = shutil.rmtree
+    removed: list[str] = []
+
+    def _guarded_rmtree(path, *args, **kwargs):
+        resolved = Path(path).resolve()
+        for protected in (registry.resolve(), FIXTURES.resolve()):
+            if resolved == protected or protected in resolved.parents:
+                removed.append(str(path))
+                raise AssertionError(f"rmtree reached {path}")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", _guarded_rmtree)
+
+    build = build_fixture_corpus(
+        tmp_path / "bake",
+        seed_dir=_taxonomy_seed_stub,
+        collections_dir=_collections_stub,
+        registry_dir=registry,
+    )
+
+    assert build.out_dir.is_dir()
+    assert removed == []
+    assert _tree(registry) == before
+    assert no_network == []
+
+
+def test_snapshot_meta_names_no_revision_for_a_hand_built_eee_tree(
+    tmp_path, monkeypatch,
+):
+    """A pinned run over the hand-built EEE tree read no revision: the EEE
+    entry carries no sha and the Hub is not asked, even when a stray listing
+    file names one."""
+    from eval_card_backend.canonicalise import pipeline, stages
+
+    copy = tmp_path / "eee"
+    shutil.copytree(FIXTURES / "eee", copy)
+    _pollute(copy)
+    lookups: list[tuple] = []
+
+    def _snapshot(*args, **kwargs):
+        lookups.append((args, kwargs))
+        return None
+
+    monkeypatch.setattr(pipeline, "_hf_dataset_snapshot", _snapshot)
+    monkeypatch.setenv("EEE_REVISION", PIN)
+    meta = pipeline._build_snapshot_meta(
+        snapshot_id="2026-05-01T00:00:00Z",
+        chosen=[],
+        settings=Settings.from_env(),
+        n_eee=0, n_cards=0, n_exploded=0, n_synth_collisions=0,
+        stage_e_stats=stages.StageEStats(0, 0, 0, 0, 0, 0, {}),
+        n_unit_inconsistent=0,
+        view_layer_emitted=False,
+        eee_root=copy,
+        registry_root=FIXTURES / "entity_registry",
+        cards_root=FIXTURES / "auto_benchmarkcards",
+    )
+    pin = meta["upstream_pins"]["eee_datastore"]
+    assert pin["sha"] is None
+    assert pin["revision_source"] == "hand-built"
+    assert lookups == []
+
+
+def test_eee_discovery_reads_the_tree_of_a_polluted_hand_built_dir(tmp_path):
+    """A stray listing file in a tree with the sentinel does not describe
+    it: discovery, listing, loading and the cached revision all come from
+    the data/ tree on disk."""
+    clean = tmp_path / "clean"
+    polluted = tmp_path / "polluted"
+    shutil.copytree(FIXTURES / "eee", clean)
+    shutil.copytree(FIXTURES / "eee", polluted)
+    _pollute(polluted)
+    n_files = len(list((FIXTURES / "eee" / "data").rglob("*.json")))
+    assert n_files > 0
+
+    configs = eee_src.discover_configs(clean, None)
+    assert configs
+    assert eee_src.discover_configs(polluted, None) == configs
+    for config in configs:
+        assert eee_src.list_json_files(config, polluted, None) == (
+            eee_src.list_json_files(config, clean, None)
+        )
+    assert sum(
+        len(eee_src.list_json_files(c, polluted, None)) for c in configs
+    ) == n_files
+    assert eee_src.load_arrow_table(polluted, configs, None).num_rows == (
+        eee_src.load_arrow_table(clean, configs, None).num_rows
+    ) > 0
+    assert eee_src.cached_revision(polluted) is None
+    assert eee_src.is_hand_built(polluted)
+
+
+def test_snapshot_meta_names_no_revision_for_a_hand_built_private_dir(monkeypatch):
+    """`ensure_private_collections` returns no commit for a hand-built dir;
+    a pinned run over one names no revision and asks the Hub nothing."""
+    from eval_card_backend.canonicalise import pipeline, stages
+
+    lookups: list[tuple] = []
+
+    def _snapshot(*args, **kwargs):
+        lookups.append((args, kwargs))
+        return None
+
+    monkeypatch.setattr(pipeline, "_hf_dataset_snapshot", _snapshot)
+    monkeypatch.setenv("EEE_INCLUDE_PRIVATE", "1")
+    monkeypatch.setenv("EEE_PRIVATE_REVISION", PIN)
+    meta = pipeline._build_snapshot_meta(
+        snapshot_id="2026-05-01T00:00:00Z",
+        chosen=[],
+        settings=Settings.from_env(),
+        n_eee=0, n_cards=0, n_exploded=0, n_synth_collisions=0,
+        stage_e_stats=stages.StageEStats(0, 0, 0, 0, 0, 0, {}),
+        n_unit_inconsistent=0,
+        view_layer_emitted=False,
+        eee_root=None,
+        registry_root=FIXTURES / "entity_registry",
+        cards_root=FIXTURES / "auto_benchmarkcards",
+        private_revision=None,
+    )
+    pin = meta["upstream_pins"]["eee_private"]
+    assert pin["sha"] is None
+    assert pin["revision_source"] == "hand-built"
+    assert lookups == []

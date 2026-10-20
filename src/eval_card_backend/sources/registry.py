@@ -129,12 +129,13 @@ def ensure_snapshot(
     revision: str | None = None,
 ) -> Path:
     target = Path(local_dir).resolve()
+    if _hand_built_snapshot(
+        target, revision, "registry", _has_registry_data(target), log, force_refresh,
+    ):
+        return target
     if force_refresh and target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
-
-    if _hand_built_snapshot(target, revision, "registry", _has_registry_data(target), log):
-        return target
     if _has_registry_data(target) and _cache_revision_ok(target, revision):
         return target
     if _has_registry_data(target):

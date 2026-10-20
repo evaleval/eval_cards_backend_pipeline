@@ -42,12 +42,13 @@ def ensure_snapshot(
     revision: str | None = None,
 ) -> Path | None:
     target = Path(local_dir).resolve()
+    if _hand_built_snapshot(
+        target, revision, "benchmark cards", _has_cached(target), log, force_refresh,
+    ):
+        return target
     if force_refresh and target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
-
-    if _hand_built_snapshot(target, revision, "benchmark cards", _has_cached(target), log):
-        return target
     if _has_cached(target) and _cache_revision_ok(target, revision):
         return target
     if _has_cached(target):

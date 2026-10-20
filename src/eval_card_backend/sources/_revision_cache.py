@@ -9,8 +9,10 @@ local cache would silently defeat the pin. When no revision is requested
 A directory that is the corpus itself rather than a download (a committed
 test fixture, a `seed --local` registry) is hand-built and is never wiped or
 fetched into. A committed, empty `.hand_built` sentinel says so outright and
-wins over any marker or hub metadata a stray download left behind; without
-the sentinel, the absence of both records is read as hand-built.
+wins over any marker or hub metadata a stray download left behind, and over
+a refresh flag, which raises `HandBuiltRefreshRefused` instead of deleting
+the directory. Without the sentinel, the absence of both records is read as
+hand-built, and a refresh still replaces the directory.
 """
 from __future__ import annotations
 
@@ -42,9 +44,24 @@ def cache_revision_ok(target: Path, revision: str | None) -> bool:
     return marker.read_text(encoding="utf-8").strip() == revision
 
 
+class HandBuiltRefreshRefused(RuntimeError):
+    """A refresh was asked of a directory carrying the `.hand_built` sentinel."""
+
+
 def has_sentinel(target: Path) -> bool:
     """True when `target` carries the `.hand_built` sentinel."""
     return (Path(target) / HAND_BUILT_SENTINEL).is_file()
+
+
+def refuse_hand_built_refresh(target: Path, label: str, force_refresh: bool) -> None:
+    """Raise when `force_refresh` targets a directory with the sentinel."""
+    if force_refresh and has_sentinel(target):
+        raise HandBuiltRefreshRefused(
+            f"{label}: {target} is a hand-built corpus (it carries "
+            f"{HAND_BUILT_SENTINEL}) and is never deleted or downloaded into. "
+            f"A refresh must target a cache directory; unset the refresh flag "
+            f"or point the source's local dir elsewhere."
+        )
 
 
 def is_hand_built(target: Path) -> bool:
@@ -83,13 +100,19 @@ def hand_built_snapshot(
     label: str,
     has_data: bool,
     log: logging.Logger,
+    force_refresh: bool = False,
 ) -> bool:
-    """True when the caller must return `target` untouched: it holds the
-    corpus (`has_data`) and `is_hand_built` says so. The tree IS the source;
-    wiping or fetching into it would be wrong whatever the pin says. The
-    caller's `force_refresh` (which empties the directory first) is the
-    explicit way past this. Logs the decision via `log_hand_built`."""
-    if not (has_data and is_hand_built(target)):
+    """True when the caller must return `target` untouched: it carries the
+    sentinel, or it holds the corpus (`has_data`) and `is_hand_built` says
+    so. The tree IS the source; wiping or fetching into it would be wrong
+    whatever the pin says. Call it before any deletion: `force_refresh`
+    raises `HandBuiltRefreshRefused` for a sentinel directory and returns
+    False for any other, which the caller then empties and re-downloads.
+    Logs the decision via `log_hand_built`."""
+    refuse_hand_built_refresh(target, label, force_refresh)
+    if not has_sentinel(target) and (
+        force_refresh or not (has_data and is_hand_built(target))
+    ):
         return False
     log_hand_built(log, label, target, revision)
     return True
