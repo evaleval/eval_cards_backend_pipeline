@@ -113,6 +113,29 @@ def test_recover_stage_e_stats_without_tables_is_zero():
     assert pipeline._configs_from_eee_raw(con) == []
 
 
+def test_recover_stage_e_stats_without_stats_table_leaves_dedup_unknown():
+    """With the fact tables cached but no `stage_e_dedup_stats`, the dedup
+    breakdowns are not re-derived from the fact tables by another formula:
+    the per-config counts stay None and both dedup drops read as zero."""
+    con = duckdb.connect()
+    con.execute(
+        """
+        CREATE TABLE fact_results_staging AS
+        SELECT * FROM (VALUES
+            (1.0, 'proportion', CAST(NULL AS DOUBLE), 'b', 'm'),
+            (CAST(NULL AS DOUBLE), 'proportion', CAST(NULL AS DOUBLE), 'b', 'm'),
+            (0.5, NULL, CAST(NULL AS DOUBLE), 'b', 'm')
+        ) v(score, metric_unit, min_score, benchmark_key, metric_key)
+        """
+    )
+    con.execute("CREATE TABLE fact_results_signaled AS SELECT 1 AS x")
+    s = pipeline._recover_stage_e_stats(con)
+    assert (s.pre, s.n_dropped_no_score, s.n_dropped_sentinel, s.post) == (3, 1, 0, 1)
+    assert (s.n_dropped_dedup, s.n_dropped_content_dedup) == (0, 0)
+    assert s.dedup_by_config is None
+    assert stages.read_stage_e_dedup_stats(con) is None
+
+
 def test_single_table_input_still_accepted():
     con = duckdb.connect()
     _, schema = eee_src._arrow_table_schema()

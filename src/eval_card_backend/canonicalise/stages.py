@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Iterable, NamedTuple
 
+import duckdb
 import pyarrow as pa
 
 from eval_card_backend.signals.reproducibility import (
@@ -425,7 +426,7 @@ class StageEStats(NamedTuple):
     n_dropped_dedup: int        # fact_id collisions
     n_dropped_content_dedup: int  # same observation re-emitted in a new record
     post: int                   # final fact_results_signaled count
-    # see stage_e_dedup_by_config; None when the staging table is unavailable
+    # see read_stage_e_dedup_stats; None when the stats table is unavailable
     dedup_by_config: dict[str, dict[str, int]] | None
 
 log = logging.getLogger(__name__)
@@ -437,64 +438,22 @@ _DEDUP_BY_CONFIG_KEYS = (
 )
 
 
-def stage_e_dedup_by_config(con) -> dict[str, dict[str, int]]:
+def read_stage_e_dedup_stats(con) -> dict[str, dict[str, int]] | None:
     """Per-source_config row counts at each Stage E dedup boundary, read
-    from `fact_results_staging` and `fact_results_signaled` so a fresh run
-    and a from-cache rebuild report the same numbers.
+    from the `stage_e_dedup_stats` table Stage E writes next to
+    `fact_results_signaled`; None when the table is not in the connection.
 
     `residual_timestamp_only` counts survivors that still match another
     survivor once the observation key drops evaluation_timestamp;
     `residual_generation_args_only` does the same for generation_args
-    (each is rows minus distinct looser keys). Survivors are matched back
-    to staging on (source_record_path, result_idx) because the key's
-    evaluation_name is not carried into fact_results_signaled.
-    """
-    rows = con.execute(
-        f"""
-        WITH staging AS (
-            SELECT source_config, count(*) AS n
-            FROM fact_results_staging GROUP BY 1
-        ),
-        fact_id_pass AS (
-            SELECT source_config,
-                   COUNT(DISTINCT fact_id)
-                 + COUNT(*) FILTER (WHERE fact_id IS NULL) AS n
-            FROM fact_results_staging
-            WHERE score IS NOT NULL
-              AND NOT ({_SENTINEL_DROP_PREDICATE})
-            GROUP BY 1
-        ),
-        content_pass AS (
-            SELECT source_config, count(*) AS n
-            FROM fact_results_signaled GROUP BY 1
-        ),
-        residual AS (
-            SELECT source_config,
-                   count(*) - COUNT(DISTINCT
-                       {_observation_key_sql(exclude=_TIMESTAMP_ONLY_EXCLUDES)}
-                   ) AS n_timestamp,
-                   count(*) - COUNT(DISTINCT
-                       {_observation_key_sql(exclude=_GENERATION_ARGS_ONLY_EXCLUDES)}
-                   ) AS n_generation_args
-            FROM fact_results_staging s
-            SEMI JOIN fact_results_signaled f
-              ON s.source_record_path IS NOT DISTINCT FROM f.source_record_path
-             AND s.result_idx IS NOT DISTINCT FROM f.result_idx
-            GROUP BY 1
-        )
-        SELECT st.source_config,
-               st.n,
-               COALESCE(fp.n, 0),
-               COALESCE(cp.n, 0),
-               COALESCE(r.n_timestamp, 0),
-               COALESCE(r.n_generation_args, 0)
-        FROM staging st
-        LEFT JOIN fact_id_pass fp USING (source_config)
-        LEFT JOIN content_pass cp USING (source_config)
-        LEFT JOIN residual r USING (source_config)
-        ORDER BY st.source_config
-        """
-    ).fetchall()
+    (each is survivors minus distinct looser keys)."""
+    try:
+        rows = con.execute(
+            f"SELECT source_config, {', '.join(_DEDUP_BY_CONFIG_KEYS)} "
+            f"FROM stage_e_dedup_stats ORDER BY source_config"
+        ).fetchall()
+    except duckdb.CatalogException:
+        return None
     return {
         config: dict(zip(_DEDUP_BY_CONFIG_KEYS, (int(c) for c in counts)))
         for config, *counts in rows
@@ -504,7 +463,7 @@ def stage_e_dedup_by_config(con) -> dict[str, dict[str, int]]:
 def dedup_by_config_totals(
     by_config: dict[str, dict[str, int]] | None,
 ) -> dict[str, int] | None:
-    """Sum each `stage_e_dedup_by_config` count over configs; None in, None out."""
+    """Sum each `stage_e_dedup_stats` count over configs; None in, None out."""
     if by_config is None:
         return None
     return {
@@ -3010,7 +2969,9 @@ def stage_e_per_row_signals(
        evaluation conditions, stated evaluation time, uncertainty and sample
        size all match.  Retrieval and record bookkeeping are deliberately not
        part of this identity.  As above, keep the latest retrieval and use a
-       total deterministic tie-break.
+       total deterministic tie-break.  Both passes record their decision
+       per row, and `stage_e_dedup_stats` aggregates those decisions per
+       source_config (see `read_stage_e_dedup_stats`).
 
     Per-row signals computed: reproducibility gap, provenance source-type
     collapse, variant_key, score_scale_anomaly, reporting completeness.
@@ -3140,7 +3101,7 @@ def stage_e_per_row_signals(
     )
     con.execute(
         f"""
-        CREATE TEMP TABLE _e_keep AS
+        CREATE TEMP TABLE _e_decisions AS
         WITH _e_narrow AS (
             SELECT rowid AS _rid,
                    -- retrieved_timestamp is a VARCHAR holding either epoch
@@ -3207,30 +3168,80 @@ def stage_e_per_row_signals(
                 END AS _dedup_rank
             FROM _e_narrow
         ),
-        fact_id_deduped AS (
-            SELECT * EXCLUDE (_dedup_rank)
-            FROM fact_id_ranked
-            WHERE _dedup_rank = 1
-        ),
         content_keyed AS (
-            SELECT *, {_observation_key_sql()} AS _observation_key
-            FROM fact_id_deduped
+            -- Keyed before the window so it carries the struct and two
+            -- hashes rather than every raw key column. The hashes are
+            -- diagnostics for the residual counts; the pass itself
+            -- partitions on the exact struct.
+            SELECT _rid, source_config, _retrieved_at, retrieved_timestamp,
+                   evaluation_id, evaluation_result_id, source_record_path,
+                   fact_id, _dedup_rank = 1 AS kept_by_fact_id_pass,
+                   {_observation_key_sql()} AS _observation_key,
+                   hash({_observation_key_sql(exclude=_TIMESTAMP_ONLY_EXCLUDES)})
+                       AS hash_no_timestamp,
+                   hash({_observation_key_sql(exclude=_GENERATION_ARGS_ONLY_EXCLUDES)})
+                       AS hash_no_generation_args
+            FROM fact_id_ranked
         ),
         content_ranked AS (
-            SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY _observation_key
-                ORDER BY _retrieved_at DESC NULLS LAST,
-                         retrieved_timestamp DESC NULLS LAST,
-                         evaluation_id DESC NULLS LAST,
-                         evaluation_result_id DESC NULLS LAST,
-                         source_record_path DESC NULLS LAST,
-                         fact_id DESC NULLS LAST
-            ) AS _content_dedup_rank
+            -- Partitioning on the survivor flag too ranks fact-id losers
+            -- among themselves, so survivors see exactly the fact-id pass
+            -- output and every row keeps a decision in one streamed pass.
+            SELECT _rid, source_config, kept_by_fact_id_pass,
+                   hash_no_timestamp, hash_no_generation_args,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY kept_by_fact_id_pass, _observation_key
+                       ORDER BY _retrieved_at DESC NULLS LAST,
+                                retrieved_timestamp DESC NULLS LAST,
+                                evaluation_id DESC NULLS LAST,
+                                evaluation_result_id DESC NULLS LAST,
+                                source_record_path DESC NULLS LAST,
+                                fact_id DESC NULLS LAST
+                   ) AS _content_dedup_rank
             FROM content_keyed
         )
-        SELECT _rid
+        SELECT _rid, source_config, kept_by_fact_id_pass,
+               kept_by_fact_id_pass AND _content_dedup_rank = 1
+                   AS kept_by_content_pass,
+               hash_no_timestamp, hash_no_generation_args
         FROM content_ranked
-        WHERE _content_dedup_rank = 1
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE stage_e_dedup_stats AS
+        WITH staged AS (
+            SELECT source_config, count(*) AS staging
+            FROM fact_results_staging
+            GROUP BY 1
+        ),
+        decided AS (
+            SELECT source_config,
+                   count(*) FILTER (WHERE kept_by_fact_id_pass)
+                       AS after_fact_id_pass,
+                   count(*) FILTER (WHERE kept_by_content_pass)
+                       AS after_content_pass,
+                   count(*) FILTER (WHERE kept_by_content_pass)
+                     - count(DISTINCT hash_no_timestamp)
+                           FILTER (WHERE kept_by_content_pass)
+                       AS residual_timestamp_only,
+                   count(*) FILTER (WHERE kept_by_content_pass)
+                     - count(DISTINCT hash_no_generation_args)
+                           FILTER (WHERE kept_by_content_pass)
+                       AS residual_generation_args_only
+            FROM _e_decisions
+            GROUP BY 1
+        )
+        SELECT source_config,
+               staging,
+               COALESCE(after_fact_id_pass, 0) AS after_fact_id_pass,
+               COALESCE(after_content_pass, 0) AS after_content_pass,
+               COALESCE(residual_timestamp_only, 0) AS residual_timestamp_only,
+               COALESCE(residual_generation_args_only, 0)
+                   AS residual_generation_args_only
+        FROM staged
+        LEFT JOIN decided USING (source_config)
+        ORDER BY source_config
         """
     )
     final_cols = explicit_projection_sql(
@@ -3240,28 +3251,25 @@ def stage_e_per_row_signals(
         con, "fact_results_signaled",
         lambda pred: (
             f"SELECT {final_cols} FROM _signaled_rows "
-            f"WHERE rowid IN (SELECT _rid FROM _e_keep) AND {pred}"
+            f"WHERE rowid IN (SELECT _rid FROM _e_decisions "
+            f"WHERE kept_by_content_pass) AND {pred}"
         ),
         source_table="_signaled_rows", key_col="source_record_path",
     )
     con.execute("DROP TABLE _signaled_rows")
-    con.execute("DROP TABLE _e_keep")
+    con.execute("DROP TABLE _e_decisions")
     _apply_composite_partitions(
         con, strict=strict_composites, exempt=exempt_composites
     )
     post = con.execute("SELECT count(*) FROM fact_results_signaled").fetchone()[0]
-    pre_dedup = pre - n_dropped_no_score - n_dropped_sentinel
-    fact_id_survivors = con.execute(
-        f"""
-        SELECT COUNT(DISTINCT fact_id)
-             + COUNT(*) FILTER (WHERE fact_id IS NULL)
-        FROM fact_results_staging
-        WHERE score IS NOT NULL
-          AND NOT ({_SENTINEL_DROP_PREDICATE})
-        """
-    ).fetchone()[0]
-    n_dropped_dedup = pre_dedup - fact_id_survivors
-    n_dropped_content_dedup = fact_id_survivors - post
+    fact_id_survivors, content_survivors = (
+        int(n) for n in con.execute(
+            "SELECT COALESCE(SUM(after_fact_id_pass), 0), "
+            "COALESCE(SUM(after_content_pass), 0) FROM stage_e_dedup_stats"
+        ).fetchone()
+    )
+    n_dropped_dedup = pre - n_dropped_no_score - n_dropped_sentinel - fact_id_survivors
+    n_dropped_content_dedup = fact_id_survivors - content_survivors
     if n_dropped_sentinel:
         log.warning(
             "Stage E: dropped %d row(s) on the score=-1 sentinel policy "
@@ -3287,7 +3295,7 @@ def stage_e_per_row_signals(
         n_dropped_dedup=n_dropped_dedup,
         n_dropped_content_dedup=n_dropped_content_dedup,
         post=post,
-        dedup_by_config=stage_e_dedup_by_config(con),
+        dedup_by_config=read_stage_e_dedup_stats(con),
     )
 
 

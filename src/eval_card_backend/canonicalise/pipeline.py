@@ -644,11 +644,9 @@ def run(
                 "results_exploded missing; synthesised_id_collisions = None"
             )
     # When Stage E was restored from cache rather than re-run, recover row
-    # counts from the cached tables. Sentinel and both dedup breakdowns are
-    # re-derived: the sentinel predicate and fact-id survivor count are pure
-    # SQL against `fact_results_staging`; the remaining pre/post delta is the
-    # content dedup. This keeps `snapshot_meta.row_counts` accurate across
-    # `--from-stage F+` reruns instead of zeroing out real signals.
+    # counts from the cached tables (see `_recover_stage_e_stats`) so
+    # `snapshot_meta.row_counts` stays accurate across `--from-stage F+`
+    # reruns instead of zeroing out real signals.
     if stage_e_stats is None:
         stage_e_stats = _recover_stage_e_stats(con)
     if not chosen:
@@ -827,6 +825,21 @@ def _build_snapshot_meta(
             hf_token=settings.hf_token,
         )
 
+    row_counts = {
+        "eee_records": n_eee,
+        "exploded_results": n_exploded,
+        "fact_results_pre_drop": stage_e_stats.pre,
+        "fact_results": stage_e_stats.post,
+        "dropped_rows_no_score": stage_e_stats.n_dropped_no_score,
+        "dropped_rows_sentinel": stage_e_stats.n_dropped_sentinel,
+        "dropped_rows_dedup": stage_e_stats.n_dropped_dedup,
+        "dropped_rows_content_dedup": stage_e_stats.n_dropped_content_dedup,
+        "dropped_eee_records_stage_a": sum(eee._drop_counter.values()),
+        "cards": n_cards,
+        "comparability_groups_metric_unit_inconsistent": n_unit_inconsistent,
+        "synthesised_id_collisions": n_synth_collisions,
+    }
+    dedup_totals = stages.dedup_by_config_totals(stage_e_stats.dedup_by_config)
     return {
         "snapshot_id": snapshot_id,
         "generated_at": _make_snapshot_id(),
@@ -841,28 +854,47 @@ def _build_snapshot_meta(
         "upstream_pins": upstream_pins,
         "tables": tables,
         "sidecars": sidecars,
-        "row_counts": {
-            "eee_records": n_eee,
-            "exploded_results": n_exploded,
-            "fact_results_pre_drop": stage_e_stats.pre,
-            "fact_results": stage_e_stats.post,
-            "dropped_rows_no_score": stage_e_stats.n_dropped_no_score,
-            "dropped_rows_sentinel": stage_e_stats.n_dropped_sentinel,
-            "dropped_rows_dedup": stage_e_stats.n_dropped_dedup,
-            "dropped_rows_content_dedup": (
-                stage_e_stats.n_dropped_content_dedup
-            ),
-            "dropped_eee_records_stage_a": sum(eee._drop_counter.values()),
-            "cards": n_cards,
-            "comparability_groups_metric_unit_inconsistent": n_unit_inconsistent,
-            "synthesised_id_collisions": n_synth_collisions,
-        },
+        "row_counts": row_counts,
         "dedup_by_config": stage_e_stats.dedup_by_config,
-        "dedup_by_config_totals": stages.dedup_by_config_totals(
-            stage_e_stats.dedup_by_config
+        "dedup_by_config_totals": dedup_totals,
+        "dedup_by_config_consistent": _dedup_by_config_consistent(
+            row_counts, dedup_totals
         ),
         "stage_a_drops": eee.drop_breakdown(),
     }
+
+
+def _dedup_by_config_consistent(
+    row_counts: dict, totals: dict[str, int] | None,
+) -> bool | None:
+    """Whether the per-config dedup totals add up to the global row counts;
+    None when the per-config breakdown is unknown. Both come from Stage E's
+    decision table, so a mismatch means the materialised fact tables and
+    that table disagree. It is reported, not asserted: the counts are
+    diagnostics and no table is built from them, so a wrong count should
+    not take the snapshot down with it."""
+    if totals is None:
+        return None
+    expected = {
+        "staging": row_counts["fact_results_pre_drop"],
+        "after_fact_id_pass": (
+            row_counts["fact_results_pre_drop"]
+            - row_counts["dropped_rows_no_score"]
+            - row_counts["dropped_rows_sentinel"]
+            - row_counts["dropped_rows_dedup"]
+        ),
+        "after_content_pass": row_counts["fact_results"],
+    }
+    mismatched = {
+        key: {"dedup_by_config_totals": totals[key], "row_counts": value}
+        for key, value in expected.items() if totals[key] != value
+    }
+    if mismatched:
+        log.error(
+            "dedup_by_config totals disagree with row_counts: %s", mismatched
+        )
+        return False
+    return True
 
 
 def _table_count(con, table: str) -> int | None:
@@ -955,44 +987,34 @@ def _configs_from_eee_raw(con) -> list[str]:
 
 def _recover_stage_e_stats(con) -> "stages.StageEStats":
     """Row counts for `snapshot_meta.row_counts` when Stage E was restored
-    from cache rather than run. Sentinel and fact-id survivor counts are
-    pure SQL against `fact_results_staging`; the remaining pre/post delta
-    is the content dedup. Without both Stage E tables the per-config
-    breakdown is unknown and stays None rather than reading as zero."""
+    from cache rather than run. No-score and sentinel counts are pure SQL
+    against `fact_results_staging`; both dedup drops come from the cached
+    `stage_e_dedup_stats`, the same table a fresh run reads. Without it the
+    dedup breakdowns are unknown and stay None or zero rather than being
+    re-derived by another formula."""
     pre_count = _table_count(con, "fact_results_staging")
     post_count = _table_count(con, "fact_results_signaled")
+    dedup_by_config = stages.read_stage_e_dedup_stats(con)
+    totals = stages.dedup_by_config_totals(dedup_by_config)
     n_no_score = None
     n_sentinel = None
     n_dedup = None
     n_content_dedup = None
-    dedup_by_config: dict[str, dict[str, int]] | None = None
     if pre_count is not None:
-        try:
-            n_no_score = con.execute(
-                "SELECT count(*) FROM fact_results_staging WHERE score IS NULL"
-            ).fetchone()[0]
-            n_sentinel = con.execute(
-                f"SELECT count(*) FROM fact_results_staging "
-                f"WHERE score IS NOT NULL "
-                f"AND ({stages._SENTINEL_DROP_PREDICATE})"
-            ).fetchone()[0]
-            if post_count is not None:
-                pre_dedup = pre_count - n_no_score - n_sentinel
-                fact_id_survivors = con.execute(
-                    f"""
-                    SELECT COUNT(DISTINCT fact_id)
-                         + COUNT(*) FILTER (WHERE fact_id IS NULL)
-                    FROM fact_results_staging
-                    WHERE score IS NOT NULL
-                      AND NOT ({stages._SENTINEL_DROP_PREDICATE})
-                    """
-                ).fetchone()[0]
-                n_dedup = max(0, pre_dedup - fact_id_survivors)
-                n_content_dedup = max(0, fact_id_survivors - post_count)
-                dedup_by_config = stages.stage_e_dedup_by_config(con)
-        except duckdb.CatalogException:
-            log.warning(
-                "fact_results_staging missing; Stage E breakdowns = None"
+        n_no_score = con.execute(
+            "SELECT count(*) FROM fact_results_staging WHERE score IS NULL"
+        ).fetchone()[0]
+        n_sentinel = con.execute(
+            f"SELECT count(*) FROM fact_results_staging "
+            f"WHERE score IS NOT NULL "
+            f"AND ({stages._SENTINEL_DROP_PREDICATE})"
+        ).fetchone()[0]
+        if totals is not None:
+            n_dedup = (
+                pre_count - n_no_score - n_sentinel - totals["after_fact_id_pass"]
+            )
+            n_content_dedup = (
+                totals["after_fact_id_pass"] - totals["after_content_pass"]
             )
     return stages.StageEStats(
         pre=pre_count if pre_count is not None else 0,

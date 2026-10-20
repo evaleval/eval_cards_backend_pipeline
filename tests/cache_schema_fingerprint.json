@@ -1,5 +1,5 @@
 {
-  "cache_schema_version": 14,
+  "cache_schema_version": 15,
   "tables": {
     "aliases": [
       ["raw_value", "VARCHAR"],
@@ -960,6 +960,14 @@
     ],
     "slice_promotions": [
       ["benchmark_id", "VARCHAR"]
+    ],
+    "stage_e_dedup_stats": [
+      ["source_config", "VARCHAR"],
+      ["staging", "BIGINT"],
+      ["after_fact_id_pass", "BIGINT"],
+      ["after_content_pass", "BIGINT"],
+      ["residual_timestamp_only", "BIGINT"],
+      ["residual_generation_args_only", "BIGINT"]
     ]
   }
 }

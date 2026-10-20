@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
+import shutil
 from pathlib import Path
 
 import pytest
@@ -856,6 +858,96 @@ def _assert_dedup_by_config_sums_to_row_counts(snap: dict) -> None:
         - rc["dropped_rows_sentinel"] - rc["dropped_rows_dedup"]
     )
     assert totals["after_content_pass"] == rc["fact_results"]
+    assert snap["dedup_by_config_consistent"] is True
+
+
+def test_fixture_corpus_dedup_stats_add_up_on_both_paths(
+    fixture_corpus_build, tmp_path, monkeypatch,
+):
+    """The per-config counts come from the Stage E decision table, so they
+    add up to the global row counts on a fresh bake and again when Stage E
+    is restored from its cache for a `--from-stage F` rebuild."""
+    from eval_card_backend.canonicalise import pipeline
+    from eval_card_backend.config import Settings
+    from tests.fixture_corpus import FIXTURES
+
+    snap = json.loads((fixture_corpus_build.out_dir / "snapshot_meta.json").read_text())
+    _assert_dedup_by_config_sums_to_row_counts(snap)
+    assert snap["row_counts"]["fact_results"] > 0
+
+    # Rebuild from a copy of the stage cache so a failure here cannot
+    # disturb the session-shared bake.
+    cache_root = tmp_path / "cache"
+    shutil.copytree(fixture_corpus_build.cache_dir.parent, cache_root)
+    monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(FIXTURES / "eee"))
+    monkeypatch.setenv(
+        "BENCHMARK_METADATA_LOCAL_DIR", str(FIXTURES / "auto_benchmarkcards")
+    )
+    out_dir = pipeline.run(
+        Settings.from_env(),
+        snapshot_id=fixture_corpus_build.snapshot_id,
+        warehouse_dir=str(tmp_path / "warehouse"),
+        registry_local_dir=str(fixture_corpus_build.registry_dir),
+        cache_root=str(cache_root),
+        from_stage="F",
+    )
+    snap2 = json.loads((out_dir / "snapshot_meta.json").read_text())
+    _assert_dedup_by_config_sums_to_row_counts(snap2)
+    stage_e_keys = (
+        "fact_results_pre_drop", "fact_results", "dropped_rows_no_score",
+        "dropped_rows_sentinel", "dropped_rows_dedup", "dropped_rows_content_dedup",
+    )
+    for key in stage_e_keys:
+        assert snap2["row_counts"][key] == snap["row_counts"][key], key
+    assert snap2["dedup_by_config"] == snap["dedup_by_config"]
+
+
+def test_snapshot_meta_flags_dedup_totals_that_disagree_with_row_counts(
+    monkeypatch, caplog,
+):
+    from eval_card_backend.canonicalise import pipeline, stages
+    from eval_card_backend.config import Settings
+
+    monkeypatch.setattr(pipeline, "_hf_dataset_snapshot", lambda *a, **k: None)
+    by_config = {"minibench": {
+        "staging": 3, "after_fact_id_pass": 2, "after_content_pass": 1,
+        "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+    }}
+    stats = stages.StageEStats(
+        pre=3, n_dropped_no_score=0, n_dropped_sentinel=0,
+        n_dropped_dedup=1, n_dropped_content_dedup=1, post=1,
+        dedup_by_config=by_config,
+    )
+    kwargs = dict(
+        snapshot_id="2026-05-01T00:00:00Z", chosen=["minibench"],
+        settings=Settings.from_env(),
+        n_eee=0, n_cards=0, n_exploded=0, n_synth_collisions=0,
+        n_unit_inconsistent=0, view_layer_emitted=False,
+        eee_root=None, registry_root=None, cards_root=None,
+    )
+    logger = "eval_card_backend.canonicalise.pipeline"
+    with caplog.at_level(logging.ERROR, logger=logger):
+        meta = pipeline._build_snapshot_meta(stage_e_stats=stats, **kwargs)
+        assert meta["dedup_by_config_consistent"] is True
+        assert not caplog.records
+
+        # One more surviving row in fact_results than the content pass kept.
+        meta = pipeline._build_snapshot_meta(
+            stage_e_stats=stats._replace(post=2), **kwargs
+        )
+    assert meta["dedup_by_config_consistent"] is False
+    assert meta["row_counts"]["fact_results"] == 2
+    assert meta["dedup_by_config_totals"]["after_content_pass"] == 1
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "after_content_pass" in errors[0].getMessage()
+    assert "staging" not in errors[0].getMessage()
+
+    meta = pipeline._build_snapshot_meta(
+        stage_e_stats=stats._replace(dedup_by_config=None), **kwargs
+    )
+    assert meta["dedup_by_config_consistent"] is None
+    assert meta["dedup_by_config_totals"] is None
 
 
 def test_observation_key_fields_are_pinned():
@@ -1250,6 +1342,7 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
     # A from-cache rebuild recovers the same counts from the cached tables.
     out_dir2 = pipeline.run(Settings.from_env(), **run_kwargs, from_stage="F")
     snap2 = json.loads((out_dir2 / "snapshot_meta.json").read_text())
+    _assert_dedup_by_config_sums_to_row_counts(snap2)
     assert snap2["row_counts"] == snap["row_counts"]
     assert snap2["dedup_by_config"] == snap["dedup_by_config"]
     assert snap2["dedup_by_config_totals"] == snap["dedup_by_config_totals"]
