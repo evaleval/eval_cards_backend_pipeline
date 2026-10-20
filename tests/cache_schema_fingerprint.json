@@ -1,5 +1,5 @@
 {
-  "cache_schema_version": 15,
+  "cache_schema_version": 16,
   "tables": {
     "aliases": [
       ["raw_value", "VARCHAR"],
@@ -967,7 +967,8 @@
       ["after_fact_id_pass", "BIGINT"],
       ["after_content_pass", "BIGINT"],
       ["residual_timestamp_only", "BIGINT"],
-      ["residual_generation_args_only", "BIGINT"]
+      ["residual_generation_args_only", "BIGINT"],
+      ["residual_both", "BIGINT"]
     ]
   }
 }

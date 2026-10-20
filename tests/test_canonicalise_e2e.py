@@ -843,6 +843,7 @@ def _assert_dedup_by_config_sums_to_row_counts(snap: dict) -> None:
     keys = {
         "staging", "after_fact_id_pass", "after_content_pass",
         "residual_timestamp_only", "residual_generation_args_only",
+        "residual_both",
     }
     assert set(snap["configs"]) == set(by_config)
     for counts in by_config.values():
@@ -912,6 +913,7 @@ def test_snapshot_meta_flags_dedup_totals_that_disagree_with_row_counts(
     by_config = {"minibench": {
         "staging": 3, "after_fact_id_pass": 2, "after_content_pass": 1,
         "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+        "residual_both": 0,
     }}
     stats = stages.StageEStats(
         pre=3, n_dropped_no_score=0, n_dropped_sentinel=0,
@@ -1107,6 +1109,7 @@ def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
     assert snap["dedup_by_config"] == {"minibench": {
         "staging": 2, "after_fact_id_pass": 1, "after_content_pass": 1,
         "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+        "residual_both": 0,
     }}
 
 
@@ -1116,8 +1119,8 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
     The content key must still retain changed values, source configs, and
     generation conditions. Equal-timestamp ties have a deterministic winner.
     snapshot_meta reports the per-config counts at each dedup boundary, and
-    the residual of survivors that differ only in evaluation_timestamp or
-    generation_args, identically on a fresh run and a from-cache rebuild.
+    the residual of survivors that differ only in evaluation_timestamp,
+    generation_args, or both, identically on a fresh run and a from-cache rebuild.
     """
     pytest.importorskip("duckdb")
 
@@ -1218,6 +1221,15 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
         ("ts-source", "ts-b.json", json.dumps(_record(
             "ts_b", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-29T00:00:00Z",
         ))),
+        # Same content apart from both the stated evaluation time and the
+        # generation arguments: only the combined relaxation sees the pair.
+        ("both-source", "both-a.json", json.dumps(_record(
+            "both_a", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-28T00:00:00Z",
+        ))),
+        ("both-source", "both-b.json", json.dumps(_record(
+            "both_b", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-29T00:00:00Z",
+            temperature=0.7,
+        ))),
     ]
 
     def _with(record: dict, **fields) -> dict:
@@ -1274,6 +1286,8 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
         f"ORDER BY source_config, score, temperature, evaluation_id"
     ).fetchall()
     assert rows == [
+        ("both-source", "both_a", 0.8, 0.0),
+        ("both-source", "both_b", 0.8, 0.7),
         ("minibench", "two_channels", 0.6, 0.0),
         ("minibench", "two_channels", 0.6, 0.0),
         ("minibench", "tie_z", 0.7, 0.0),
@@ -1305,38 +1319,50 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
     ]
 
     snap = json.loads((out_dir / "snapshot_meta.json").read_text())
-    assert snap["row_counts"]["fact_results"] == 13
+    assert snap["row_counts"]["fact_results"] == 15
     assert snap["row_counts"]["dropped_rows_dedup"] == 0
     assert snap["row_counts"]["dropped_rows_content_dedup"] == 2
     _assert_dedup_by_config_sums_to_row_counts(snap)
     # minibench's residual is same_new vs different_generation: equal on
     # every key field except generation_args. ts-source's is ts_a vs ts_b:
-    # equal except for the stated evaluation time.
+    # equal except for the stated evaluation time. Both also count once
+    # both fields are dropped, and both-source counts only then.
     assert snap["dedup_by_config"] == {
+        "both-source": {
+            "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+            "residual_both": 1,
+        },
         "minibench": {
             "staging": 8, "after_fact_id_pass": 8, "after_content_pass": 6,
             "residual_timestamp_only": 0, "residual_generation_args_only": 1,
+            "residual_both": 1,
         },
         "other-source": {
             "staging": 1, "after_fact_id_pass": 1, "after_content_pass": 1,
             "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+            "residual_both": 0,
         },
         "slice-source": {
             "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
             "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+            "residual_both": 0,
         },
         "split-source": {
             "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
             "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+            "residual_both": 0,
         },
         "ts-source": {
             "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
             "residual_timestamp_only": 1, "residual_generation_args_only": 0,
+            "residual_both": 1,
         },
     }
     assert snap["dedup_by_config_totals"] == {
-        "staging": 15, "after_fact_id_pass": 15, "after_content_pass": 13,
+        "staging": 17, "after_fact_id_pass": 17, "after_content_pass": 15,
         "residual_timestamp_only": 1, "residual_generation_args_only": 1,
+        "residual_both": 3,
     }
 
     # A from-cache rebuild recovers the same counts from the cached tables.

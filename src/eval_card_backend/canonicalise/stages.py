@@ -402,6 +402,9 @@ _OBSERVATION_KEY_FIELDS: tuple[tuple[str, str], ...] = (
 # generation-config variant, which only the source can tell apart.
 _TIMESTAMP_ONLY_EXCLUDES: frozenset[str] = frozenset({"evaluation_timestamp"})
 _GENERATION_ARGS_ONLY_EXCLUDES: frozenset[str] = frozenset({"generation_args"})
+_TIMESTAMP_AND_GENERATION_ARGS_EXCLUDES: frozenset[str] = (
+    _TIMESTAMP_ONLY_EXCLUDES | _GENERATION_ARGS_ONLY_EXCLUDES
+)
 
 
 def _observation_key_sql(*, exclude: frozenset[str] = frozenset()) -> str:
@@ -435,6 +438,7 @@ log = logging.getLogger(__name__)
 _DEDUP_BY_CONFIG_KEYS = (
     "staging", "after_fact_id_pass", "after_content_pass",
     "residual_timestamp_only", "residual_generation_args_only",
+    "residual_both",
 )
 
 
@@ -445,8 +449,9 @@ def read_stage_e_dedup_stats(con) -> dict[str, dict[str, int]] | None:
 
     `residual_timestamp_only` counts survivors that still match another
     survivor once the observation key drops evaluation_timestamp;
-    `residual_generation_args_only` does the same for generation_args
-    (each is survivors minus distinct looser keys)."""
+    `residual_generation_args_only` does the same for generation_args, and
+    `residual_both` for the key without either field (each is survivors
+    minus distinct looser keys). The three overlap and do not add up."""
     try:
         rows = con.execute(
             f"SELECT source_config, {', '.join(_DEDUP_BY_CONFIG_KEYS)} "
@@ -3169,7 +3174,7 @@ def stage_e_per_row_signals(
             FROM _e_narrow
         ),
         content_keyed AS (
-            -- Keyed before the window so it carries the struct and two
+            -- Keyed before the window so it carries the struct and three
             -- hashes rather than every raw key column. The hashes are
             -- diagnostics for the residual counts; the pass itself
             -- partitions on the exact struct.
@@ -3180,7 +3185,9 @@ def stage_e_per_row_signals(
                    hash({_observation_key_sql(exclude=_TIMESTAMP_ONLY_EXCLUDES)})
                        AS hash_no_timestamp,
                    hash({_observation_key_sql(exclude=_GENERATION_ARGS_ONLY_EXCLUDES)})
-                       AS hash_no_generation_args
+                       AS hash_no_generation_args,
+                   hash({_observation_key_sql(exclude=_TIMESTAMP_AND_GENERATION_ARGS_EXCLUDES)})
+                       AS hash_no_both
             FROM fact_id_ranked
         ),
         content_ranked AS (
@@ -3188,7 +3195,7 @@ def stage_e_per_row_signals(
             -- among themselves, so survivors see exactly the fact-id pass
             -- output and every row keeps a decision in one streamed pass.
             SELECT _rid, source_config, kept_by_fact_id_pass,
-                   hash_no_timestamp, hash_no_generation_args,
+                   hash_no_timestamp, hash_no_generation_args, hash_no_both,
                    ROW_NUMBER() OVER (
                        PARTITION BY kept_by_fact_id_pass, _observation_key
                        ORDER BY _retrieved_at DESC NULLS LAST,
@@ -3203,7 +3210,7 @@ def stage_e_per_row_signals(
         SELECT _rid, source_config, kept_by_fact_id_pass,
                kept_by_fact_id_pass AND _content_dedup_rank = 1
                    AS kept_by_content_pass,
-               hash_no_timestamp, hash_no_generation_args
+               hash_no_timestamp, hash_no_generation_args, hash_no_both
         FROM content_ranked
         """
     )
@@ -3228,7 +3235,11 @@ def stage_e_per_row_signals(
                    count(*) FILTER (WHERE kept_by_content_pass)
                      - count(DISTINCT hash_no_generation_args)
                            FILTER (WHERE kept_by_content_pass)
-                       AS residual_generation_args_only
+                       AS residual_generation_args_only,
+                   count(*) FILTER (WHERE kept_by_content_pass)
+                     - count(DISTINCT hash_no_both)
+                           FILTER (WHERE kept_by_content_pass)
+                       AS residual_both
             FROM _e_decisions
             GROUP BY 1
         )
@@ -3238,7 +3249,8 @@ def stage_e_per_row_signals(
                COALESCE(after_content_pass, 0) AS after_content_pass,
                COALESCE(residual_timestamp_only, 0) AS residual_timestamp_only,
                COALESCE(residual_generation_args_only, 0)
-                   AS residual_generation_args_only
+                   AS residual_generation_args_only,
+               COALESCE(residual_both, 0) AS residual_both
         FROM staged
         LEFT JOIN decided USING (source_config)
         ORDER BY source_config
