@@ -175,13 +175,15 @@ def added_lines(diff_target: str = "--cached"):
     """Yield (path, line_number, text) for every line added in a git diff.
 
     `diff_target` is `--cached` for the staged changes or a revision range
-    such as `origin/main...HEAD`. The prefix and external-diff flags pin the
-    header format `parse_added_lines` reads, whatever the user's git config.
+    such as `origin/main...HEAD`. The prefix, quoting and external-diff
+    flags pin the header format `parse_added_lines` reads, whatever the
+    user's git config.
     """
     try:
         proc = subprocess.run(
             [
-                "git", "diff", "--unified=0", "--no-color", "--no-ext-diff",
+                "git", "-c", "core.quotepath=false",
+                "diff", "--unified=0", "--no-color", "--no-ext-diff",
                 "--src-prefix=a/", "--dst-prefix=b/", "--diff-filter=ACMR",
                 diff_target,
             ],
@@ -197,16 +199,53 @@ def added_lines(diff_target: str = "--cached"):
     return parse_added_lines(proc.stdout)
 
 
+_C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def _unquote(quoted: str) -> str:
+    r"""Undo git's C-style quoting of a path: `"caf\303\251 \"x\".py"`."""
+    out = bytearray()
+    chars = iter(quoted[1:-1])
+    for c in chars:
+        if c != "\\":
+            out += c.encode()
+            continue
+        c = next(chars)
+        if c in "01234567":
+            out.append(int(c + next(chars) + next(chars), 8))
+        else:
+            out.append(_C_ESCAPES[c])
+    return out.decode(errors="surrogateescape")
+
+
+def _header_path(header: str) -> str | None:
+    """The path in a `+++ ` header, `/dev/null` as None. Git quotes a path
+    with special characters C-style and ends one containing a space with a
+    tab."""
+    name = header.rstrip("\t")
+    if name.startswith('"'):
+        name = _unquote(name)
+    return name[2:] if name.startswith("b/") else None
+
+
 def parse_added_lines(diff: str):
-    """Yield (path, line_number, text) for every added line in unified diff text."""
-    path, lineno = None, 0
+    """Yield (path, line_number, text) for every added line in unified diff text.
+
+    The `+++ ` line right after a file's `--- ` header names the file; a
+    `+++` anywhere else is an added line that starts with `++`.
+    """
+    path, lineno, expect = None, 0, None
     for raw in diff.splitlines():
-        if raw.startswith("+++ b/"):
-            path = raw[6:]
+        if raw.startswith("diff --git "):
+            path, expect = None, "--- "
+        elif expect == "--- " and raw.startswith(expect):
+            expect = "+++ "
+        elif expect == "+++ ":
+            path, expect = _header_path(raw[4:]) if raw.startswith(expect) else None, None
         elif raw.startswith("@@"):
             m = re.search(r"\+(\d+)", raw)
             lineno = int(m.group(1)) if m else 0
-        elif raw.startswith("+") and not raw.startswith("+++"):
+        elif raw.startswith("+"):
             if path is not None:
                 yield path, lineno, raw[1:]
             lineno += 1

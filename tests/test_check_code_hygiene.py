@@ -170,6 +170,39 @@ def test_parse_added_lines_numbers_lines_from_hunk_headers():
     ]
 
 
+def test_parse_added_lines_reads_quoted_tabbed_and_dev_null_headers():
+    diff = (
+        "diff --git a/src/a b.py b/src/a b.py\n"
+        "--- a/src/a b.py\t\n"
+        "+++ b/src/a b.py\t\n"
+        "@@ -0,0 +1 @@\n"
+        "+one\n"
+        'diff --git "a/src/caf\\303\\251 \\"x\\".py" "b/src/caf\\303\\251 \\"x\\".py"\n'
+        "--- /dev/null\n"
+        '+++ "b/src/caf\\303\\251 \\"x\\".py"\t\n'
+        "@@ -0,0 +1 @@\n"
+        "+two\n"
+        "diff --git a/src/gone.py b/src/gone.py\n"
+        "--- a/src/gone.py\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-three\n"
+        "diff --git a/src/c.py b/src/c.py\n"
+        "--- a/src/c.py\n"
+        "+++ b/src/c.py\n"
+        "@@ -1 +1,2 @@\n"
+        "-four\n"
+        "+++x  # Phase 2\n"
+        "+five\n"
+    )
+    assert list(hygiene.parse_added_lines(diff)) == [
+        ("src/a b.py", 1, "one"),
+        ('src/café "x".py', 1, "two"),
+        ("src/c.py", 1, "++x  # Phase 2"),
+        ("src/c.py", 2, "five"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # The script against a real repo
 # ---------------------------------------------------------------------------
@@ -331,6 +364,21 @@ def test_diff_prefix_and_external_diff_config_cannot_blank_the_parser(repo):
     ranged = _run(repo, "--diff", "HEAD~1...HEAD")
     assert ranged.returncode == 1, ranged.stderr
     assert "src/mod.py:3  [tombstone-previously]" in ranged.stderr
+
+
+def test_paths_with_a_space_or_non_ascii_and_lines_starting_with_plus_plus(repo):
+    _write(repo, "src/a b.py", "x = 1\n# Phase 2 here\n")
+    _write(repo, "src/café.py", "x = 1\n# see spec §3\n")
+    _write(repo, "src/c.py", "ok = 1\n++x  # Phase 2\n")
+    _git(repo, "add", "-A")
+
+    proc = _run(repo)
+
+    assert proc.returncode == 1
+    assert "src/a b.py:2  [phase-ref]" in proc.stderr
+    assert "src/café.py:2  [spec-section-ref]" in proc.stderr
+    assert "src/c.py:2  [phase-ref]" in proc.stderr
+    assert "src/c.py:2  [spec-section-ref]" not in proc.stderr
 
 
 def test_diff_mode_passes_when_the_range_only_removes_or_moves_offenders(repo):
