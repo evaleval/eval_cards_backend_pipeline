@@ -14,6 +14,7 @@ committed fixtures.
 """
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -22,12 +23,14 @@ import huggingface_hub
 import pytest
 
 from eval_card_backend.config import Settings
+from eval_card_backend.sources import _revision_cache
 from eval_card_backend.sources import benchmark_cards as cards_src
 from eval_card_backend.sources import eee as eee_src
 from eval_card_backend.sources import registry as registry_src
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 PIN = "f" * 40
+OTHER = "e" * 40
 
 LOADERS = {
     "eee": (eee_src, FIXTURES / "eee", "EEE_REVISION", "eee_revision"),
@@ -96,7 +99,57 @@ def test_fixture_dir_is_returned_untouched_under_a_revision_pin(
     assert not (copy / ".pinned_revision").exists()
 
 
-@pytest.mark.parametrize("loader", ["registry", "cards"])
+def _pollute(copy: Path) -> None:
+    """Leave the records a stray download would: the pin marker, the hub's
+    per-file metadata and, for EEE, a listing file naming another revision."""
+    (copy / ".pinned_revision").write_text(OTHER)
+    meta = copy / ".cache" / "huggingface" / "download" / "README.md.metadata"
+    meta.parent.mkdir(parents=True)
+    meta.write_text(OTHER + "\n")
+    if (copy / "data").is_dir():
+        (copy / eee_src._LISTING_PATH).write_text(
+            json.dumps({"revision": OTHER, "paths": [], "sha256": {}})
+        )
+
+
+@pytest.mark.parametrize("loader", sorted(LOADERS))
+def test_polluted_fixture_copy_is_returned_untouched_under_a_pin(
+    loader, tmp_path, no_network,
+):
+    """The sentinel, not the absence of download records, says a directory
+    is hand-built: a fixture a past download left its markers in still
+    stays as it is under a pin, instead of reading as a stale cache."""
+    module, fixture_dir, _, _ = LOADERS[loader]
+    copy = tmp_path / fixture_dir.name
+    shutil.copytree(fixture_dir, copy)
+    _pollute(copy)
+    before = _tree(copy)
+
+    out = module.ensure_snapshot(str(copy), None, False, revision=PIN)
+
+    assert out == copy.resolve()
+    assert _tree(copy) == before
+
+
+def test_every_fixture_dir_carries_the_hand_built_sentinel():
+    dirs = {d for d in FIXTURES.iterdir() if d.is_dir()}
+    assert {fixture_dir for _, fixture_dir, _, _ in LOADERS.values()} <= dirs
+    missing = sorted(
+        d.name for d in dirs
+        if not (d / _revision_cache.HAND_BUILT_SENTINEL).is_file()
+    )
+    assert missing == []
+
+
+def test_sentinel_overrides_download_records(tmp_path):
+    assert _revision_cache.is_hand_built(tmp_path)
+    _pollute(tmp_path)
+    assert not _revision_cache.is_hand_built(tmp_path)
+    (tmp_path / _revision_cache.HAND_BUILT_SENTINEL).touch()
+    assert _revision_cache.is_hand_built(tmp_path)
+
+
+@pytest.mark.parametrize("loader", sorted(LOADERS))
 @pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "unpinned"])
 def test_hand_built_dir_under_a_pin_is_logged_at_warning(
     loader, pinned, tmp_path, monkeypatch, no_network, caplog,
@@ -184,7 +237,10 @@ def test_a_downloaded_cache_under_another_pin_is_still_refreshed(
     must still be replaced when a pin arrives, or a stale cache defeats it."""
     module, fixture_dir, _, _ = LOADERS[loader]
     target = tmp_path / "cache"
+    # A hub download never writes the sentinel; only the data files are mirrored.
     for rel, size in _tree(fixture_dir).items():
+        if rel == _revision_cache.HAND_BUILT_SENTINEL:
+            continue
         (target / rel).parent.mkdir(parents=True, exist_ok=True)
         (target / rel).write_bytes(b"x" * size)
     meta = target / ".cache" / "huggingface" / "download" / "README.md.metadata"

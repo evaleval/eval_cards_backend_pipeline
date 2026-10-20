@@ -5,6 +5,12 @@ tag), we record it in a marker file. On the next run, a cache is only
 reused if its marker matches the requested revision — otherwise a stale
 local cache would silently defeat the pin. When no revision is requested
 (latest HEAD), any existing cache is accepted as before.
+
+A directory that is the corpus itself rather than a download (a committed
+test fixture, a `seed --local` registry) is hand-built and is never wiped or
+fetched into. A committed, empty `.hand_built` sentinel says so outright and
+wins over any marker or hub metadata a stray download left behind; without
+the sentinel, the absence of both records is read as hand-built.
 """
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ import logging
 from pathlib import Path
 
 _MARKER = ".pinned_revision"
+HAND_BUILT_SENTINEL = ".hand_built"
 
 # `huggingface_hub` writes one metadata file per downloaded file under the
 # local dir; its first line is the commit hash the file came from. Unlike
@@ -35,14 +42,20 @@ def cache_revision_ok(target: Path, revision: str | None) -> bool:
     return marker.read_text(encoding="utf-8").strip() == revision
 
 
+def has_sentinel(target: Path) -> bool:
+    """True when `target` carries the `.hand_built` sentinel."""
+    return (Path(target) / HAND_BUILT_SENTINEL).is_file()
+
+
 def is_hand_built(target: Path) -> bool:
-    """True when nothing records a download into `target`: no marker and no
-    `huggingface_hub` download metadata. Files there were put in place by
-    hand (a test fixture, a `seed --local` registry) and are the corpus
-    itself, so a revision pin must not read them as a stale cache.
+    """True when `target` is the corpus itself, not a download: it carries
+    the sentinel, or nothing records a download into it (no marker and no
+    `huggingface_hub` download metadata). Files there were put in place by
+    hand (a test fixture, a `seed --local` registry), so a revision pin must
+    not read them as a stale cache.
     """
     target = Path(target)
-    return (
+    return has_sentinel(target) or (
         not (target / _MARKER).exists()
         and not (target / _HF_DOWNLOAD_META_DIR).is_dir()
     )

@@ -45,7 +45,7 @@ test) rather than adding more prose here.
 | Two bakes of the same inputs produce byte-identical outputs. Aggregations are ordered or provably exact. | `tests/test_double_build_determinism.py` |
 | Published counts are distinct counts, never sums over a view that repeats rows. | `tests/test_count_grain.py` |
 | Every gate (`--check` script, `assert_*`, pre-flight) has a test that feeds it bad input and asserts the refusal. A check never seen failing does not ship. | `tests/test_derive_scoring_modes.py`, `tests/test_ci_publish_warehouse.py`, `tests/test_check_flat_pin.py`, `tests/test_preflight.py`, `tests/test_collections.py` |
-| Test fixtures never reach the network. A directory holding the corpus but no record of a download is hand-built: never fetched into, never deleted. | `sources/_revision_cache.is_hand_built` in the registry and cards loaders; the EEE loader's own listing-file check in `sources/eee.py`; `tests/test_fixtures_offline.py` |
+| Test fixtures never reach the network. A directory carrying the `.hand_built` sentinel, or holding the corpus with no record of a download, is hand-built: never fetched into, never deleted. | `sources/_revision_cache.is_hand_built` via `hand_built_snapshot` in the registry and cards loaders; the sentinel plus the EEE loader's own listing-file check in `sources/eee.py`; `tests/test_fixtures_offline.py` (every fixture dir must carry the sentinel) |
 | PR CI and the sync workflow install dependencies identically. | `tests/test_ci_workflow.py` |
 | Minimal edits. Fix the cause in the same change; follow-ups only when blocked by a third party. | judgment |
 | Prod data flips to the Space are manual. Hand over exact values; never trigger a rebuild. | judgment |

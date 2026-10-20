@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from eval_card_backend.sources._revision_cache import HAND_BUILT_SENTINEL
+
 ROOT = Path(__file__).parent
 EEE = ROOT / "eee"
 CARDS = ROOT / "auto_benchmarkcards" / "cards"
@@ -508,6 +510,8 @@ def main():
     write_eee_fixtures()
     write_card_fixtures()
     write_registry_fixtures()
+    for root in (EEE, CARDS.parent, REG):
+        (root / HAND_BUILT_SENTINEL).touch()
     print(f"Wrote fixtures to {ROOT}")
 
 

@@ -67,7 +67,9 @@ from eval_card_backend.config import EEE_DATASET_REPO, IGNORED_CONFIGS
 from eval_card_backend.sources._revision_cache import (
     cache_revision_ok as _cache_revision_ok,
     clear_cache_revision as _clear_cache_revision,
+    has_sentinel as _has_sentinel,
     hf_download_commit as _hf_download_commit,
+    log_hand_built as _log_hand_built,
     write_cache_revision as _write_cache_revision,
 )
 
@@ -456,13 +458,15 @@ def ensure_snapshot(
     target.mkdir(parents=True, exist_ok=True)
     listing_path = target / _LISTING_PATH
 
-    # A data/ tree on disk without our listing file is a hand-built cache
-    # (e.g. test fixtures): the tree IS the corpus, and a network fetch into
-    # the caller's directory would be wrong. force_refresh still re-indexes.
-    if not listing_path.exists() and not force_refresh and any(
-        (target / "data").rglob("*.json")
+    # A tree carrying the `.hand_built` sentinel, or a data/ tree without
+    # our listing file, is a hand-built cache (e.g. test fixtures): the tree
+    # IS the corpus, and a network fetch into the caller's directory would be
+    # wrong. force_refresh still re-indexes.
+    if not force_refresh and (
+        _has_sentinel(target)
+        or (not listing_path.exists() and any((target / "data").rglob("*.json")))
     ):
-        log.info("EEE hand-built snapshot at %s — nothing to sync", target)
+        _log_hand_built(log, "EEE", target, revision)
         return target
 
     # Re-index when forced, when nothing is indexed yet, or when the pin no

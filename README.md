@@ -194,7 +194,11 @@ uv run pytest
 ```
 
 Tests use hand-built fixtures under `tests/fixtures/` and don't require
-HF credentials.
+HF credentials. Each fixture directory a loader reads carries an empty
+`.hand_built` sentinel, which tells the loaders the directory is the corpus
+itself (never wiped, never fetched into) even when a stray download has
+left its markers behind; `tests/test_fixtures_offline.py` checks every
+fixture directory has one.
 
 ## Development checks
 
