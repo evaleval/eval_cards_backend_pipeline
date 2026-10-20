@@ -198,7 +198,9 @@ HF credentials. Each fixture directory a loader reads carries an empty
 `.hand_built` sentinel, which tells the loaders the directory is the corpus
 itself (never wiped, never fetched into) even when a stray download has
 left its markers behind; `tests/test_fixtures_offline.py` checks every
-fixture directory has one.
+fixture directory has one. A refresh flag aimed at such a directory raises
+instead of deleting it, and the suite strips every refresh and pin variable
+from the environment.
 
 ## Development checks
 
