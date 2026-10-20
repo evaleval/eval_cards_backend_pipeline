@@ -227,6 +227,74 @@ def test_parse_added_lines_reads_quoted_tabbed_and_dev_null_headers():
     ]
 
 
+def test_parse_added_lines_reads_header_looking_content_inside_a_hunk_as_content():
+    diff = (
+        "diff --git a/src/a.py b/src/a.py\n"
+        "--- a/src/a.py\n"
+        "+++ b/src/a.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        "--- not a header\n"
+        "-+++ removed too\n"
+        "+++ also content\n"
+        "+--- added, not a header\n"
+        "+diff --git looking text\n"
+        "diff --git a/src/b.py b/src/b.py\n"
+        "--- a/src/b.py\n"
+        "+++ b/src/b.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+in b\n"
+    )
+    assert list(hygiene.parse_added_lines(diff)) == [
+        ("src/a.py", 1, "++ also content"),
+        ("src/a.py", 2, "--- added, not a header"),
+        ("src/a.py", 3, "diff --git looking text"),
+        ("src/b.py", 1, "in b"),
+    ]
+
+
+def test_parse_added_lines_keeps_tabs_and_unicode_across_files():
+    diff = (
+        "diff --git a/src/a.py b/src/a.py\n"
+        "--- a/src/a.py\n"
+        "+++ b/src/a.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+\tindented\twith tabs\n"
+        "+# 设计 café §\n"
+        "diff --git a/bin.dat b/bin.dat\n"
+        "Binary files a/bin.dat and b/bin.dat differ\n"
+        "diff --git a/src/c.py b/src/c.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/src/c.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+ünïcode\n"
+    )
+    assert list(hygiene.parse_added_lines(diff)) == [
+        ("src/a.py", 1, "\tindented\twith tabs"),
+        ("src/a.py", 2, "# 设计 café §"),
+        ("src/c.py", 1, "ünïcode"),
+    ]
+
+
+def test_header_looking_content_and_unicode_in_a_real_diff(repo):
+    """A removed `-- old` and an added `++ new` make adjacent `--- old` and
+    `+++ new` lines inside the hunk; both stay content."""
+    _write(repo, "src/a.py", "-- old\n")
+    _write(repo, "src/b.py", "y = 1\n")
+    _commit(repo, "files")
+    _write(repo, "src/a.py", "++ new  # Phase 2\n\t# 设计 Session 3\n")
+    _write(repo, "src/b.py", "y = 1\n++ b/src/z.py  # see spec §2\n")
+    _git(repo, "add", "-A")
+
+    proc = _run(repo)
+
+    assert proc.returncode == 1
+    assert "src/a.py:1  [phase-ref]" in proc.stderr
+    assert "src/a.py:2  [session-ref]" in proc.stderr
+    assert "src/b.py:2  [spec-section-ref]" in proc.stderr
+    assert "src/z.py:" not in proc.stderr
+
+
 # ---------------------------------------------------------------------------
 # The script against a real repo
 # ---------------------------------------------------------------------------
