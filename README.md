@@ -211,18 +211,23 @@ skipped by every rule; use it for a false positive. The hygiene hook reads
 the staged lines, so `pre-commit run --all-files` runs ruff and the file
 checks over the whole tree but the hygiene gate only over what is staged;
 `scripts/check_code_hygiene.py --diff <range>` checks a commit range.
-`pre-commit` lives in the `lint` dependency group, which `uv sync` leaves
-out. Install it and the hooks once per clone:
+
+`pre-commit` lives in the `lint` dependency group, which a plain `uv sync`
+leaves out and removes again; `uv run --group lint` installs the group on
+demand, so run pre-commit through it. Install the hooks once per clone. An
+existing clone with `core.hooksPath=hooks` set first unsets it, because
+`pre-commit install` refuses while it is set:
 
 ```bash
-uv sync --group lint
-uv run pre-commit install
+git config --unset core.hooksPath      # the old hooks/ dir held the git-lfs hooks and the hygiene hook
+git lfs install                        # reinstalls the lfs hooks into .git/hooks
+uv run --group lint pre-commit install # adds the pre-commit hook beside them
 ```
 
-`pre-commit install` refuses while `core.hooksPath` is set (this repo's
-hooks directory held the git-lfs hooks and the hygiene pre-commit hook);
-either unset it or run the hooks by hand with
-`uv run pre-commit run --all-files`.
+A fresh clone needs only the last two lines. The lfs hooks (`pre-push`,
+`post-checkout`, `post-commit`, `post-merge`) and pre-commit's `pre-commit`
+hook are separate files in `.git/hooks`, so either install can be rerun
+without touching the other.
 
 CI (`.github/workflows/ci.yml`) runs the same hooks on every pull request
 and push to `main`, then the hygiene gate over the added lines of the pull

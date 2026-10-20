@@ -6,12 +6,20 @@ checked and the rules that past mistakes taught us.
 
 ## Checks
 
+Hooks, once per clone. An existing clone with `core.hooksPath=hooks` set
+first runs `git config --unset core.hooksPath` (README, "Development
+checks", says why). `pre-commit` lives in the `lint` dependency group, which
+a plain `uv sync` leaves out, so run it through `uv run --group lint`.
+
+```bash
+git lfs install
+uv run --group lint pre-commit install
+```
+
 Every check runs the same way locally and in CI.
 
 ```bash
-uv sync --group lint                           # once per clone: pre-commit is not a dev dependency
-uv run pre-commit install                      # once per clone
-uv run pre-commit run --all-files              # ruff and file checks over the tree; hygiene over staged lines
+uv run --group lint pre-commit run --all-files   # ruff and file checks over the tree; hygiene over staged lines
 python3 scripts/check_code_hygiene.py --diff main...HEAD   # hygiene over a commit range
 HF_HUB_OFFLINE=1 uv run pytest tests/ -q --timeout=120
 ```
