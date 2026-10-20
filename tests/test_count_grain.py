@@ -216,6 +216,7 @@ def test_headline_total_benchmarks_is_distinct_roots(con, sidecar):
 
 
 def test_models_view_benchmarks_count_is_distinct_roots_per_model(con):
+    # Full outer join: a model missing from either side is a mismatch too.
     mismatches = con.execute(
         f"""
         WITH expected AS (
@@ -223,9 +224,13 @@ def test_models_view_benchmarks_count_is_distinct_roots_per_model(con):
                    COUNT(DISTINCT {_ROOT}) AS n
             FROM fact_results GROUP BY 1
         )
-        SELECT mv.model_key, mv.benchmarks_count, len(mv.benchmark_names), e.n
-        FROM models_view mv JOIN expected e USING (model_key)
-        WHERE mv.benchmarks_count != e.n OR len(mv.benchmark_names) != e.n
+        SELECT COALESCE(mv.model_key, e.model_key), mv.benchmarks_count,
+               len(mv.benchmark_names), e.n
+        FROM models_view mv FULL OUTER JOIN expected e
+          ON mv.model_key = e.model_key
+        WHERE mv.model_key IS NULL OR e.model_key IS NULL
+           OR mv.benchmarks_count IS DISTINCT FROM e.n
+           OR len(mv.benchmark_names) IS DISTINCT FROM e.n
         ORDER BY 1
         """
     ).fetchall()
@@ -243,8 +248,25 @@ def test_benchmark_index_count_is_distinct_benchmark_ids(con, sidecar):
 
 
 def test_benchmark_index_models_count_is_distinct_models_per_appearance(con, sidecar):
+    benchmarks = sidecar("benchmark_index.json")["benchmarks"]
+    published = [
+        (benchmark_id, appearance["composite_slug"])
+        for benchmark_id, entry in benchmarks.items()
+        for appearance in entry["appearances"]
+    ]
+    expected_keys = set(con.execute(
+        "SELECT DISTINCT benchmark_id, composite_slug FROM eval_results_view "
+        "WHERE benchmark_id IS NOT NULL"
+    ).fetchall())
+    assert len(published) == len(set(published)), "duplicate appearances"
+    assert set(published) == expected_keys, (
+        "benchmark_index appearances (benchmark, composite) missing: "
+        f"{sorted(expected_keys - set(published))}, unexpected: "
+        f"{sorted(set(published) - expected_keys)}"
+    )
+
     mismatches = []
-    for benchmark_id, entry in sidecar("benchmark_index.json")["benchmarks"].items():
+    for benchmark_id, entry in benchmarks.items():
         for appearance in entry["appearances"]:
             expected = _scalar(
                 con,
@@ -292,8 +314,21 @@ def test_headline_comparability_total_is_distinct_groups(con, sidecar):
 
 
 def test_headline_composites_model_count_is_distinct_models(con, sidecar):
+    composites = sidecar("headline.json")["composites"]
+    published = [entry["composite_slug"] for entry in composites]
+    expected_slugs = {
+        slug for (slug,) in con.execute(
+            "SELECT DISTINCT composite_slug FROM fact_results"
+        ).fetchall()
+    }
+    assert len(published) == len(set(published)), "duplicate composites"
+    assert set(published) == expected_slugs, (
+        f"headline.composites missing: {sorted(expected_slugs - set(published))}, "
+        f"unexpected: {sorted(set(published) - expected_slugs)}"
+    )
+
     mismatches = []
-    for entry in sidecar("headline.json")["composites"]:
+    for entry in composites:
         expected = _scalar(
             con,
             "SELECT COUNT(DISTINCT model_aggregation_key) FROM fact_results "
@@ -305,3 +340,87 @@ def test_headline_composites_model_count_is_distinct_models(con, sidecar):
     assert not mismatches, (
         f"headline.composites (slug, model_count, distinct models): {mismatches}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The per-entry checks above reject missing output, not only wrong counts
+# ---------------------------------------------------------------------------
+
+
+def _toy_con(models: list[tuple]) -> duckdb.DuckDBPyConnection:
+    """Two facts (m1 on b1 in c1, m2 on b2 in c2) and the given models_view."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE fact_results AS SELECT * FROM (VALUES "
+        "('m1', 'b1', NULL::VARCHAR, 'c1'), ('m2', 'b2', NULL, 'c2')) "
+        "t(model_aggregation_key, benchmark_key, parent_benchmark_id, composite_slug)"
+    )
+    con.execute(
+        "CREATE TABLE eval_results_view AS SELECT * FROM (VALUES "
+        "('m1', 'c1', 'b1', 'acc', true), ('m2', 'c2', 'b2', 'acc', true)) "
+        "t(model_key, composite_slug, benchmark_id, metric_id, is_headline)"
+    )
+    con.execute(
+        "CREATE TABLE models_view "
+        "(model_key VARCHAR, benchmarks_count INTEGER, benchmark_names VARCHAR[])"
+    )
+    for row in models:
+        con.execute("INSERT INTO models_view VALUES (?, ?, ?)", list(row))
+    return con
+
+
+_TOY_MODELS = [("m1", 1, ["b1"]), ("m2", 1, ["b2"])]
+_TOY_BENCHMARKS = {
+    bid: {"appearances": [
+        {"composite_slug": slug, "primary_metric_id": "acc", "models_count": 1}
+    ]}
+    for bid, slug in (("b1", "c1"), ("b2", "c2"))
+}
+_TOY_COMPOSITES = [
+    {"composite_slug": "c1", "model_count": 1},
+    {"composite_slug": "c2", "model_count": 1},
+]
+
+
+@pytest.mark.parametrize(
+    "models,benchmarks,composites,complete",
+    [
+        (_TOY_MODELS, _TOY_BENCHMARKS, _TOY_COMPOSITES, True),
+        ([], {}, [], False),
+        (
+            _TOY_MODELS[:1],
+            {"b1": _TOY_BENCHMARKS["b1"]},
+            _TOY_COMPOSITES[:1],
+            False,
+        ),
+    ],
+    ids=["complete", "empty", "one-removed"],
+)
+@pytest.mark.parametrize("check", ["models_view", "benchmark_index", "headline"])
+def test_per_entry_count_checks_reject_missing_entries(
+    check, models, benchmarks, composites, complete,
+):
+    sidecars = {
+        "benchmark_index.json": {"benchmarks": benchmarks},
+        "headline.json": {"composites": composites},
+    }
+    con = _toy_con(models)
+    run = {
+        "models_view": lambda: test_models_view_benchmarks_count_is_distinct_roots_per_model(con),
+        "benchmark_index": lambda: (
+            test_benchmark_index_models_count_is_distinct_models_per_appearance(
+                con, sidecars.__getitem__,
+            )
+        ),
+        "headline": lambda: test_headline_composites_model_count_is_distinct_models(
+            con, sidecars.__getitem__,
+        ),
+    }[check]
+    try:
+        if complete:
+            run()
+        else:
+            with pytest.raises(AssertionError):
+                run()
+    finally:
+        con.close()
