@@ -224,7 +224,21 @@ git lfs install                        # reinstalls the lfs hooks into .git/hook
 uv run --group lint pre-commit install # adds the pre-commit hook beside them
 ```
 
-A fresh clone needs only the last two lines. The lfs hooks (`pre-push`,
+A fresh clone needs only the last two lines. If `pre-commit install` still
+refuses, the setting comes from another config file, which a repository-local
+unset leaves in place. Find it with:
+
+```bash
+git config --show-scope --show-origin core.hooksPath
+```
+
+A `global` (or `system`) scope means `~/.gitconfig` (or the system config)
+sets it for every repository on the machine. Remove it there with
+`git config --global --unset core.hooksPath` (`--system` for the system
+file) once no other repository relies on that hooks directory; pre-commit
+cannot install while any scope sets it.
+
+The lfs hooks (`pre-push`,
 `post-checkout`, `post-commit`, `post-merge`) and pre-commit's `pre-commit`
 hook are separate files in `.git/hooks`, so either install can be rerun
 without touching the other.

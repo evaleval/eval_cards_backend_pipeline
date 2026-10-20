@@ -8,7 +8,10 @@ checked and the rules that past mistakes taught us.
 
 Hooks, once per clone. An existing clone with `core.hooksPath=hooks` set
 first runs `git config --unset core.hooksPath` (README, "Development
-checks", says why). `pre-commit` lives in the `lint` dependency group, which
+checks", says why). If `pre-commit install` still refuses,
+`git config --show-scope --show-origin core.hooksPath` names the config
+file that sets it; a global one needs `git config --global --unset
+core.hooksPath`. `pre-commit` lives in the `lint` dependency group, which
 a plain `uv sync` leaves out, so run it through `uv run --group lint`.
 
 ```bash
