@@ -442,6 +442,10 @@ _DEDUP_BY_CONFIG_KEYS = (
 )
 
 
+class StageEInvariantError(RuntimeError):
+    """A Stage E row count failed an exact conservation check."""
+
+
 def read_stage_e_dedup_stats(con) -> dict[str, dict[str, int]] | None:
     """Per-source_config row counts at each Stage E dedup boundary, read
     from the `stage_e_dedup_stats` table Stage E writes next to
@@ -3269,19 +3273,17 @@ def stage_e_per_row_signals(
         source_table="_signaled_rows", key_col="source_record_path",
     )
     con.execute("DROP TABLE _signaled_rows")
-    con.execute("DROP TABLE _e_decisions")
     _apply_composite_partitions(
         con, strict=strict_composites, exempt=exempt_composites
     )
-    post = con.execute("SELECT count(*) FROM fact_results_signaled").fetchone()[0]
-    fact_id_survivors, content_survivors = (
-        int(n) for n in con.execute(
-            "SELECT COALESCE(SUM(after_fact_id_pass), 0), "
-            "COALESCE(SUM(after_content_pass), 0) FROM stage_e_dedup_stats"
-        ).fetchone()
+    # Exact counts, unlike the residual diagnostics: a mismatch is lost or
+    # duplicated rows, so it fails the run rather than publish them.
+    n_dropped_dedup, n_dropped_content_dedup = _assert_stage_e_conservation(
+        con, pre=pre, n_dropped_no_score=n_dropped_no_score,
+        n_dropped_sentinel=n_dropped_sentinel,
     )
-    n_dropped_dedup = pre - n_dropped_no_score - n_dropped_sentinel - fact_id_survivors
-    n_dropped_content_dedup = fact_id_survivors - content_survivors
+    con.execute("DROP TABLE _e_decisions")
+    post = con.execute("SELECT count(*) FROM fact_results_signaled").fetchone()[0]
     if n_dropped_sentinel:
         log.warning(
             "Stage E: dropped %d row(s) on the score=-1 sentinel policy "
@@ -3309,6 +3311,79 @@ def stage_e_per_row_signals(
         post=post,
         dedup_by_config=read_stage_e_dedup_stats(con),
     )
+
+
+def _assert_stage_e_conservation(
+    con, *, pre: int, n_dropped_no_score: int, n_dropped_sentinel: int,
+) -> tuple[int, int]:
+    """Check Stage E's row counts against each other and return the
+    (fact_id, content) dedup drop counts.
+
+    Each count comes from a different place: staging and the two policy
+    drops from `fact_results_staging`, the dedup drops from `_e_decisions`,
+    the survivors from the materialised `fact_results_signaled`, and the
+    per-config boundaries from `stage_e_dedup_stats`. These are exact, so a
+    disagreement means lost or duplicated rows and the run stops here,
+    leaving the Stage D cache (when caching is on) for investigation."""
+    n_materialised = con.execute(
+        "SELECT count(*) FROM fact_results_signaled"
+    ).fetchone()[0]
+    n_entrants, n_kept_content, n_dropped_dedup, n_dropped_content_dedup = (
+        int(n) for n in con.execute(
+            """
+            SELECT count(*),
+                   count(*) FILTER (WHERE kept_by_content_pass),
+                   count(*) FILTER (WHERE NOT kept_by_fact_id_pass),
+                   count(*) FILTER (WHERE kept_by_fact_id_pass
+                                      AND NOT kept_by_content_pass)
+            FROM _e_decisions
+            """
+        ).fetchone()
+    )
+    failures: list[str] = []
+    if n_materialised != n_kept_content:
+        failures.append(
+            f"fact_results_signaled has {n_materialised} rows but "
+            f"_e_decisions keeps {n_kept_content} by the content pass"
+        )
+    expected = (
+        pre - n_dropped_no_score - n_dropped_sentinel
+        - n_dropped_dedup - n_dropped_content_dedup
+    )
+    if expected != n_materialised:
+        failures.append(
+            f"staging {pre} - no_score {n_dropped_no_score} - sentinel "
+            f"{n_dropped_sentinel} - fact_id drops {n_dropped_dedup} - "
+            f"content drops {n_dropped_content_dedup} = {expected}, but "
+            f"fact_results_signaled has {n_materialised} rows "
+            f"({n_entrants} rows entered the dedup passes)"
+        )
+    staging_total, bad_configs = con.execute(
+        """
+        SELECT COALESCE(SUM(staging), 0),
+               list(source_config ORDER BY source_config) FILTER (
+                   WHERE NOT (after_content_pass >= 0
+                              AND after_fact_id_pass >= after_content_pass
+                              AND staging >= after_fact_id_pass))
+        FROM stage_e_dedup_stats
+        """
+    ).fetchone()
+    if staging_total != pre:
+        failures.append(
+            f"stage_e_dedup_stats staging sums to {staging_total}, but "
+            f"fact_results_staging has {pre} rows"
+        )
+    if bad_configs:
+        failures.append(
+            "stage_e_dedup_stats boundaries are not nonnegative with staging "
+            ">= after_fact_id_pass >= after_content_pass for source_config(s) "
+            + ", ".join(repr(c) for c in bad_configs)
+        )
+    if failures:
+        raise StageEInvariantError(
+            "Stage E row-count conservation failed: " + "; ".join(failures)
+        )
+    return n_dropped_dedup, n_dropped_content_dedup
 
 
 def _apply_composite_partitions(

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import logging
 import shutil
 from pathlib import Path
 
@@ -900,11 +899,14 @@ def test_fixture_corpus_dedup_stats_add_up_on_both_paths(
     )
     for key in stage_e_keys:
         assert snap2["row_counts"][key] == snap["row_counts"][key], key
-    assert snap2["dedup_by_config"] == snap["dedup_by_config"]
+    for key in (
+        "dedup_by_config", "dedup_by_config_totals", "dedup_by_config_consistent",
+    ):
+        assert snap2[key] == snap[key], key
 
 
-def test_snapshot_meta_flags_dedup_totals_that_disagree_with_row_counts(
-    monkeypatch, caplog,
+def test_snapshot_meta_refuses_fact_rows_the_dedup_stats_do_not_account_for(
+    monkeypatch,
 ):
     from eval_card_backend.canonicalise import pipeline, stages
     from eval_card_backend.config import Settings
@@ -927,26 +929,20 @@ def test_snapshot_meta_flags_dedup_totals_that_disagree_with_row_counts(
         n_unit_inconsistent=0, view_layer_emitted=False,
         eee_root=None, registry_root=None, cards_root=None,
     )
-    logger = "eval_card_backend.canonicalise.pipeline"
-    with caplog.at_level(logging.ERROR, logger=logger):
-        meta = pipeline._build_snapshot_meta(stage_e_stats=stats, **kwargs)
-        assert meta["dedup_by_config_consistent"] is True
-        assert not caplog.records
+    meta = pipeline._build_snapshot_meta(stage_e_stats=stats, n_fact_results=1, **kwargs)
+    assert meta["dedup_by_config_consistent"] is True
 
-        # One more surviving row in fact_results than the content pass kept.
-        meta = pipeline._build_snapshot_meta(
-            stage_e_stats=stats._replace(post=2), **kwargs
-        )
-    assert meta["dedup_by_config_consistent"] is False
-    assert meta["row_counts"]["fact_results"] == 2
-    assert meta["dedup_by_config_totals"]["after_content_pass"] == 1
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(errors) == 1
-    assert "after_content_pass" in errors[0].getMessage()
-    assert "staging" not in errors[0].getMessage()
+    # One more row in the materialised fact_results than the content pass kept.
+    with pytest.raises(
+        stages.StageEInvariantError,
+        match="fact_results has 2 rows but stage_e_dedup_stats "
+              "after_content_pass sums to 1",
+    ):
+        pipeline._build_snapshot_meta(stage_e_stats=stats, n_fact_results=2, **kwargs)
 
     meta = pipeline._build_snapshot_meta(
-        stage_e_stats=stats._replace(dedup_by_config=None), **kwargs
+        stage_e_stats=stats._replace(dedup_by_config=None), n_fact_results=2,
+        **kwargs,
     )
     assert meta["dedup_by_config_consistent"] is None
     assert meta["dedup_by_config_totals"] is None

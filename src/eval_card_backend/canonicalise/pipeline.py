@@ -673,6 +673,7 @@ def run(
         registry_root=registry_root,
         cards_root=cards_root,
         private_revision=private_revision,
+        n_fact_results=_table_count(con, "fact_results"),
     )
     # Same non-finite wire form as every other sidecar (nothing in the meta
     # carries a registry float today; the invariant is what matters).
@@ -761,10 +762,13 @@ def _build_snapshot_meta(
     registry_root: Path | None,
     cards_root: Path | None,
     private_revision: str | None = None,
+    n_fact_results: int | None = None,
 ) -> dict:
     """Assemble `snapshot_meta.json` payload. Pure data: doesn't touch
     DuckDB. The HF-revision lookups talk to HF's HTTP API and are best-
-    effort (see `_hf_revision`).
+    effort (see `_hf_revision`). `n_fact_results` is the materialised
+    `fact_results` row count, checked against the Stage E dedup stats;
+    None falls back to Stage E's own survivor count.
     """
     tables: list[str] = [
         "fact_results.parquet",
@@ -866,42 +870,29 @@ def _build_snapshot_meta(
         "dedup_by_config": stage_e_stats.dedup_by_config,
         "dedup_by_config_totals": dedup_totals,
         "dedup_by_config_consistent": _dedup_by_config_consistent(
-            row_counts, dedup_totals
+            n_fact_results if n_fact_results is not None else stage_e_stats.post,
+            dedup_totals,
         ),
         "stage_a_drops": eee.drop_breakdown(),
     }
 
 
 def _dedup_by_config_consistent(
-    row_counts: dict, totals: dict[str, int] | None,
+    n_fact_results: int, totals: dict[str, int] | None,
 ) -> bool | None:
-    """Whether the per-config dedup totals add up to the global row counts;
-    None when the per-config breakdown is unknown. Both come from Stage E's
-    decision table, so a mismatch means the materialised fact tables and
-    that table disagree. It is reported, not asserted: the counts are
-    diagnostics and no table is built from them, so a wrong count should
-    not take the snapshot down with it."""
+    """Whether the rows actually materialised in `fact_results` match the
+    content-pass survivors summed over `stage_e_dedup_stats`; None when the
+    per-config breakdown is unknown. The two are counted independently and
+    must agree exactly, so a mismatch (corrupt output or a cache from
+    another generation) stops the snapshot before it is described."""
     if totals is None:
         return None
-    expected = {
-        "staging": row_counts["fact_results_pre_drop"],
-        "after_fact_id_pass": (
-            row_counts["fact_results_pre_drop"]
-            - row_counts["dropped_rows_no_score"]
-            - row_counts["dropped_rows_sentinel"]
-            - row_counts["dropped_rows_dedup"]
-        ),
-        "after_content_pass": row_counts["fact_results"],
-    }
-    mismatched = {
-        key: {"dedup_by_config_totals": totals[key], "row_counts": value}
-        for key, value in expected.items() if totals[key] != value
-    }
-    if mismatched:
-        log.error(
-            "dedup_by_config totals disagree with row_counts: %s", mismatched
+    if n_fact_results != totals["after_content_pass"]:
+        raise stages.StageEInvariantError(
+            f"fact_results has {n_fact_results} rows but stage_e_dedup_stats "
+            f"after_content_pass sums to {totals['after_content_pass']}; the "
+            f"materialised tables and the Stage E stats disagree"
         )
-        return False
     return True
 
 

@@ -126,6 +126,22 @@ def test_restore_refuses_an_interrupted_write(tmp_path):
         cache.restore_through(con, "B")
 
 
+def test_restore_refuses_a_current_cache_without_the_stage_e_stats(tmp_path):
+    """The dedup stats are what snapshot_meta reports for a resumed run;
+    a current-version cache without them cannot be resumed past Stage E."""
+    con = duckdb.connect()
+    cache = StageCache(tmp_path, "snap")
+    _write_stages(con, cache, *STAGE_ORDER[:STAGE_ORDER.index("E") + 1])
+    (cache.dir / "stage_e_dedup_stats.parquet").unlink()
+
+    cache.assert_schema_current()
+    with pytest.raises(
+        RuntimeError,
+        match=r"missing E:stage_e_dedup_stats\. .*Re-run from Stage A",
+    ):
+        cache.restore_through(con, "E")
+
+
 # ---------------------------------------------------------------------------
 # Unit: cache schema fingerprint
 # ---------------------------------------------------------------------------
