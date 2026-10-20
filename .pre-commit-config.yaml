@@ -1,4 +1,4 @@
-# Run by hand with `uv run pre-commit run --all-files`; CI runs the same hooks.
+# Run by hand with `uv run --group lint pre-commit run --all-files`; CI runs the same hooks.
 # The ruff rev tracks the ruff version in uv.lock (tests/test_ci_workflow.py checks).
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
