@@ -8,6 +8,7 @@ local cache would silently defeat the pin. When no revision is requested
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 _MARKER = ".pinned_revision"
@@ -47,6 +48,40 @@ def is_hand_built(target: Path) -> bool:
     )
 
 
+def log_hand_built(
+    log: logging.Logger, label: str, target: Path, revision: str | None
+) -> None:
+    """Log that `target` is kept as is. A pin the loader cannot apply is
+    worth a WARNING naming the directory and the pin; without a pin the
+    same path is routine and stays at INFO."""
+    if revision:
+        log.warning(
+            "%s hand-built snapshot at %s — nothing to sync; "
+            "the pinned revision %s is not applied to it",
+            label, target, revision,
+        )
+    else:
+        log.info("%s hand-built snapshot at %s — nothing to sync", label, target)
+
+
+def hand_built_snapshot(
+    target: Path,
+    revision: str | None,
+    label: str,
+    has_data: bool,
+    log: logging.Logger,
+) -> bool:
+    """True when the caller must return `target` untouched: it holds the
+    corpus (`has_data`) and `is_hand_built` says so. The tree IS the source;
+    wiping or fetching into it would be wrong whatever the pin says. The
+    caller's `force_refresh` (which empties the directory first) is the
+    explicit way past this. Logs the decision via `log_hand_built`."""
+    if not (has_data and is_hand_built(target)):
+        return False
+    log_hand_built(log, label, target, revision)
+    return True
+
+
 def write_cache_revision(target: Path, revision: str | None) -> None:
     """Record the revision a cache was downloaded at. No-op when latest."""
     if revision is None:
@@ -57,8 +92,6 @@ def write_cache_revision(target: Path, revision: str | None) -> None:
 def clear_cache_revision(target: Path) -> None:
     """Drop the marker, e.g. after re-indexing an existing cache unpinned."""
     (target / _MARKER).unlink(missing_ok=True)
-
-
 
 
 def hf_download_commit(target: Path, filename: str) -> str | None:
