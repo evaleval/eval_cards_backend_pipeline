@@ -1,12 +1,14 @@
 """Hotfix lifecycle gate.
 
-Data hotfixes live in three designated modules. Every public function there,
-and every override table the scanner below recognises, carries a lifecycle
-annotation in its own docstring or in the comment block directly above it:
-a `TODO(upstream):` line naming the upstream defect and a `Remove when:`
-line naming the condition that retires it. The module docstring covers a
-module with exactly one public symbol, and nothing else; a `# ──` section
-header covers only the symbol it sits directly above.
+Data hotfixes live in three designated modules. Every public function there
+is a hotfix unless NOT_HOTFIXES names it as plumbing, and a hotfix carries
+its lifecycle annotation in its own docstring and nowhere else: a
+`TODO(upstream):` line naming the upstream defect and a `Remove when:` line
+naming the condition that retires it. A mark in a comment or in the module
+docstring is reported so that the docstring stays the single annotation
+site. An override table in those modules is the hotfix's data and carries no
+annotation of its own; a table no function in the module reads is reported,
+since no hotfix then owns it.
 
 Outside those modules no new override table may appear. A table is any
 assignment, at module level or under `if`/`try`, whose target name reads
@@ -28,7 +30,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import re
+import tokenize
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -45,6 +49,15 @@ HOTFIX_MODULES = {
 
 UPSTREAM_MARK = "TODO(upstream):"
 REMOVAL_MARK = "Remove when:"
+MARKS = (UPSTREAM_MARK, REMOVAL_MARK)
+
+# `module:function` for each public function in a hotfix module that is
+# not a hotfix and so carries no lifecycle annotation.
+NOT_HOTFIXES = frozenset({
+    # Provenance-counter plumbing that pipeline.py calls around a bake.
+    "eval_card_backend.metric_meta_hotfix:reset_provenance_counter",
+    "eval_card_backend.metric_meta_hotfix:log_metric_meta_summary",
+})
 
 # `module:symbol` -> hash of the assignment's AST, for every override table
 # that predates this gate and still lives outside the hotfix modules. Shrink
@@ -178,77 +191,89 @@ def hotfix_tables(source: str) -> dict[str, ast.stmt]:
 # ---------------------------------------------------------------------------
 
 
-def _public_symbol_count(tree: ast.Module) -> int:
-    count = 0
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            count += not node.name.startswith("_")
-        else:
-            count += sum(not n.startswith("_") for n in _assigned_names(node))
-    return count
+def _plumbing(module: str) -> frozenset[str]:
+    prefix = module + ":"
+    return frozenset(s[len(prefix):] for s in NOT_HOTFIXES if s.startswith(prefix))
 
 
-def unannotated_hotfixes(source: str) -> list[tuple[str, str]]:
-    """(name, missing mark) for each public function or override table whose
-    own docstring or leading comment block lacks a mark."""
+def _marks_outside_docstrings(source: str, tree: ast.Module) -> Iterator[tuple[int, str]]:
+    """(line, mark) for each lifecycle mark in a comment or the module docstring."""
+    module_doc = tree.body[0] if ast.get_docstring(tree) else None
+    if module_doc is not None:
+        for mark in MARKS:
+            if mark in ast.get_docstring(tree):
+                yield module_doc.lineno, mark
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.COMMENT:
+            for mark in MARKS:
+                if mark in tok.string:
+                    yield tok.start[0], mark
+
+
+def _read_names(tree: ast.Module) -> set[str]:
+    """Every name some function in the module reads."""
+    return {
+        node.id
+        for top in tree.body if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.walk(top)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+
+
+def unannotated_hotfixes(
+    source: str, *, plumbing: frozenset[str] = frozenset(),
+) -> list[tuple[str, str]]:
+    """(where, problem) for each hotfix whose docstring lacks a mark, each
+    mark outside a docstring, and each override table nothing reads.
+    `plumbing` names the public functions that are not hotfixes."""
     tree = ast.parse(source)
     lines = source.splitlines()
-    module_doc = (ast.get_docstring(tree) or "") if _public_symbol_count(tree) == 1 else ""
-    tables = _hotfix_tables(tree, lines)
-    checked: list[tuple[str, ast.stmt, ast.stmt | None]] = []
-    for node, following, in_definition in _statements(tree.body):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not in_definition and not node.name.startswith("_"):
-                checked.append((node.name, node, following))
-        else:
-            for name in _assigned_names(node):
-                if tables.get(name) is node:
-                    checked.append((name, node, following))
-    problems = []
-    for name, node, following in checked:
-        context = "\n".join([
-            _leading_comment(lines, node), _docstring(node, following), module_doc,
-        ])
-        for mark in (UPSTREAM_MARK, REMOVAL_MARK):
-            if mark not in context:
-                problems.append((name, mark))
+    problems: list[tuple[str, str]] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name.startswith("_") or node.name in plumbing:
+            continue
+        docstring = ast.get_docstring(node) or ""
+        comment = _leading_comment(lines, node)
+        for mark in MARKS:
+            if mark in docstring:
+                continue
+            where = "in the comment above, not" if mark in comment else "missing from"
+            problems.append((node.name, f"'{mark}' {where} the docstring"))
+    for lineno, mark in _marks_outside_docstrings(source, tree):
+        problems.append((f"line {lineno}", f"'{mark}' outside a hotfix docstring"))
+    read = _read_names(tree)
+    for name in _hotfix_tables(tree, lines):
+        if name not in read:
+            problems.append((name, "no function in the module reads this table"))
     return problems
 
 
 @pytest.mark.parametrize("module", sorted(HOTFIX_MODULES), ids=lambda m: m.rsplit(".", 1)[-1])
 def test_every_hotfix_carries_a_lifecycle_annotation(module):
-    problems = unannotated_hotfixes(HOTFIX_MODULES[module].read_text())
+    problems = unannotated_hotfixes(
+        HOTFIX_MODULES[module].read_text(), plumbing=_plumbing(module),
+    )
     assert not problems, (
-        f"{module}: hotfixes without a complete lifecycle annotation:\n"
-        + "\n".join(f"  {name}: no '{mark}' line" for name, mark in problems)
+        f"{module}: lifecycle annotation problems:\n"
+        + "\n".join(f"  {where}: {problem}" for where, problem in problems)
         + "\nEach hotfix needs a 'TODO(upstream):' line naming the upstream defect"
         " and a 'Remove when:' line naming what retires it, in its own docstring"
-        " or in the comment block directly above it."
+        " and nowhere else. A public function that is not a hotfix goes in"
+        " NOT_HOTFIXES."
     )
 
 
-def test_unannotated_hotfixes_finds_each_missing_half():
-    source = (
-        '"""Module."""\n'
-        "# ── 1. Complete ──\n"
-        "# TODO(upstream): x is wrong.\n"
-        "# Remove when: x is right.\n"
-        "_X_RULES = {}\n\n"
-        "def fix_x(con):\n"
-        '    """Fix x.\n\n    TODO(upstream): x is wrong.\n    Remove when: x is right.\n    """\n\n'
-        "# ── 2. Only the removal ──\n"
-        "# Remove when: y is right.\n"
-        "def fix_y(con):\n    pass\n\n"
-        "# ── 3. Only the pointer ──\n"
-        "# TODO(upstream): z is wrong.\n"
-        "_Z_RULES = ()\n\n"
-        "_PLAIN_MAP = {}\n\n"
-        "def _helper():\n    pass\n"
-    )
-    assert unannotated_hotfixes(source) == [
-        ("fix_y", UPSTREAM_MARK),
-        ("_Z_RULES", REMOVAL_MARK),
-    ]
+def test_not_hotfixes_names_public_functions_that_exist():
+    for symbol in NOT_HOTFIXES:
+        module, name = symbol.split(":")
+        tree = ast.parse(HOTFIX_MODULES[module].read_text())
+        assert name in {
+            node.name for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not node.name.startswith("_")
+        }, f"{symbol} is not a public function; drop it from NOT_HOTFIXES"
 
 
 def test_a_docstring_annotation_counts():
@@ -259,42 +284,78 @@ def test_a_docstring_annotation_counts():
     assert unannotated_hotfixes(source) == []
 
 
-def test_a_section_header_covers_only_the_symbol_directly_below_it():
+def test_unannotated_hotfixes_finds_each_missing_half():
     source = (
-        "# ── 1. One section, two fixes ──\n"
-        "# TODO(upstream): a is wrong.\n"
-        "# Remove when: a is right.\n\n\n"
-        "def fix_a(con):\n    pass\n\n\n"
-        "def fix_b(con):\n    pass\n"
+        "def fix_y(con):\n"
+        '    """Fix y.\n\n    Remove when: y is right.\n    """\n\n'
+        "def fix_z(con):\n"
+        '    """Fix z.\n\n    TODO(upstream): z is wrong.\n    """\n\n'
+        "def fix_v(con):\n    pass\n"
     )
     assert unannotated_hotfixes(source) == [
-        ("fix_b", UPSTREAM_MARK),
-        ("fix_b", REMOVAL_MARK),
+        ("fix_y", "'TODO(upstream):' missing from the docstring"),
+        ("fix_z", "'Remove when:' missing from the docstring"),
+        ("fix_v", "'TODO(upstream):' missing from the docstring"),
+        ("fix_v", "'Remove when:' missing from the docstring"),
     ]
 
 
-def test_a_table_between_the_header_and_the_function_breaks_the_cover():
+def test_marks_in_the_section_comment_alone_say_to_move_them():
     source = (
         "# ── 1. Section ──\n"
         "# TODO(upstream): a is wrong.\n"
-        "# Remove when: a is right.\n\n"
-        "_A_MAP = {}\n\n\n"
-        "def fix_a(con):\n    pass\n"
+        "# Remove when: a is right.\n\n\n"
+        'def fix_a(con):\n    """Fix a."""\n'
     )
     assert unannotated_hotfixes(source) == [
-        ("fix_a", UPSTREAM_MARK),
-        ("fix_a", REMOVAL_MARK),
+        ("fix_a", "'TODO(upstream):' in the comment above, not the docstring"),
+        ("fix_a", "'Remove when:' in the comment above, not the docstring"),
+        ("line 2", "'TODO(upstream):' outside a hotfix docstring"),
+        ("line 3", "'Remove when:' outside a hotfix docstring"),
     ]
 
 
-def test_module_docstring_covers_exactly_one_public_symbol():
-    marks = "TODO(upstream): m is wrong.\nRemove when: m is right.\n"
-    one = f'"""Module.\n\n{marks}"""\n\ndef fix_m(con):\n    pass\n'
-    assert unannotated_hotfixes(one) == []
-    two = one + "\ndef fix_n(con):\n    pass\n"
-    assert unannotated_hotfixes(two) == [
-        ("fix_m", UPSTREAM_MARK), ("fix_m", REMOVAL_MARK),
-        ("fix_n", UPSTREAM_MARK), ("fix_n", REMOVAL_MARK),
+def test_a_mark_duplicated_in_a_comment_or_the_module_docstring_is_reported():
+    annotated = (
+        "def fix_a(con):\n"
+        '    """Fix a.\n\n    TODO(upstream): a is wrong.\n    Remove when: a is right.\n    """\n'
+    )
+    with_comment = "# Remove when: a is right.\n" + annotated
+    assert unannotated_hotfixes(with_comment) == [
+        ("line 1", "'Remove when:' outside a hotfix docstring"),
+    ]
+    with_module_doc = '"""Module.\n\nTODO(upstream): a is wrong.\n"""\n' + annotated
+    assert unannotated_hotfixes(with_module_doc) == [
+        ("line 1", "'TODO(upstream):' outside a hotfix docstring"),
+    ]
+    inline = annotated + "    x = 1  # TODO(upstream): also here\n"
+    assert unannotated_hotfixes(inline) == [
+        ("line 7", "'TODO(upstream):' outside a hotfix docstring"),
+    ]
+
+
+def test_private_helpers_and_listed_plumbing_pass_and_other_public_functions_fail():
+    source = (
+        "def _helper():\n    pass\n\n"
+        "def reset_counter():\n    pass\n\n"
+        "def log_summary(log):\n    pass\n"
+    )
+    assert unannotated_hotfixes(source, plumbing=frozenset({"reset_counter"})) == [
+        ("log_summary", "'TODO(upstream):' missing from the docstring"),
+        ("log_summary", "'Remove when:' missing from the docstring"),
+    ]
+
+
+def test_a_table_is_covered_by_the_function_that_reads_it():
+    table = "_X_RULES = {}\n\n"
+    reader = (
+        "def fix_x(con):\n"
+        '    """Fix x.\n\n    TODO(upstream): x is wrong.\n    Remove when: x is right.\n    """\n'
+        "    return _X_RULES\n"
+    )
+    assert unannotated_hotfixes(table + reader) == []
+    assert unannotated_hotfixes(table + reader.replace("return _X_RULES", "pass")) == [
+        ("_X_RULES", "no function in the module reads this table"),
     ]
 
 
@@ -397,8 +458,9 @@ def test_no_new_hotfix_tables_outside_the_hotfix_modules():
         "override tables outside the hotfix modules:\n"
         + "\n".join(f"  {symbol}" for symbol in new)
         + "\nPut the table in canonicalise/resolution_hotfixes.py or"
-        " canonicalise/hierarchy_hotfixes.py with a 'TODO(upstream):' line"
-        " and a 'Remove when:' line directly above it."
+        " canonicalise/hierarchy_hotfixes.py beside the hotfix function that"
+        " reads it; that function's docstring carries the 'TODO(upstream):'"
+        " and 'Remove when:' lines."
     )
 
 

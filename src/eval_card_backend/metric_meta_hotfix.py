@@ -7,7 +7,7 @@ PURPOSE
     (`signals/comparability.py:compute_threshold`) and `score_scale_anomaly`.
 
 WHY HOTFIX
-    TODO(upstream): both sources of this metadata are partially populated:
+    Both sources of this metadata are partially populated:
       - The registry's `canonical_metrics` table only carries `score_type`,
         `min_score`, `max_score`, and `lower_is_better` today; it has no
         `metric_kind` or `metric_unit`.
@@ -23,7 +23,7 @@ WHY HOTFIX
     (always-false silently).
 
 RETIREMENT
-    Remove when: eval-entity-registry's `canonical_metrics` gains real
+    This module retires when eval-entity-registry's `canonical_metrics` gains real
     `metric_kind` / `metric_unit` columns AND coverage is verified against
     EEE's actual vocabulary. Retire by:
       1. Stage A loads the new columns directly from canonical_metrics.
@@ -74,23 +74,12 @@ _provenance_counter: Counter[tuple[str, str]] = Counter()
 
 
 def reset_provenance_counter() -> None:
-    """Clear the per-run provenance counts before a bake.
-
-    TODO(upstream): the counter exists to measure how often this module's
-    heuristics fill `metric_kind` / `metric_unit` that the registry's
-    `canonical_metrics` does not carry.
-    Remove when: the module retires (see RETIREMENT in the module docstring).
-    """
+    """Clear the per-run provenance counts before a bake."""
     _provenance_counter.clear()
 
 
 def log_metric_meta_summary(log) -> None:
-    """Pipeline.run() calls this at end of run alongside other summaries.
-
-    TODO(upstream): the share of rows filled by `heuristic_*` sources is the
-    measure of how much metric metadata the registry still lacks.
-    Remove when: the module retires (see RETIREMENT in the module docstring).
-    """
+    """Pipeline.run() calls this at end of run alongside other summaries."""
     if not _provenance_counter:
         return
     log.info("--- metric-meta hotfix provenance ---")
@@ -117,11 +106,6 @@ def log_metric_meta_summary(log) -> None:
 # Order matters: most-specific first. ASCII metric names are common but case
 # varies; match case-insensitively. Word-boundary anchors avoid `accuracy`
 # matching `inaccuracy_rate`, etc.
-#
-# TODO(upstream): `canonical_metrics` has no `metric_kind` column, so the
-# kind is inferred from the metric name for rows whose EEE record omits it.
-# Remove when: the registry populates `metric_kind` for the metrics EEE
-# reports; the regex layer then never fires.
 # ---------------------------------------------------------------------------
 
 _NAME_TO_METRIC_KIND_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
