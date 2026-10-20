@@ -176,19 +176,37 @@ def test_hand_built_dir_under_a_pin_is_logged_at_warning(
 
 
 def test_upstream_pin_names_a_hand_built_dir_instead_of_claiming_the_pin(monkeypatch):
+    """A hand-built tree was read as is: the entry names no revision and
+    asks the hub nothing, whatever the pin or a stray download record says."""
     from eval_card_backend.canonicalise import pipeline
 
-    monkeypatch.setattr(pipeline, "_hf_dataset_snapshot", lambda *a, **k: None)
-    kwargs = dict(pinned=PIN, cached=None, hf_token=None)
-    assert pipeline._upstream_pin("r", hand_built=True, **kwargs) == {
-        "repo_id": "r", "sha": PIN, "last_modified": None,
+    lookups: list[tuple] = []
+
+    def _snapshot(*args, **kwargs):
+        lookups.append((args, kwargs))
+        return None
+
+    monkeypatch.setattr(pipeline, "_hf_dataset_snapshot", _snapshot)
+    hand_built = {
+        "repo_id": "r", "sha": None, "last_modified": None,
         "revision_source": "hand-built",
     }
-    assert pipeline._upstream_pin("r", hand_built=False, **kwargs)["revision_source"] == "pin"
-    # A pinned download leaves a record; the pin was applied to it.
     assert pipeline._upstream_pin(
-        "r", pinned=PIN, cached=PIN, hf_token=None, hand_built=True,
-    )["revision_source"] == "pin"
+        "r", pinned=PIN, cached=None, hf_token=None, hand_built=True,
+    ) == hand_built
+    assert pipeline._upstream_pin(
+        "r", pinned=PIN, cached=OTHER, hf_token=None, hand_built=True,
+    ) == hand_built
+    assert pipeline._upstream_pin(
+        "r", pinned=None, cached=OTHER, hf_token=None, hand_built=True,
+    ) == {**hand_built, "revision_source": "unknown"}
+    assert lookups == []
+
+    pinned = pipeline._upstream_pin(
+        "r", pinned=PIN, cached=None, hf_token=None, hand_built=False,
+    )
+    assert pinned["revision_source"] == "pin" and pinned["sha"] == PIN
+    assert len(lookups) == 1
 
 
 def test_snapshot_meta_records_hand_built_dirs_under_a_pin(monkeypatch):
@@ -210,11 +228,12 @@ def test_snapshot_meta_records_hand_built_dirs_under_a_pin(monkeypatch):
         cards_root=FIXTURES / "auto_benchmarkcards",
     )
     pins = meta["upstream_pins"]
-    assert pins["entity_registry"]["sha"] == PIN
+    assert pins["entity_registry"]["sha"] is None
     assert pins["entity_registry"]["revision_source"] == "hand-built"
-    assert pins["benchmark_metadata"]["sha"] == "e" * 40
+    assert pins["benchmark_metadata"]["sha"] is None
     assert pins["benchmark_metadata"]["revision_source"] == "hand-built"
-    assert meta["registry_revision"] == PIN
+    # The scalar mirrors the pin entry's sha, so it names no revision either.
+    assert meta["registry_revision"] is None
     assert set(pins["entity_registry"]) == {"repo_id", "sha", "last_modified", "revision_source"}
 
 

@@ -124,24 +124,28 @@ def _upstream_pin(
       - ``"pin"``        an explicit ``*_REVISION`` env pin, which the
                          download honoured.
       - ``"hand-built"`` pinned, but the directory holds a hand-built tree
-                         with no download record, which the loader keeps
-                         as is. ``sha`` is still the pin: it names what the
-                         run was asked to read, not what it read.
+                         which the loader keeps as is. No revision was read,
+                         so ``sha`` is null and the Hub is not asked: the
+                         pin names what the run was asked to read, not what
+                         it read.
       - ``"local_cache"`` unpinned: the revision the on-disk snapshot was
                          downloaded at, read back from the cache's own
                          metadata. Unpinned runs reuse the cache without
                          downloading, so this — not HEAD — is what was read.
-      - ``"unknown"``    unpinned and the cache carries no revision record
-                         (a hand-built fixture tree). We stamp ``sha: null``:
-                         a HEAD lookup here would name a revision the run
-                         never read, which is what this field exists to
-                         rule out.
+      - ``"unknown"``    unpinned and no revision is known: the cache carries
+                         no record, or the tree is hand-built (any record a
+                         stray download left in it does not describe what
+                         was read). We stamp ``sha: null``: a HEAD lookup
+                         here would name a revision the run never read,
+                         which is what this field exists to rule out.
     """
+    if hand_built:
+        return {
+            "repo_id": repo_id, "sha": None, "last_modified": None,
+            "revision_source": "hand-built" if pinned else "unknown",
+        }
     revision = pinned or cached
-    if pinned:
-        source = "hand-built" if cached is None and hand_built else "pin"
-    else:
-        source = "local_cache" if cached else "unknown"
+    source = "pin" if pinned else ("local_cache" if cached else "unknown")
     if revision is None:
         return {
             "repo_id": repo_id, "sha": None, "last_modified": None,
