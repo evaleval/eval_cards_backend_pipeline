@@ -34,6 +34,7 @@ import ast
 import hashlib
 import io
 import re
+import subprocess
 import tokenize
 from collections.abc import Iterator
 from pathlib import Path
@@ -472,6 +473,71 @@ def test_the_allowlist_only_shrinks():
         "grandfathered tables no longer found:\n"
         + "\n".join(f"  {symbol}" for symbol in gone)
         + "\nRemove them from ALLOWED_TABLES_OUTSIDE_HOTFIX_MODULES so the list keeps shrinking."
+    )
+
+
+def _git(*args: str) -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", *args], cwd=SRC.parent, capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def allowlist_at(source: str) -> dict[str, str] | None:
+    """ALLOWED_TABLES_OUTSIDE_HOTFIX_MODULES as written in `source`, or None
+    when the source does not define it."""
+    for node in ast.parse(source).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (
+            node.targets[0] if isinstance(node, ast.Assign) else None
+        )
+        if isinstance(target, ast.Name) and target.id == "ALLOWED_TABLES_OUTSIDE_HOTFIX_MODULES":
+            return ast.literal_eval(node.value)
+    return None
+
+
+def allowlist_growth(base: dict[str, str], current: dict[str, str]) -> list[str]:
+    """Entries of `current` that `base` does not hold with the same hash."""
+    return sorted(
+        f"  {symbol}" for symbol, digest in current.items() if base.get(symbol) != digest
+    )
+
+
+def _base_allowlist() -> dict[str, str] | None:
+    """The allowlist at the base this tree is checked against: the merge base
+    with origin/main, or the first parent when HEAD is already on main."""
+    head = _git("rev-parse", "HEAD")
+    base = _git("merge-base", "HEAD", "origin/main")
+    if head is None or base is None:
+        return None
+    if base == head:
+        base = _git("rev-parse", "HEAD^1")
+        if base is None:
+            return None
+    path = Path(__file__).resolve().relative_to(SRC.parent).as_posix()
+    source = _git("show", f"{base}:{path}")
+    return allowlist_at(source) if source is not None else None
+
+
+def test_allowlist_growth_is_refused():
+    base = {"m:_A_OVERRIDE": "1111", "m:_B_OVERRIDE": "2222"}
+    assert allowlist_growth(base, {"m:_A_OVERRIDE": "1111"}) == []
+    assert allowlist_growth(base, {**base, "m:_C_OVERRIDE": "3333"}) == ["  m:_C_OVERRIDE"]
+    assert allowlist_growth(base, {**base, "m:_B_OVERRIDE": "9999"}) == ["  m:_B_OVERRIDE"]
+
+
+def test_allowlist_holds_nothing_main_did_not():
+    base = _base_allowlist()
+    if base is None:
+        pytest.skip("no allowlist at the base revision (or no git history)")
+    grown = allowlist_growth(base, ALLOWED_TABLES_OUTSIDE_HOTFIX_MODULES)
+    assert not grown, (
+        "ALLOWED_TABLES_OUTSIDE_HOTFIX_MODULES gained entries or hashes that the"
+        " base revision does not have:\n" + "\n".join(grown)
+        + "\nThe list only shrinks. Move the table into a hotfix module instead."
     )
 
 
