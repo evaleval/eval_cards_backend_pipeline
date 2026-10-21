@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Iterable, NamedTuple
 
+import duckdb
 import pyarrow as pa
 
 from eval_card_backend.signals.reproducibility import (
@@ -328,6 +329,97 @@ def org_display_normalize_sql(column_expr: str) -> str:
     )
 
 
+# Stage E observation key: (struct field, staging column) in struct order.
+# Rows equal on every field are one observation re-emitted under fresh ids.
+_OBSERVATION_KEY_FIELDS: tuple[tuple[str, str], ...] = (
+    # Reporter. source_config is load-bearing: observations from
+    # different leaderboards are independent even when every
+    # other field agrees. org_raw protects multi-reporter configs.
+    ("source_config", "source_config"),
+    ("reporting_org", "org_raw"),
+    ("evaluator_relationship", "evaluator_relationship"),
+    ("source_type", "source_type"),
+
+    # Model and benchmark identity. Raw benchmark spelling is
+    # substantive in configs whose broad canonical fallback can
+    # cover several measurements (notably Artificial Analysis).
+    ("model_raw", "model_raw"),
+    ("inference_platform", "inference_platform"),
+    ("evaluation_name", "evaluation_name"),
+    ("benchmark_raw", "benchmark_raw"),
+    ("benchmark_id", "benchmark_id"),
+    ("benchmark_subset", "benchmark_subset"),
+    ("slice_key", "slice_key"),
+    ("slice_name", "slice_name"),
+    ("aggregate_level", "aggregate_level"),
+    ("observation_role", "observation_role"),
+    ("collection_id", "collection_id"),
+
+    # Metric identity. Declared bounds, unit and direction are
+    # left out: a re-scrape restates them (Artificial Analysis
+    # derives bounds from observed values each run) without
+    # changing the observation; the surviving row keeps the
+    # latest declaration.
+    ("metric_raw", "metric_raw"),
+    ("metric_id", "metric_id"),
+    ("metric_key", "metric_key"),
+    ("metric_qualifier", "metric_qualifier"),
+    ("split", "split"),
+
+    # Measurement and the source-stated eval time. The same value
+    # re-reported for the same (model, benchmark, metric, split)
+    # under the same conditions is one observation; uncertainty
+    # fields are left out because re-scrapes restate them with
+    # rounding drift. retrieved_timestamp is intentionally
+    # absent: it says when we scraped the row, not when the
+    # evaluation ran.
+    ("score", "score"),
+    ("n_samples", "n_samples"),
+    ("evaluation_timestamp", "evaluation_timestamp"),
+
+    # Evaluation conditions that change what was measured. The
+    # typed generation_args struct and its additional details
+    # stay in the key: a submission's filter or reasoning
+    # variants can share a value and are still distinct runs.
+    ("generation_args", "generation_args_json"),
+    ("generation_details", "generation_additional_details"),
+    ("agent_scaffold", "agent_scaffold_raw"),
+    ("harness_raw", "harness_raw"),
+    ("harness_id", "harness_id"),
+    ("eval_library_name", "eval_library_name"),
+    ("eval_library_version", "eval_library_version"),
+    ("protocol_condition", "protocol_condition"),
+    ("judge_condition", "judge_condition"),
+    ("instance_checksum", "instance_checksum"),
+    ("instance_hash_algorithm", "instance_hash_algorithm"),
+    ("instance_rows", "instance_rows"),
+)
+
+# Two fields a re-scrape can restate for one observation, reported apart:
+# survivors that collide once the stated eval time is dropped are the same
+# run re-dated; survivors that collide once generation_args is dropped are
+# either a re-emission with its arguments restated or a legitimate
+# generation-config variant, which only the source can tell apart.
+_TIMESTAMP_ONLY_EXCLUDES: frozenset[str] = frozenset({"evaluation_timestamp"})
+_GENERATION_ARGS_ONLY_EXCLUDES: frozenset[str] = frozenset({"generation_args"})
+_TIMESTAMP_AND_GENERATION_ARGS_EXCLUDES: frozenset[str] = (
+    _TIMESTAMP_ONLY_EXCLUDES | _GENERATION_ARGS_ONLY_EXCLUDES
+)
+
+
+def _observation_key_sql(*, exclude: frozenset[str] = frozenset()) -> str:
+    """Render the observation key as a `struct_pack(...)` over the staging
+    columns, leaving out the fields named in `exclude`."""
+    unknown = exclude - {alias for alias, _ in _OBSERVATION_KEY_FIELDS}
+    if unknown:
+        raise ValueError(f"not observation key fields: {sorted(unknown)}")
+    fields = ", ".join(
+        f"{alias} := {column}"
+        for alias, column in _OBSERVATION_KEY_FIELDS if alias not in exclude
+    )
+    return f"struct_pack({fields})"
+
+
 class StageEStats(NamedTuple):
     """Row-count breakdown for Stage E. Exposed so the orchestrator can
     populate snapshot_meta with each drop reason separately."""
@@ -337,8 +429,56 @@ class StageEStats(NamedTuple):
     n_dropped_dedup: int        # fact_id collisions
     n_dropped_content_dedup: int  # same observation re-emitted in a new record
     post: int                   # final fact_results_signaled count
+    # see read_stage_e_dedup_stats; None when the stats table is unavailable
+    dedup_by_config: dict[str, dict[str, int]] | None
 
 log = logging.getLogger(__name__)
+
+
+_DEDUP_BY_CONFIG_KEYS = (
+    "staging", "after_fact_id_pass", "after_content_pass",
+    "residual_timestamp_only", "residual_generation_args_only",
+    "residual_both",
+)
+
+
+class StageEInvariantError(RuntimeError):
+    """A Stage E row count failed an exact conservation check."""
+
+
+def read_stage_e_dedup_stats(con) -> dict[str, dict[str, int]] | None:
+    """Per-source_config row counts at each Stage E dedup boundary, read
+    from the `stage_e_dedup_stats` table Stage E writes next to
+    `fact_results_signaled`; None when the table is not in the connection.
+
+    `residual_timestamp_only` counts survivors that still match another
+    survivor once the observation key drops evaluation_timestamp;
+    `residual_generation_args_only` does the same for generation_args, and
+    `residual_both` for the key without either field (each is survivors
+    minus distinct looser keys). The three overlap and do not add up."""
+    try:
+        rows = con.execute(
+            f"SELECT source_config, {', '.join(_DEDUP_BY_CONFIG_KEYS)} "
+            f"FROM stage_e_dedup_stats ORDER BY source_config"
+        ).fetchall()
+    except duckdb.CatalogException:
+        return None
+    return {
+        config: dict(zip(_DEDUP_BY_CONFIG_KEYS, (int(c) for c in counts)))
+        for config, *counts in rows
+    }
+
+
+def dedup_by_config_totals(
+    by_config: dict[str, dict[str, int]] | None,
+) -> dict[str, int] | None:
+    """Sum each `stage_e_dedup_stats` count over configs; None in, None out."""
+    if by_config is None:
+        return None
+    return {
+        key: sum(counts[key] for counts in by_config.values())
+        for key in _DEDUP_BY_CONFIG_KEYS
+    }
 
 
 # What a cell made only of PART observations is worth, when the registry does
@@ -2852,7 +2992,9 @@ def stage_e_per_row_signals(
        evaluation conditions, stated evaluation time, uncertainty and sample
        size all match.  Retrieval and record bookkeeping are deliberately not
        part of this identity.  As above, keep the latest retrieval and use a
-       total deterministic tie-break.
+       total deterministic tie-break.  Both passes record their decision
+       per row, and `stage_e_dedup_stats` aggregates those decisions per
+       source_config (see `read_stage_e_dedup_stats`).
 
     Per-row signals computed: reproducibility gap, provenance source-type
     collapse, variant_key, score_scale_anomaly, reporting completeness.
@@ -2981,10 +3123,16 @@ def stage_e_per_row_signals(
         source_table="fact_results_staging", key_col="source_record_path",
     )
     con.execute(
-        """
-        CREATE TEMP TABLE _e_keep AS
+        f"""
+        CREATE TEMP TABLE _e_decisions AS
         WITH _e_narrow AS (
             SELECT rowid AS _rid,
+                   -- retrieved_timestamp is a VARCHAR holding either epoch
+                   -- seconds or ISO-8601; text order would rank every ISO
+                   -- string above every epoch string, so both passes order
+                   -- on the parsed instant and keep the raw string as the
+                   -- next key so unparseable values still order totally.
+                   {retrieved_instant_sql("retrieved_timestamp")} AS _retrieved_at,
                    fact_id, retrieved_timestamp, evaluation_id,
                    evaluation_result_id, source_record_path,
                    source_config, org_raw, evaluator_relationship, source_type,
@@ -3034,7 +3182,8 @@ def stage_e_per_row_signals(
                 CASE WHEN fact_id IS NULL THEN 1
                      ELSE ROW_NUMBER() OVER (
                          PARTITION BY fact_id
-                         ORDER BY retrieved_timestamp DESC NULLS LAST,
+                         ORDER BY _retrieved_at DESC NULLS LAST,
+                                  retrieved_timestamp DESC NULLS LAST,
                                   evaluation_id DESC,
                                   evaluation_result_id DESC,
                                   source_record_path DESC
@@ -3042,91 +3191,87 @@ def stage_e_per_row_signals(
                 END AS _dedup_rank
             FROM _e_narrow
         ),
-        fact_id_deduped AS (
-            SELECT * EXCLUDE (_dedup_rank)
-            FROM fact_id_ranked
-            WHERE _dedup_rank = 1
-        ),
         content_keyed AS (
-            SELECT *, struct_pack(
-                -- Reporter. source_config is load-bearing: observations from
-                -- different leaderboards are independent even when every
-                -- other field agrees. org_raw protects multi-reporter configs.
-                source_config                 := source_config,
-                reporting_org                 := org_raw,
-                evaluator_relationship       := evaluator_relationship,
-                source_type                   := source_type,
-
-                -- Model and benchmark identity. Raw benchmark spelling is
-                -- substantive in configs whose broad canonical fallback can
-                -- cover several measurements (notably Artificial Analysis).
-                model_raw                     := model_raw,
-                inference_platform            := inference_platform,
-                evaluation_name               := evaluation_name,
-                benchmark_raw                 := benchmark_raw,
-                benchmark_id                  := benchmark_id,
-                benchmark_subset              := benchmark_subset,
-                slice_key                     := slice_key,
-                slice_name                    := slice_name,
-                aggregate_level               := aggregate_level,
-                observation_role              := observation_role,
-                collection_id                 := collection_id,
-
-                -- Metric identity. Declared bounds, unit and direction are
-                -- left out: a re-scrape restates them (Artificial Analysis
-                -- derives bounds from observed values each run) without
-                -- changing the observation; the surviving row keeps the
-                -- latest declaration.
-                metric_raw                    := metric_raw,
-                metric_id                     := metric_id,
-                metric_key                    := metric_key,
-                metric_qualifier              := metric_qualifier,
-                split                         := split,
-
-                -- Measurement and the source-stated eval time. The same value
-                -- re-reported for the same (model, benchmark, metric, split)
-                -- under the same conditions is one observation; uncertainty
-                -- fields are left out because re-scrapes restate them with
-                -- rounding drift. retrieved_timestamp is intentionally
-                -- absent: it says when we scraped the row, not when the
-                -- evaluation ran.
-                score                         := score,
-                n_samples                     := n_samples,
-                evaluation_timestamp          := evaluation_timestamp,
-
-                -- Evaluation conditions that change what was measured. The
-                -- typed generation_args struct and its additional details
-                -- stay in the key: a submission's filter or reasoning
-                -- variants can share a value and are still distinct runs.
-                generation_args               := generation_args_json,
-                generation_details            := generation_additional_details,
-                agent_scaffold                 := agent_scaffold_raw,
-                harness_raw                   := harness_raw,
-                harness_id                    := harness_id,
-                eval_library_name             := eval_library_name,
-                eval_library_version          := eval_library_version,
-                protocol_condition            := protocol_condition,
-                judge_condition               := judge_condition,
-                instance_checksum             := instance_checksum,
-                instance_hash_algorithm       := instance_hash_algorithm,
-                instance_rows                 := instance_rows
-            ) AS _observation_key
-            FROM fact_id_deduped
+            -- Keyed before the window so it carries the struct and three
+            -- hashes rather than every raw key column. The hashes are
+            -- diagnostics for the residual counts; the pass itself
+            -- partitions on the exact struct.
+            SELECT _rid, source_config, _retrieved_at, retrieved_timestamp,
+                   evaluation_id, evaluation_result_id, source_record_path,
+                   fact_id, _dedup_rank = 1 AS kept_by_fact_id_pass,
+                   {_observation_key_sql()} AS _observation_key,
+                   hash({_observation_key_sql(exclude=_TIMESTAMP_ONLY_EXCLUDES)})
+                       AS hash_no_timestamp,
+                   hash({_observation_key_sql(exclude=_GENERATION_ARGS_ONLY_EXCLUDES)})
+                       AS hash_no_generation_args,
+                   hash({_observation_key_sql(exclude=_TIMESTAMP_AND_GENERATION_ARGS_EXCLUDES)})
+                       AS hash_no_both
+            FROM fact_id_ranked
         ),
         content_ranked AS (
-            SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY _observation_key
-                ORDER BY retrieved_timestamp DESC NULLS LAST,
-                         evaluation_id DESC NULLS LAST,
-                         evaluation_result_id DESC NULLS LAST,
-                         source_record_path DESC NULLS LAST,
-                         fact_id DESC NULLS LAST
-            ) AS _content_dedup_rank
+            -- Partitioning on the survivor flag too ranks fact-id losers
+            -- among themselves, so survivors see exactly the fact-id pass
+            -- output and every row keeps a decision in one streamed pass.
+            SELECT _rid, source_config, kept_by_fact_id_pass,
+                   hash_no_timestamp, hash_no_generation_args, hash_no_both,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY kept_by_fact_id_pass, _observation_key
+                       ORDER BY _retrieved_at DESC NULLS LAST,
+                                retrieved_timestamp DESC NULLS LAST,
+                                evaluation_id DESC NULLS LAST,
+                                evaluation_result_id DESC NULLS LAST,
+                                source_record_path DESC NULLS LAST,
+                                fact_id DESC NULLS LAST
+                   ) AS _content_dedup_rank
             FROM content_keyed
         )
-        SELECT _rid
+        SELECT _rid, source_config, kept_by_fact_id_pass,
+               kept_by_fact_id_pass AND _content_dedup_rank = 1
+                   AS kept_by_content_pass,
+               hash_no_timestamp, hash_no_generation_args, hash_no_both
         FROM content_ranked
-        WHERE _content_dedup_rank = 1
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE stage_e_dedup_stats AS
+        WITH staged AS (
+            SELECT source_config, count(*) AS staging
+            FROM fact_results_staging
+            GROUP BY 1
+        ),
+        decided AS (
+            SELECT source_config,
+                   count(*) FILTER (WHERE kept_by_fact_id_pass)
+                       AS after_fact_id_pass,
+                   count(*) FILTER (WHERE kept_by_content_pass)
+                       AS after_content_pass,
+                   count(*) FILTER (WHERE kept_by_content_pass)
+                     - count(DISTINCT hash_no_timestamp)
+                           FILTER (WHERE kept_by_content_pass)
+                       AS residual_timestamp_only,
+                   count(*) FILTER (WHERE kept_by_content_pass)
+                     - count(DISTINCT hash_no_generation_args)
+                           FILTER (WHERE kept_by_content_pass)
+                       AS residual_generation_args_only,
+                   count(*) FILTER (WHERE kept_by_content_pass)
+                     - count(DISTINCT hash_no_both)
+                           FILTER (WHERE kept_by_content_pass)
+                       AS residual_both
+            FROM _e_decisions
+            GROUP BY 1
+        )
+        SELECT source_config,
+               staging,
+               COALESCE(after_fact_id_pass, 0) AS after_fact_id_pass,
+               COALESCE(after_content_pass, 0) AS after_content_pass,
+               COALESCE(residual_timestamp_only, 0) AS residual_timestamp_only,
+               COALESCE(residual_generation_args_only, 0)
+                   AS residual_generation_args_only,
+               COALESCE(residual_both, 0) AS residual_both
+        FROM staged
+        LEFT JOIN decided USING (source_config)
+        ORDER BY source_config
         """
     )
     final_cols = explicit_projection_sql(
@@ -3136,28 +3281,23 @@ def stage_e_per_row_signals(
         con, "fact_results_signaled",
         lambda pred: (
             f"SELECT {final_cols} FROM _signaled_rows "
-            f"WHERE rowid IN (SELECT _rid FROM _e_keep) AND {pred}"
+            f"WHERE rowid IN (SELECT _rid FROM _e_decisions "
+            f"WHERE kept_by_content_pass) AND {pred}"
         ),
         source_table="_signaled_rows", key_col="source_record_path",
     )
     con.execute("DROP TABLE _signaled_rows")
-    con.execute("DROP TABLE _e_keep")
     _apply_composite_partitions(
         con, strict=strict_composites, exempt=exempt_composites
     )
+    # Exact counts, unlike the residual diagnostics: a mismatch is lost or
+    # duplicated rows, so it fails the run rather than publish them.
+    n_dropped_dedup, n_dropped_content_dedup = _assert_stage_e_conservation(
+        con, pre=pre, n_dropped_no_score=n_dropped_no_score,
+        n_dropped_sentinel=n_dropped_sentinel,
+    )
+    con.execute("DROP TABLE _e_decisions")
     post = con.execute("SELECT count(*) FROM fact_results_signaled").fetchone()[0]
-    pre_dedup = pre - n_dropped_no_score - n_dropped_sentinel
-    fact_id_survivors = con.execute(
-        f"""
-        SELECT COUNT(DISTINCT fact_id)
-             + COUNT(*) FILTER (WHERE fact_id IS NULL)
-        FROM fact_results_staging
-        WHERE score IS NOT NULL
-          AND NOT ({_SENTINEL_DROP_PREDICATE})
-        """
-    ).fetchone()[0]
-    n_dropped_dedup = pre_dedup - fact_id_survivors
-    n_dropped_content_dedup = fact_id_survivors - post
     if n_dropped_sentinel:
         log.warning(
             "Stage E: dropped %d row(s) on the score=-1 sentinel policy "
@@ -3183,7 +3323,81 @@ def stage_e_per_row_signals(
         n_dropped_dedup=n_dropped_dedup,
         n_dropped_content_dedup=n_dropped_content_dedup,
         post=post,
+        dedup_by_config=read_stage_e_dedup_stats(con),
     )
+
+
+def _assert_stage_e_conservation(
+    con, *, pre: int, n_dropped_no_score: int, n_dropped_sentinel: int,
+) -> tuple[int, int]:
+    """Check Stage E's row counts against each other and return the
+    (fact_id, content) dedup drop counts.
+
+    Each count comes from a different place: staging and the two policy
+    drops from `fact_results_staging`, the dedup drops from `_e_decisions`,
+    the survivors from the materialised `fact_results_signaled`, and the
+    per-config boundaries from `stage_e_dedup_stats`. These are exact, so a
+    disagreement means lost or duplicated rows and the run stops here,
+    leaving the Stage D cache (when caching is on) for investigation."""
+    n_materialised = con.execute(
+        "SELECT count(*) FROM fact_results_signaled"
+    ).fetchone()[0]
+    n_entrants, n_kept_content, n_dropped_dedup, n_dropped_content_dedup = (
+        int(n) for n in con.execute(
+            """
+            SELECT count(*),
+                   count(*) FILTER (WHERE kept_by_content_pass),
+                   count(*) FILTER (WHERE NOT kept_by_fact_id_pass),
+                   count(*) FILTER (WHERE kept_by_fact_id_pass
+                                      AND NOT kept_by_content_pass)
+            FROM _e_decisions
+            """
+        ).fetchone()
+    )
+    failures: list[str] = []
+    if n_materialised != n_kept_content:
+        failures.append(
+            f"fact_results_signaled has {n_materialised} rows but "
+            f"_e_decisions keeps {n_kept_content} by the content pass"
+        )
+    expected = (
+        pre - n_dropped_no_score - n_dropped_sentinel
+        - n_dropped_dedup - n_dropped_content_dedup
+    )
+    if expected != n_materialised:
+        failures.append(
+            f"staging {pre} - no_score {n_dropped_no_score} - sentinel "
+            f"{n_dropped_sentinel} - fact_id drops {n_dropped_dedup} - "
+            f"content drops {n_dropped_content_dedup} = {expected}, but "
+            f"fact_results_signaled has {n_materialised} rows "
+            f"({n_entrants} rows entered the dedup passes)"
+        )
+    staging_total, bad_configs = con.execute(
+        """
+        SELECT COALESCE(SUM(staging), 0),
+               list(source_config ORDER BY source_config) FILTER (
+                   WHERE NOT (after_content_pass >= 0
+                              AND after_fact_id_pass >= after_content_pass
+                              AND staging >= after_fact_id_pass))
+        FROM stage_e_dedup_stats
+        """
+    ).fetchone()
+    if staging_total != pre:
+        failures.append(
+            f"stage_e_dedup_stats staging sums to {staging_total}, but "
+            f"fact_results_staging has {pre} rows"
+        )
+    if bad_configs:
+        failures.append(
+            "stage_e_dedup_stats boundaries are not nonnegative with staging "
+            ">= after_fact_id_pass >= after_content_pass for source_config(s) "
+            + ", ".join(repr(c) for c in bad_configs)
+        )
+    if failures:
+        raise StageEInvariantError(
+            "Stage E row-count conservation failed: " + "; ".join(failures)
+        )
+    return n_dropped_dedup, n_dropped_content_dedup
 
 
 def _apply_composite_partitions(
@@ -3861,6 +4075,38 @@ def ts_cast_sql(column_expr: str) -> str:
         f"TRY_CAST({column_expr} AS TIMESTAMP), "
         f"TRY_CAST(to_timestamp(TRY_CAST({column_expr} AS DOUBLE)) AS TIMESTAMP)"
         f")"
+    )
+
+
+# An ISO-8601 time followed by an explicit zone (`Z`, `+02:00`, `-0700`,
+# `+02`). A bare date's `-01` is not a zone: the time must come first.
+_ISO_WITH_ZONE_RE = r"\d{2}:\d{2}(:\d{2}(\.\d+)?)?\s*([Zz]|[+-]\d{2}(:?\d{2})?)$"
+
+
+def retrieved_instant_sql(column_expr: str) -> str:
+    """Return the SQL expression that parses a `retrieved_timestamp` string
+    to a naive UTC TIMESTAMP for ordering. Three shapes are accepted and
+    anything else is NULL:
+
+    - A number is Unix epoch seconds, accepted only between 1e9 and 4e9
+      (2001 to 2096): a bare `20260501` or epoch milliseconds would
+      otherwise parse as a date in 1970 or the year 58305.
+    - An ISO-8601 string with an explicit zone goes through TIMESTAMPTZ and
+      `epoch_us`, so `+02:00` shifts the instant instead of being dropped.
+    - An ISO-8601 string without a zone is read as UTC by the plain cast.
+
+    No branch reads the session time zone, so two rows order the same on
+    every machine.
+    """
+    as_double = f"TRY_CAST({column_expr} AS DOUBLE)"
+    return (
+        f"CASE "
+        f"WHEN {as_double} IS NOT NULL THEN "
+        f"CASE WHEN {as_double} BETWEEN 1e9 AND 4e9 "
+        f"THEN make_timestamp(CAST({as_double} * 1000000 AS BIGINT)) END "
+        f"WHEN regexp_matches({column_expr}, '{_ISO_WITH_ZONE_RE}') "
+        f"THEN make_timestamp(epoch_us(TRY_CAST({column_expr} AS TIMESTAMPTZ))) "
+        f"ELSE TRY_CAST({column_expr} AS TIMESTAMP) END"
     )
 
 

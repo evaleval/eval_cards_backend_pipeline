@@ -117,7 +117,7 @@ def compute_completeness_by_benchmark_py(
 def variant_parent_id_py(parents_json: str | None) -> str | None:
     """Extract the first `variant` edge id from the registry's
     `canonical_models.parents` column. Returns the in-family parent id
-    or NULL when no variant edge is present. 
+    or NULL when no variant edge is present.
     Tolerant of NULL / empty / malformed input."""
     from eval_entity_resolver.canonical_store import (
         decode_parents,
@@ -588,10 +588,7 @@ def derive_metric_meta_udf_body(
     )
 
 
-import json as _json
-import re as _re
-
-_PARAM_RE = _re.compile(r"\b(\d+(?:\.\d+)?)\s*([tmb])\b", _re.IGNORECASE)
+_PARAM_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s*([tmb])\b", re.IGNORECASE)
 _PARAM_MULTIPLIERS = {"t": 1000, "b": 1, "m": 0.001}
 
 
@@ -609,12 +606,12 @@ def extract_params_billions_py(model_name: str | None) -> float | None:
 
 
 _BENCHMARK_PRIORITY_TIERS: tuple[tuple[int, re.Pattern[str]], ...] = (
-    (10, _re.compile(r"\b(?:swe[\-_]?bench|terminal[\-_]?bench|tau[\-_]?bench|agent|browsecomp)\b", _re.I)),
-    (9,  _re.compile(r"\b(?:gpqa|mmlu[\-_]?pro|mmlu|bbh|ifeval|math|aime|gsm8k|minerva)\b", _re.I)),
-    (8,  _re.compile(r"\b(?:humaneval|livecodebench|mbpp|codecontests|apps)\b", _re.I)),
-    (7,  _re.compile(r"\b(?:mmmu|seed[\-_]?bench|vision|vqa|multimodal)\b", _re.I)),
-    (6,  _re.compile(r"\b(?:mt[\-_]?bench|arena[\-_]?hard|alpacaeval|reward[\-_]?bench|truthfulqa)\b", _re.I)),
-    (5,  _re.compile(r"\b(?:fairness|bias|safety|toxic|harmful|robust|privacy)\b", _re.I)),
+    (10, re.compile(r"\b(?:swe[\-_]?bench|terminal[\-_]?bench|tau[\-_]?bench|agent|browsecomp)\b", re.I)),
+    (9,  re.compile(r"\b(?:gpqa|mmlu[\-_]?pro|mmlu|bbh|ifeval|math|aime|gsm8k|minerva)\b", re.I)),
+    (8,  re.compile(r"\b(?:humaneval|livecodebench|mbpp|codecontests|apps)\b", re.I)),
+    (7,  re.compile(r"\b(?:mmmu|seed[\-_]?bench|vision|vqa|multimodal)\b", re.I)),
+    (6,  re.compile(r"\b(?:mt[\-_]?bench|arena[\-_]?hard|alpacaeval|reward[\-_]?bench|truthfulqa)\b", re.I)),
+    (5,  re.compile(r"\b(?:fairness|bias|safety|toxic|harmful|robust|privacy)\b", re.I)),
 )
 
 
@@ -635,7 +632,7 @@ _known_issues_index: dict[str, str] | None = None
 
 
 def _normalise_ki(name: str) -> str:
-    return _re.sub(r"[^a-z0-9]", "", name.lower())
+    return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
 def _ensure_known_issues() -> dict[str, str]:
@@ -645,10 +642,10 @@ def _ensure_known_issues() -> dict[str, str]:
     _known_issues_index = {}
     if not _KNOWN_ISSUES_PATH.exists():
         return _known_issues_index
-    raw = _json.loads(_KNOWN_ISSUES_PATH.read_text(encoding="utf-8"))
+    raw = json.loads(_KNOWN_ISSUES_PATH.read_text(encoding="utf-8"))
     issues = raw.get("issues", {})
     for key, entries in issues.items():
-        _known_issues_index[_normalise_ki(key)] = _json.dumps(entries)
+        _known_issues_index[_normalise_ki(key)] = json.dumps(entries)
     return _known_issues_index
 
 

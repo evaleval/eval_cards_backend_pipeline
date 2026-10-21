@@ -30,6 +30,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/eval_card_backend"]
 
+[tool.ruff]
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.uv.sources]
 eval-entity-resolver = { path = "../eval-entity-registry/packages/eval-entity-resolver", editable = true }
 
@@ -43,4 +50,8 @@ dev = [
     "jupyterlab>=4",
     # pandas is dev-only (e2e fixtures + ad-hoc inspection); not in the hot path.
     "pandas>=2",
+]
+# Hook runner only; a bake or a test run does not need it.
+lint = [
+    "pre-commit>=4",
 ]

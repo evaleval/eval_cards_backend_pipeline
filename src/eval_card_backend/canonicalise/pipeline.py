@@ -66,6 +66,7 @@ from eval_card_backend.sources import (
     eee,
     registry as registry_src,
 )
+from eval_card_backend.sources._revision_cache import is_hand_built
 
 log = logging.getLogger(__name__)
 
@@ -115,22 +116,34 @@ def _upstream_pin(
     pinned: str | None,
     cached: str | None,
     hf_token: str | None,
+    hand_built: bool = False,
 ) -> dict:
     """One `upstream_pins` entry, stamped at the revision the run consumed.
 
     `revision_source` says how that revision was established:
       - ``"pin"``        an explicit ``*_REVISION`` env pin, which the
                          download honoured.
+      - ``"hand-built"`` pinned, but the directory holds a hand-built tree
+                         which the loader keeps as is. No revision was read,
+                         so ``sha`` is null and the Hub is not asked: the
+                         pin names what the run was asked to read, not what
+                         it read.
       - ``"local_cache"`` unpinned: the revision the on-disk snapshot was
                          downloaded at, read back from the cache's own
                          metadata. Unpinned runs reuse the cache without
                          downloading, so this — not HEAD — is what was read.
-      - ``"unknown"``    unpinned and the cache carries no revision record
-                         (a hand-built fixture tree). We stamp ``sha: null``:
-                         a HEAD lookup here would name a revision the run
-                         never read, which is what this field exists to
-                         rule out.
+      - ``"unknown"``    unpinned and no revision is known: the cache carries
+                         no record, or the tree is hand-built (any record a
+                         stray download left in it does not describe what
+                         was read). We stamp ``sha: null``: a HEAD lookup
+                         here would name a revision the run never read,
+                         which is what this field exists to rule out.
     """
+    if hand_built:
+        return {
+            "repo_id": repo_id, "sha": None, "last_modified": None,
+            "revision_source": "hand-built" if pinned else "unknown",
+        }
     revision = pinned or cached
     source = "pin" if pinned else ("local_cache" if cached else "unknown")
     if revision is None:
@@ -637,11 +650,9 @@ def run(
                 "results_exploded missing; synthesised_id_collisions = None"
             )
     # When Stage E was restored from cache rather than re-run, recover row
-    # counts from the cached tables. Sentinel and both dedup breakdowns are
-    # re-derived: the sentinel predicate and fact-id survivor count are pure
-    # SQL against `fact_results_staging`; the remaining pre/post delta is the
-    # content dedup. This keeps `snapshot_meta.row_counts` accurate across
-    # `--from-stage F+` reruns instead of zeroing out real signals.
+    # counts from the cached tables (see `_recover_stage_e_stats`) so
+    # `snapshot_meta.row_counts` stays accurate across `--from-stage F+`
+    # reruns instead of zeroing out real signals.
     if stage_e_stats is None:
         stage_e_stats = _recover_stage_e_stats(con)
     if not chosen:
@@ -665,6 +676,7 @@ def run(
         registry_root=registry_root,
         cards_root=cards_root,
         private_revision=private_revision,
+        n_fact_results=_table_count(con, "fact_results"),
         collection_adapter_accounting=collection_adapter_accounting,
     )
     # Same non-finite wire form as every other sidecar (nothing in the meta
@@ -754,11 +766,14 @@ def _build_snapshot_meta(
     registry_root: Path | None,
     cards_root: Path | None,
     private_revision: str | None = None,
+    n_fact_results: int | None = None,
     collection_adapter_accounting: dict[str, dict] | None = None,
 ) -> dict:
     """Assemble `snapshot_meta.json` payload. Pure data: doesn't touch
     DuckDB. The HF-revision lookups talk to HF's HTTP API and are best-
-    effort (see `_hf_revision`).
+    effort (see `_hf_revision`). `n_fact_results` is the materialised
+    `fact_results` row count, checked against the Stage E dedup stats;
+    None falls back to Stage E's own survivor count.
     """
     tables: list[str] = [
         "fact_results.parquet",
@@ -794,18 +809,21 @@ def _build_snapshot_meta(
         pinned=settings.eee_revision,
         cached=eee.cached_revision(eee_root),
         hf_token=settings.hf_token,
+        hand_built=eee_root is not None and eee.is_hand_built(eee_root),
     )
     registry_pin = _upstream_pin(
         ENTITY_REGISTRY_DATASET_REPO,
         pinned=settings.registry_revision,
         cached=registry_src.cached_revision(registry_root),
         hf_token=settings.hf_token,
+        hand_built=registry_root is not None and is_hand_built(registry_root),
     )
     cards_pin = _upstream_pin(
         BENCHMARK_METADATA_DATASET_REPO,
         pinned=settings.benchmark_metadata_revision,
         cached=benchmark_cards.cached_revision(cards_root),
         hf_token=settings.hf_token,
+        hand_built=cards_root is not None and is_hand_built(cards_root),
     )
 
     upstream_pins = {
@@ -819,8 +837,26 @@ def _build_snapshot_meta(
             pinned=settings.eee_private_revision,
             cached=private_revision,
             hf_token=settings.hf_token,
+            # ensure_private_collections returns no commit only for a
+            # hand-built dir, which it keeps as is.
+            hand_built=private_revision is None,
         )
 
+    row_counts = {
+        "eee_records": n_eee,
+        "exploded_results": n_exploded,
+        "fact_results_pre_drop": stage_e_stats.pre,
+        "fact_results": stage_e_stats.post,
+        "dropped_rows_no_score": stage_e_stats.n_dropped_no_score,
+        "dropped_rows_sentinel": stage_e_stats.n_dropped_sentinel,
+        "dropped_rows_dedup": stage_e_stats.n_dropped_dedup,
+        "dropped_rows_content_dedup": stage_e_stats.n_dropped_content_dedup,
+        "dropped_eee_records_stage_a": sum(eee._drop_counter.values()),
+        "cards": n_cards,
+        "comparability_groups_metric_unit_inconsistent": n_unit_inconsistent,
+        "synthesised_id_collisions": n_synth_collisions,
+    }
+    dedup_totals = stages.dedup_by_config_totals(stage_e_stats.dedup_by_config)
     return {
         "snapshot_id": snapshot_id,
         "generated_at": _make_snapshot_id(),
@@ -836,24 +872,34 @@ def _build_snapshot_meta(
         "collection_adapter_accounting": collection_adapter_accounting or {},
         "tables": tables,
         "sidecars": sidecars,
-        "row_counts": {
-            "eee_records": n_eee,
-            "exploded_results": n_exploded,
-            "fact_results_pre_drop": stage_e_stats.pre,
-            "fact_results": stage_e_stats.post,
-            "dropped_rows_no_score": stage_e_stats.n_dropped_no_score,
-            "dropped_rows_sentinel": stage_e_stats.n_dropped_sentinel,
-            "dropped_rows_dedup": stage_e_stats.n_dropped_dedup,
-            "dropped_rows_content_dedup": (
-                stage_e_stats.n_dropped_content_dedup
-            ),
-            "dropped_eee_records_stage_a": sum(eee._drop_counter.values()),
-            "cards": n_cards,
-            "comparability_groups_metric_unit_inconsistent": n_unit_inconsistent,
-            "synthesised_id_collisions": n_synth_collisions,
-        },
+        "row_counts": row_counts,
+        "dedup_by_config": stage_e_stats.dedup_by_config,
+        "dedup_by_config_totals": dedup_totals,
+        "dedup_by_config_consistent": _dedup_by_config_consistent(
+            n_fact_results if n_fact_results is not None else stage_e_stats.post,
+            dedup_totals,
+        ),
         "stage_a_drops": eee.drop_breakdown(),
     }
+
+
+def _dedup_by_config_consistent(
+    n_fact_results: int, totals: dict[str, int] | None,
+) -> bool | None:
+    """Whether the rows actually materialised in `fact_results` match the
+    content-pass survivors summed over `stage_e_dedup_stats`; None when the
+    per-config breakdown is unknown. The two are counted independently and
+    must agree exactly, so a mismatch (corrupt output or a cache from
+    another generation) stops the snapshot before it is described."""
+    if totals is None:
+        return None
+    if n_fact_results != totals["after_content_pass"]:
+        raise stages.StageEInvariantError(
+            f"fact_results has {n_fact_results} rows but stage_e_dedup_stats "
+            f"after_content_pass sums to {totals['after_content_pass']}; the "
+            f"materialised tables and the Stage E stats disagree"
+        )
+    return True
 
 
 def _collection_adapter_accounting(con) -> dict[str, dict]:
@@ -931,8 +977,8 @@ def _connect_duckdb() -> tuple[duckdb.DuckDBPyConnection, Path]:
     """Open a file-backed DuckDB in a private temp dir so the buffer manager
     can page tables out under `memory_limit` instead of growing until the
     host kills the process. `CANONICALISE_MEMORY_LIMIT` (e.g. `10GB`) sets
-    the limit; unset leaves DuckDB's default. The dir is removed by
-    `_close_duckdb`."""
+    the limit and `CANONICALISE_DUCKDB_THREADS` the worker count; unset
+    leaves DuckDB's defaults. The dir is removed by `_close_duckdb`."""
     import tempfile
 
     db_dir = Path(tempfile.mkdtemp(prefix="canonicalise-duckdb-"))
@@ -941,6 +987,9 @@ def _connect_duckdb() -> tuple[duckdb.DuckDBPyConnection, Path]:
     limit = os.environ.get("CANONICALISE_MEMORY_LIMIT")
     if limit:
         con.execute(f"SET memory_limit = '{limit}'")
+    threads = os.environ.get("CANONICALISE_DUCKDB_THREADS")
+    if threads:
+        con.execute(f"SET threads = {int(threads)}")
     log.info(
         "duckdb: file-backed at %s, memory_limit=%s, threads=%s",
         db_dir,
@@ -991,41 +1040,34 @@ def _configs_from_eee_raw(con) -> list[str]:
 
 def _recover_stage_e_stats(con) -> "stages.StageEStats":
     """Row counts for `snapshot_meta.row_counts` when Stage E was restored
-    from cache rather than run. Sentinel and fact-id survivor counts are
-    pure SQL against `fact_results_staging`; the remaining pre/post delta
-    is the content dedup."""
+    from cache rather than run. No-score and sentinel counts are pure SQL
+    against `fact_results_staging`; both dedup drops come from the cached
+    `stage_e_dedup_stats`, the same table a fresh run reads. Without it the
+    dedup breakdowns are unknown and stay None or zero rather than being
+    re-derived by another formula."""
     pre_count = _table_count(con, "fact_results_staging")
     post_count = _table_count(con, "fact_results_signaled")
+    dedup_by_config = stages.read_stage_e_dedup_stats(con)
+    totals = stages.dedup_by_config_totals(dedup_by_config)
     n_no_score = None
     n_sentinel = None
     n_dedup = None
     n_content_dedup = None
     if pre_count is not None:
-        try:
-            n_no_score = con.execute(
-                "SELECT count(*) FROM fact_results_staging WHERE score IS NULL"
-            ).fetchone()[0]
-            n_sentinel = con.execute(
-                f"SELECT count(*) FROM fact_results_staging "
-                f"WHERE score IS NOT NULL "
-                f"AND ({stages._SENTINEL_DROP_PREDICATE})"
-            ).fetchone()[0]
-            if post_count is not None:
-                pre_dedup = pre_count - n_no_score - n_sentinel
-                fact_id_survivors = con.execute(
-                    f"""
-                    SELECT COUNT(DISTINCT fact_id)
-                         + COUNT(*) FILTER (WHERE fact_id IS NULL)
-                    FROM fact_results_staging
-                    WHERE score IS NOT NULL
-                      AND NOT ({stages._SENTINEL_DROP_PREDICATE})
-                    """
-                ).fetchone()[0]
-                n_dedup = max(0, pre_dedup - fact_id_survivors)
-                n_content_dedup = max(0, fact_id_survivors - post_count)
-        except duckdb.CatalogException:
-            log.warning(
-                "fact_results_staging missing; Stage E breakdowns = None"
+        n_no_score = con.execute(
+            "SELECT count(*) FROM fact_results_staging WHERE score IS NULL"
+        ).fetchone()[0]
+        n_sentinel = con.execute(
+            f"SELECT count(*) FROM fact_results_staging "
+            f"WHERE score IS NOT NULL "
+            f"AND ({stages._SENTINEL_DROP_PREDICATE})"
+        ).fetchone()[0]
+        if totals is not None:
+            n_dedup = (
+                pre_count - n_no_score - n_sentinel - totals["after_fact_id_pass"]
+            )
+            n_content_dedup = (
+                totals["after_fact_id_pass"] - totals["after_content_pass"]
             )
     return stages.StageEStats(
         pre=pre_count if pre_count is not None else 0,
@@ -1036,6 +1078,7 @@ def _recover_stage_e_stats(con) -> "stages.StageEStats":
             n_content_dedup if n_content_dedup is not None else 0
         ),
         post=post_count if post_count is not None else 0,
+        dedup_by_config=dedup_by_config,
     )
 
 

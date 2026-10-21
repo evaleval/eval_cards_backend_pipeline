@@ -7,7 +7,7 @@ PURPOSE
     (`signals/comparability.py:compute_threshold`) and `score_scale_anomaly`.
 
 WHY HOTFIX
-    Both upstream sources of this metadata are partially populated:
+    Both sources of this metadata are partially populated:
       - The registry's `canonical_metrics` table only carries `score_type`,
         `min_score`, `max_score`, and `lower_is_better` today; it has no
         `metric_kind` or `metric_unit`.
@@ -23,9 +23,9 @@ WHY HOTFIX
     (always-false silently).
 
 RETIREMENT
-    When eval-entity-registry's `canonical_metrics` gains real `metric_kind`
-    / `metric_unit` columns AND coverage is verified against EEE's actual
-    vocabulary, retire by:
+    This module retires when eval-entity-registry's `canonical_metrics` gains real
+    `metric_kind` / `metric_unit` columns AND coverage is verified against
+    EEE's actual vocabulary. Retire by:
       1. Stage A loads the new columns directly from canonical_metrics.
       2. Stage D reads metric_kind / metric_unit / min / max / lower
          straight from the JOINed canonical_metrics row.
@@ -74,6 +74,7 @@ _provenance_counter: Counter[tuple[str, str]] = Counter()
 
 
 def reset_provenance_counter() -> None:
+    """Clear the per-run provenance counts before a bake."""
     _provenance_counter.clear()
 
 
@@ -231,6 +232,13 @@ def derive_metric_meta(
     (`binary | continuous | levels`), passed alongside the rest so the
     proportion-shape heuristic can fire when EEE records omit score_type
     but the registry knows it.
+
+    TODO(upstream): the registry's `canonical_metrics` carries no
+    `metric_kind` / `metric_unit`, and most EEE records leave both NULL, so
+    the heuristic layers below fill them.
+    Remove when: `canonical_metrics` gains populated `metric_kind` /
+    `metric_unit` columns and Stage D reads them from the JOINed row (see
+    RETIREMENT in the module docstring).
     """
     if not isinstance(eee_metric_config, dict):
         eee_metric_config = {}

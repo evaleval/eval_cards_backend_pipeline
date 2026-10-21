@@ -36,6 +36,7 @@ from huggingface_hub import snapshot_download
 from eval_card_backend.config import ENTITY_REGISTRY_DATASET_REPO
 from eval_card_backend.sources._revision_cache import (
     cache_revision_ok as _cache_revision_ok,
+    hand_built_snapshot as _hand_built_snapshot,
     cached_revision,  # re-exported: the revision this cache actually holds
     write_cache_revision as _write_cache_revision,
 )
@@ -128,10 +129,13 @@ def ensure_snapshot(
     revision: str | None = None,
 ) -> Path:
     target = Path(local_dir).resolve()
+    if _hand_built_snapshot(
+        target, revision, "registry", _has_registry_data(target), log, force_refresh,
+    ):
+        return target
     if force_refresh and target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
-
     if _has_registry_data(target) and _cache_revision_ok(target, revision):
         return target
     if _has_registry_data(target):

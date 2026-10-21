@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 # whenever a stage's cached output gains, loses or re-types a column: a
 # `--from-stage` run against an older cache would otherwise restore the old
 # shape and fail deep inside a later stage's SQL with a binder error.
-CACHE_SCHEMA_VERSION = 15
+CACHE_SCHEMA_VERSION = 17
 
 _SCHEMA_MARKER = "_cache_schema.json"
 # Which EEE sources the cached tables were built from (private-source toggle
@@ -65,7 +65,7 @@ STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     ),
     "C": ("results_resolved",),
     "D": ("fact_results_staging", "collection_keys"),
-    "E": ("fact_results_signaled",),
+    "E": ("fact_results_signaled", "stage_e_dedup_stats"),
     "F": ("fact_results",),
     "G": ("benchmarks", "composites", "families", "models"),
     "I": (),  # Stage I writes the warehouse parquets; nothing in-memory to cache.

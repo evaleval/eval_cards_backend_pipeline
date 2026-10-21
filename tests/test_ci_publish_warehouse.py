@@ -192,3 +192,68 @@ def test_publish_without_token_is_refused_before_any_request(run):
     assert rc != 0
     assert api.downloads == []
     assert api.uploads == []
+
+
+@pytest.mark.parametrize("published", ["{not json", "[]", json.dumps({"configs": []})])
+def test_check_only_fails_on_unreadable_published_meta(run, capsys, published):
+    """`--check-only` is the dry run of the shrink guard, and a published
+    file it cannot read is a failed comparison, not a comparison with
+    nothing."""
+    rc, api = run(_meta(), published, argv=["--check-only"], token=None)
+    assert rc != 0
+    assert api.uploads == []
+    err = capsys.readouterr().err
+    assert "Shrink guard failed" in err
+    assert "Nothing was uploaded" in err
+
+
+def test_check_only_fails_on_a_missing_published_meta(run, capsys):
+    rc, api = run(_meta(), EntryNotFoundError("404"), argv=["--check-only"], token=None)
+    assert rc != 0
+    assert api.uploads == []
+    assert "does not exist" in capsys.readouterr().err
+
+
+def _bare(tmp_path, monkeypatch, published=None):
+    """Module, fake api and env for a run that lays out `warehouse/` itself."""
+    mod = _load_module()
+    api = FakeApi(published if published is not None else _meta(), tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HF_TARGET_DATASET", "org/target")
+    monkeypatch.setenv("HF_TOKEN", "tok")
+    monkeypatch.delenv("ALLOW_SNAPSHOT_SHRINK", raising=False)
+    monkeypatch.setattr(mod, "HfApi", lambda token=None: api)
+    return mod, api
+
+
+def test_guard_fails_on_an_unreadable_new_meta(tmp_path, monkeypatch, capsys):
+    """The local side can be unreadable too: a run whose snapshot_meta.json
+    is garbage has nothing to compare and must not publish."""
+    mod, api = _bare(tmp_path, monkeypatch)
+    snap = tmp_path / "warehouse" / SNAPSHOT_ID
+    snap.mkdir(parents=True)
+    (snap / "snapshot_meta.json").write_text("{not json")
+    rc = mod.main([])
+    assert rc != 0
+    assert api.uploads == []
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_guard_fails_on_a_snapshot_without_meta(tmp_path, monkeypatch, capsys):
+    mod, api = _bare(tmp_path, monkeypatch)
+    (tmp_path / "warehouse" / SNAPSHOT_ID).mkdir(parents=True)
+    rc = mod.main([])
+    assert rc != 0
+    assert api.uploads == []
+    assert "cannot read" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [[], ["--check-only"]])
+def test_publish_fails_on_an_empty_warehouse(tmp_path, monkeypatch, capsys, argv):
+    """`warehouse/` with no snapshot directory is a run that produced nothing."""
+    mod, api = _bare(tmp_path, monkeypatch)
+    (tmp_path / "warehouse").mkdir()
+    rc = mod.main(argv)
+    assert rc != 0
+    assert api.downloads == [] and api.uploads == []
+    assert "no snapshot subdirectories" in capsys.readouterr().err

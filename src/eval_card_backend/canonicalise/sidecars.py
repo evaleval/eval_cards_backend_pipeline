@@ -1549,10 +1549,9 @@ def write_hierarchy(con, out_dir: Path, snapshot_meta: dict) -> Path:
     hierarchy_hotfixes.dedup_vals_ai_aliases(family_records)
     hierarchy_hotfixes.group_same_bench_across_sources(family_records, curated_ids)
 
-    # Systematic dedup (permanent pipeline logic). Both passes are
-    # score-gated, so only true echoes
-    # (matching scores) are collapsed; independent cross-source
-    # evaluations of the same benchmark are preserved.
+    # Systematic dedup (permanent pipeline logic). Both passes collapse a pair only
+    # when scores agree within 1e-9 on at least 3 shared models; the first also when
+    # the two share an evaluation_id. Independent evaluations are preserved.
     hierarchy_dedup.consolidate_dedicated_home_benchmarks(family_records, con)
     hierarchy_dedup.dedup_aggregator_benchmarks(family_records, con)
 
@@ -1672,7 +1671,6 @@ def _hierarchy_families(con, composites: list[dict]) -> list[dict]:
     DuckDB connection (Stage A loaded them via taxonomy.py). Composites
     without a curated family_id become singleton families.
     """
-    import json as _json
     from collections import defaultdict
 
     # --- Pull family / composite curation from registry tables ---
@@ -2071,8 +2069,8 @@ def _merge_family_tags(family_tags: list, benchmarks: list[dict]) -> dict:
         bench_tags = b.get("tags") or {}
         for d in bench_tags.get("domains") or []:
             domains.add(d)
-        for l in bench_tags.get("languages") or []:
-            languages.add(l)
+        for lang in bench_tags.get("languages") or []:
+            languages.add(lang)
         for t in bench_tags.get("tasks") or []:
             tasks.add(t)
     return {

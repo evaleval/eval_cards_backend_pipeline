@@ -201,7 +201,61 @@ uv run pytest
 ```
 
 Tests use hand-built fixtures under `tests/fixtures/` and don't require
-HF credentials.
+HF credentials. Each fixture directory a loader reads carries an empty
+`.hand_built` sentinel, which tells the loaders the directory is the corpus
+itself (never wiped, never fetched into) even when a stray download has
+left its markers behind; `tests/test_fixtures_offline.py` checks every
+fixture directory has one. A refresh flag aimed at such a directory raises
+instead of deleting it, and the suite strips every refresh and pin variable
+from the environment.
+
+## Development checks
+
+Three checks run as pre-commit hooks: `ruff` (lint only, no rewrites), the
+pre-commit-hooks file checks (YAML and TOML parse, no merge-conflict
+markers, no large files, no trailing whitespace) and `scripts/check_code_hygiene.py`, which rejects
+added comments that point at a spec section, a phase, a working session, or
+describe what the code did before. A line containing `hygiene: ok` is
+skipped by every rule; use it for a false positive. The hygiene hook reads
+the staged lines, so `pre-commit run --all-files` runs ruff and the file
+checks over the whole tree but the hygiene gate only over what is staged;
+`scripts/check_code_hygiene.py --diff <range>` checks a commit range.
+
+`pre-commit` lives in the `lint` dependency group, which a plain `uv sync`
+leaves out and removes again; `uv run --group lint` installs the group on
+demand, so run pre-commit through it. Install the hooks once per clone. An
+existing clone with `core.hooksPath=hooks` set first unsets it, because
+`pre-commit install` refuses while it is set:
+
+```bash
+git config --unset core.hooksPath      # the old hooks/ dir held the git-lfs hooks and the hygiene hook
+git lfs install                        # reinstalls the lfs hooks into .git/hooks
+uv run --group lint pre-commit install # adds the pre-commit hook beside them
+```
+
+A fresh clone needs only the last two lines. If `pre-commit install` still
+refuses, the setting comes from another config file, which a repository-local
+unset leaves in place. Find it with:
+
+```bash
+git config --show-scope --show-origin core.hooksPath
+```
+
+A `global` (or `system`) scope means `~/.gitconfig` (or the system config)
+sets it for every repository on the machine. Remove it there with
+`git config --global --unset core.hooksPath` (`--system` for the system
+file) once no other repository relies on that hooks directory; pre-commit
+cannot install while any scope sets it.
+
+The lfs hooks (`pre-push`,
+`post-checkout`, `post-commit`, `post-merge`) and pre-commit's `pre-commit`
+hook are separate files in `.git/hooks`, so either install can be rerun
+without touching the other.
+
+CI (`.github/workflows/ci.yml`) runs the same hooks on every pull request
+and push to `main`, then the hygiene gate over the added lines of the pull
+request (`scripts/check_code_hygiene.py --diff origin/<base>...HEAD`) or of
+the push (`--diff <before>...<sha>`), and the test suite.
 
 ## Continuous integration
 

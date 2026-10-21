@@ -19,18 +19,15 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixture_corpus import UPSTREAM_ENV_VARS
+
 # Module- and session-scoped pipeline fixtures call Settings.from_env() before
-# the per-test guard below runs, so the upstream revision pins CI exports must
-# be gone before any fixture is built. Otherwise ensure_snapshot sees a pinned
-# revision, treats the fixture dir as a stale cache and downloads the real
-# registry over it. The private-source settings go too: CI turns the private
+# the per-test guard below runs, so the refresh flags and upstream revision
+# pins a shell or CI exports must be gone before any fixture is built.
+# Otherwise ensure_snapshot refreshes a fixture dir, or reads it as a stale
+# cache under a pin. The private-source settings go too: CI turns the private
 # EEE source on, and a test that wants it sets them itself.
-_PINNED_ENV_VARS = (
-    "EEE_REVISION", "ENTITY_REGISTRY_REVISION", "BENCHMARK_METADATA_REVISION",
-    "EEE_INCLUDE_PRIVATE", "EEE_PRIVATE_ALLOW_ZERO_MEMBERS",
-    "EEE_PRIVATE_REVISION",
-    "EEE_PRIVATE_LOCAL_DATASET_DIR",
-)
+_PINNED_ENV_VARS = UPSTREAM_ENV_VARS + ("EEE_PRIVATE_LOCAL_DATASET_DIR",)
 for _rev_var in _PINNED_ENV_VARS:
     os.environ.pop(_rev_var, None)
 
@@ -73,10 +70,20 @@ def _set_taxonomy_seed_env(monkeypatch, _taxonomy_seed_stub, _collections_stub) 
         "COLLECTIONS_VENDOR_DIR",
         str(_collections_stub / "vendor_collections"),
     )
-    # Tests run against local fixtures and must stay hermetic. CI pins the upstream
-    # HF dataset revisions via env vars; if those leak into Settings.from_env(),
-    # ensure_snapshot treats a fixture dir (which has no `.pinned_revision` marker)
-    # as a stale cache, wipes it, and downloads the real dataset — which hangs CI.
-    # Clear the pins so no test inherits them regardless of the ambient environment.
+    # Tests run against local fixtures and must stay hermetic: clear the refresh
+    # flags and pins so no test inherits them from the ambient environment.
     for _rev_var in _PINNED_ENV_VARS:
         monkeypatch.delenv(_rev_var, raising=False)
+
+
+@pytest.fixture(scope="session")
+def fixture_corpus_build(tmp_path_factory, _taxonomy_seed_stub, _collections_stub):
+    """One full pipeline run over `tests/fixtures/`, shared by the tests
+    that inspect a whole warehouse (see `tests/fixture_corpus.py`)."""
+    from tests.fixture_corpus import build_fixture_corpus
+
+    return build_fixture_corpus(
+        tmp_path_factory.mktemp("fixture_corpus"),
+        seed_dir=_taxonomy_seed_stub,
+        collections_dir=_collections_stub,
+    )

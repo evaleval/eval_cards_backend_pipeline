@@ -1,4 +1,5 @@
-"""Composite org-partition pass (notes/composite-partition-spec.md).
+"""Composite org-partition pass: a config whose surviving rows span more
+than one known org gets one composite page per org.
 
 Unit tests drive `stages._apply_composite_partitions` directly over
 hand-built `fact_results_signaled` / `composite_config_map` tables — the

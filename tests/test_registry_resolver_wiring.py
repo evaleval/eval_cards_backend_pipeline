@@ -1,6 +1,8 @@
 """Regression tests for the backend's complete registry resolver bundle."""
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 
@@ -94,3 +96,29 @@ def test_load_resolver_fails_closed_without_canonical_models(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="canonical_models"):
         registry.load_resolver(tmp_path)
+
+
+def _write_manifest(root, schema_version: str) -> None:
+    (root / "manifest.json").write_text(json.dumps({"schema_version": schema_version}))
+
+
+def test_assert_manifest_compatible_refuses_another_major(tmp_path):
+    expected = registry.EXPECTED_REGISTRY_SCHEMA_MAJOR
+    _write_manifest(tmp_path, f"registry.{expected + 1}.0")
+    with pytest.raises(registry.RegistrySchemaMismatch, match="major mismatch"):
+        registry.assert_manifest_compatible(tmp_path)
+    _write_manifest(tmp_path, f"registry.{expected - 1}.0")
+    with pytest.raises(registry.RegistrySchemaMismatch, match="major mismatch"):
+        registry.assert_manifest_compatible(tmp_path)
+
+
+def test_assert_manifest_compatible_accepts_any_minor_of_the_expected_major(tmp_path):
+    _write_manifest(tmp_path, f"registry.{registry.EXPECTED_REGISTRY_SCHEMA_MAJOR}.99")
+    registry.assert_manifest_compatible(tmp_path)
+
+
+@pytest.mark.parametrize("schema_version", ["3", "v3.0", None, 3])
+def test_assert_manifest_compatible_refuses_a_malformed_version(tmp_path, schema_version):
+    _write_manifest(tmp_path, schema_version)
+    with pytest.raises(registry.RegistrySchemaMismatch, match="malformed"):
+        registry.assert_manifest_compatible(tmp_path)

@@ -19,9 +19,8 @@ import textwrap
 import zipfile
 from pathlib import Path
 
+import duckdb
 import pytest
-
-duckdb = pytest.importorskip("duckdb")
 
 from eval_card_backend.canonicalise.stages import (
     stage_j_emit_view_parquets,

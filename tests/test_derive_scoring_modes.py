@@ -198,3 +198,54 @@ def test_sampling_does_not_depend_on_the_listing_order(rotation, monkeypatch):
 
     monkeypatch.setattr(script, "HfApi", _Api)
     assert script.sample_dumps(5, seed=7) == random.Random(7).sample(files, 5)
+
+
+def _printable(**kwargs):
+    """A derivation whose entries carry everything `main` prints."""
+    entries = {
+        b: dict(e, harness_tasks=f"leaderboard_{b}*", num_fewshot=0)
+        for b, e in ON_FILE.items()
+    }
+    return _derivation(entries=entries, **kwargs)
+
+
+def _run_main(monkeypatch, capsys, derivation, *args):
+    monkeypatch.setattr(script, "derive", lambda *a, **kw: derivation)
+    monkeypatch.setattr(sys, "argv", ["derive_scoring_modes.py", *args])
+    rc = script.main()
+    captured = capsys.readouterr()
+    return rc, captured.out, captured.err
+
+
+def test_check_fails_on_zero_dumps(monkeypatch, capsys):
+    """`--check` with a sample that read nothing exits non-zero and says why,
+    rather than printing agreement over an empty comparison."""
+    rc, out, err = _run_main(
+        monkeypatch, capsys, _derivation(entries={}, dumps_read=0), "--check",
+    )
+    assert rc == 1
+    assert "agrees with the dumps" not in out
+    assert "is NOT vouched for by this run" in err
+    assert "only 0 usable dump(s), below the floor of 10" in err
+
+
+def test_check_fails_on_a_sample_below_the_dump_floor(monkeypatch, capsys):
+    rc, _, err = _run_main(
+        monkeypatch, capsys,
+        _printable(dumps_read=4, contributing={b: 4 for b in ON_FILE}),
+        "--check",
+    )
+    assert rc == 1
+    assert "only 4 usable dump(s)" in err
+
+
+def test_report_mode_prints_the_objections_but_does_not_fail(monkeypatch, capsys):
+    rc, _, err = _run_main(monkeypatch, capsys, _derivation(entries={}, dumps_read=0))
+    assert rc == 0
+    assert "is NOT vouched for by this run" in err
+
+
+def test_check_passes_on_a_full_agreeing_sample(monkeypatch, capsys):
+    rc, out, _ = _run_main(monkeypatch, capsys, _printable(), "--check")
+    assert rc == 0
+    assert "agrees with the dumps" in out

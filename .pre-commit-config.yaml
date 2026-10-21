@@ -1,0 +1,24 @@
+# Run by hand with `uv run --group lint pre-commit run --all-files`; CI runs the same hooks.
+# The ruff rev tracks the ruff version in uv.lock (tests/test_ci_workflow.py checks).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-check
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: trailing-whitespace
+  - repo: local
+    hooks:
+      - id: code-hygiene
+        name: code hygiene (added lines)
+        entry: python3 scripts/check_code_hygiene.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]

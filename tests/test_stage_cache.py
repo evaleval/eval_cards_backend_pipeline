@@ -126,6 +126,22 @@ def test_restore_refuses_an_interrupted_write(tmp_path):
         cache.restore_through(con, "B")
 
 
+def test_restore_refuses_a_current_cache_without_the_stage_e_stats(tmp_path):
+    """The dedup stats are what snapshot_meta reports for a resumed run;
+    a current-version cache without them cannot be resumed past Stage E."""
+    con = duckdb.connect()
+    cache = StageCache(tmp_path, "snap")
+    _write_stages(con, cache, *STAGE_ORDER[:STAGE_ORDER.index("E") + 1])
+    (cache.dir / "stage_e_dedup_stats.parquet").unlink()
+
+    cache.assert_schema_current()
+    with pytest.raises(
+        RuntimeError,
+        match=r"missing E:stage_e_dedup_stats\. .*Re-run from Stage A",
+    ):
+        cache.restore_through(con, "E")
+
+
 # ---------------------------------------------------------------------------
 # Unit: cache schema fingerprint
 # ---------------------------------------------------------------------------
@@ -410,3 +426,39 @@ def test_no_cache_skips_writes(tmp_path, monkeypatch):
     # Cache root should not have been created (no writes)
     assert not (cache_root / "2026-04-30T00-00-00Z").exists() or \
         not any((cache_root / "2026-04-30T00-00-00Z").glob("*.parquet"))
+
+
+def _rewrite_cached_table(cache_root, snapshot, table, query):
+    """Replace one cached parquet with `query` evaluated over table `t`."""
+    path = StageCache(cache_root, snapshot)._path(table)
+    con = duckdb.connect()
+    con.execute(f"CREATE TABLE t AS SELECT * FROM read_parquet('{path}')")
+    con.execute(f"COPY ({query}) TO '{path}' (FORMAT PARQUET)")
+
+
+def test_from_stage_refuses_a_zero_row_composite_config_map(tmp_path, monkeypatch):
+    """A cache written while the taxonomy seed was missing holds an empty
+    map; restoring it would make every later stage fall back to kebab-case
+    composite slugs without a word."""
+    cache_root = tmp_path / "cache"
+    snapshot = "2026-04-30T00:00:00Z"
+    _run_full(tmp_path, monkeypatch, snapshot_id=snapshot, cache_root=cache_root, to_stage="D")
+    _rewrite_cached_table(
+        cache_root, snapshot, "composite_config_map", "SELECT * FROM t WHERE false",
+    )
+
+    with pytest.raises(RuntimeError, match="composite_config_map restored from cache .* has 0 rows"):
+        _run_full(tmp_path, monkeypatch, snapshot_id=snapshot, cache_root=cache_root, from_stage="E")
+
+
+def test_from_stage_refuses_a_composite_config_map_without_specificity(tmp_path, monkeypatch):
+    cache_root = tmp_path / "cache"
+    snapshot = "2026-04-30T00:00:00Z"
+    _run_full(tmp_path, monkeypatch, snapshot_id=snapshot, cache_root=cache_root, to_stage="D")
+    _rewrite_cached_table(
+        cache_root, snapshot, "composite_config_map",
+        "SELECT * EXCLUDE (specificity) FROM t",
+    )
+
+    with pytest.raises(RuntimeError, match="predates the composite-partition schema"):
+        _run_full(tmp_path, monkeypatch, snapshot_id=snapshot, cache_root=cache_root, from_stage="E")

@@ -12,7 +12,6 @@ import json
 from types import SimpleNamespace
 
 import duckdb
-import pytest
 
 from eval_card_backend.canonicalise import stages
 from eval_card_backend.sources.hf_openness import (

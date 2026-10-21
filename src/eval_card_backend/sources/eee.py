@@ -67,7 +67,10 @@ from eval_card_backend.config import EEE_DATASET_REPO, IGNORED_CONFIGS
 from eval_card_backend.sources._revision_cache import (
     cache_revision_ok as _cache_revision_ok,
     clear_cache_revision as _clear_cache_revision,
+    has_sentinel as _has_sentinel,
     hf_download_commit as _hf_download_commit,
+    log_hand_built as _log_hand_built,
+    refuse_hand_built_refresh as _refuse_hand_built_refresh,
     write_cache_revision as _write_cache_revision,
 )
 
@@ -173,9 +176,10 @@ def cached_revision(local_dir: Path | None) -> str | None:
 
     `ensure_snapshot` resolves HEAD to a concrete sha before listing and
     records it in the listing file, so this is truthful for unpinned runs
-    too. None for hand-built fixture trees, which have no listing file.
+    too. None for hand-built trees: a listing file in a tree with the
+    sentinel was left by a stray download and does not describe it.
     """
-    if local_dir is None:
+    if local_dir is None or _has_sentinel(Path(local_dir)):
         return None
     listing = Path(local_dir) / _LISTING_PATH
     if not listing.exists():
@@ -190,11 +194,11 @@ def _local_paths(local_dir: Path) -> list[str]:
     """Aggregate paths known to a local snapshot dir.
 
     The listing file written by `ensure_snapshot` is authoritative when
-    present; otherwise (e.g. hand-built test fixtures) fall back to
-    walking `data/` on disk.
+    present, unless the tree carries the sentinel; otherwise (e.g.
+    hand-built test fixtures) fall back to walking `data/` on disk.
     """
     listing = Path(local_dir) / _LISTING_PATH
-    if listing.exists():
+    if listing.exists() and not _has_sentinel(Path(local_dir)):
         return _read_listing_file(listing)["paths"]
     data_root = Path(local_dir) / "data"
     if not data_root.is_dir():
@@ -446,6 +450,17 @@ def _write_listing(
     )
 
 
+def is_hand_built(local_dir: Path) -> bool:
+    """True when `local_dir` is the corpus itself, not a download: it carries
+    the `.hand_built` sentinel, or holds a data/ tree without our listing
+    file (e.g. test fixtures). Its records were read as is, at no revision."""
+    target = Path(local_dir)
+    return _has_sentinel(target) or (
+        not (target / _LISTING_PATH).exists()
+        and any((target / "data").rglob("*.json"))
+    )
+
+
 def ensure_snapshot(
     local_dir: str,
     hf_token: str | None,
@@ -453,17 +468,15 @@ def ensure_snapshot(
     revision: str | None = None,
 ) -> Path:
     target = Path(local_dir).resolve()
+    # A hand-built tree IS the corpus, and a network fetch into the caller's
+    # directory would be wrong. force_refresh re-indexes a tree without the
+    # sentinel and is refused for one with it.
+    _refuse_hand_built_refresh(target, "EEE", force_refresh)
+    if not force_refresh and is_hand_built(target):
+        _log_hand_built(log, "EEE", target, revision)
+        return target
     target.mkdir(parents=True, exist_ok=True)
     listing_path = target / _LISTING_PATH
-
-    # A data/ tree on disk without our listing file is a hand-built cache
-    # (e.g. test fixtures): the tree IS the corpus, and a network fetch into
-    # the caller's directory would be wrong. force_refresh still re-indexes.
-    if not listing_path.exists() and not force_refresh and any(
-        (target / "data").rglob("*.json")
-    ):
-        log.info("EEE hand-built snapshot at %s — nothing to sync", target)
-        return target
 
     # Re-index when forced, when nothing is indexed yet, or when the pin no
     # longer matches the marker. A stale cache is not deleted: the listing is

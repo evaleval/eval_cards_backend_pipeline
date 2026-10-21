@@ -482,7 +482,8 @@ def run(token: str | None) -> dict:
 
 
 def write_outputs(result: dict, outdir: Path) -> None:
-    import csv, collections
+    import collections
+    import csv
 
     outdir.mkdir(exist_ok=True)
     (outdir / "author_org_map.json").write_text(json.dumps(result["author_org_map"], indent=2))

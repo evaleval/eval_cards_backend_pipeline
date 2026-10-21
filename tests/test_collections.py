@@ -1,4 +1,4 @@
-"""Collections (notes/collections-spec.md): collection_id derivation,
+"""Collections: collection_id derivation,
 vendored collection adapters, and the protocol-aware view policy.
 
 The adapter tests build a miniature protocol-varied "study" out of the e2e
@@ -1184,3 +1184,70 @@ def test_aggregate_only_synthetic_record_declares_its_provenance():
     assert se["method"] == "published"
     assert se["value"] == 0.033419
     assert records[0]["protocols"][0][1] == 535
+
+
+def test_assert_curated_keys_observed_fails_on_zero_observed_keys():
+    """No observed raw key at all (an empty corpus, or a run whose collection
+    step produced nothing) detaches every curated entry; it is the arm an
+    empty table would otherwise pass."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE collection_keys (raw_key VARCHAR, collection_id VARCHAR, "
+        "display_source_name VARCHAR, n_rows INTEGER)"
+    )
+    curated = {"my-study": {"merge_raw_keys": ["org-a/study-a"]}}
+    with pytest.raises(RuntimeError, match="my-study: no observed raw key"):
+        collections_src.assert_curated_keys_observed(con, curated, strict=True)
+
+
+def test_assert_cache_has_collections_fails_on_a_cache_that_registers_none(
+    tmp_path, monkeypatch,
+):
+    """A vendored extract on disk with no collection registered on the
+    connection is a cache written before the adapter ran."""
+    vendor = tmp_path / "vendor"
+    (vendor / "study").mkdir(parents=True)
+    (vendor / "study" / "manifest.json").write_text("{}")
+    monkeypatch.setenv("COLLECTIONS_VENDOR_DIR", str(vendor))
+
+    con = duckdb.connect()
+    with pytest.raises(RuntimeError, match="stale cache: 1 vendored collection"):
+        collections_src.assert_cache_has_collections(con)
+
+    # Registering the one collection the manifest describes satisfies it.
+    con.execute("INSERT INTO collection_study_slugs VALUES ('study', 'study')")
+    collections_src.assert_cache_has_collections(con)
+
+
+def test_assert_cache_has_collections_counts_private_extracts_too(tmp_path, monkeypatch):
+    monkeypatch.setenv("COLLECTIONS_VENDOR_DIR", str(tmp_path / "no_vendor"))
+    private = tmp_path / "private"
+    (private / "study").mkdir(parents=True)
+    (private / "study" / "manifest.json").write_text("{}")
+
+    con = duckdb.connect()
+    with pytest.raises(RuntimeError, match="restored cache registers only 0"):
+        collections_src.assert_cache_has_collections(con, private)
+
+
+def test_assert_no_member_leak_fails_on_an_empty_manifest():
+    """A registered study whose member list is empty claims every row that
+    carries its source_name slug."""
+    con = duckdb.connect()
+    collections_src.create_collection_tables(con)
+    con.execute(
+        "CREATE TABLE eee_raw AS SELECT "
+        "'minibench/model/a' AS evaluation_id, "
+        "{'source_name': 'Mini Study'} AS source_metadata"
+    )
+    con.execute(
+        "INSERT INTO collection_study_slugs VALUES ('test-study', ?)",
+        [collections_src.slug("Mini Study")],
+    )
+    with pytest.raises(RuntimeError, match="leak guard.*test-study: 1 "):
+        collections_src.assert_no_member_leak(con)
+
+    con.execute(
+        "INSERT INTO collection_member_ids VALUES ('minibench/model/a', 'test-study')"
+    )
+    collections_src.assert_no_member_leak(con)

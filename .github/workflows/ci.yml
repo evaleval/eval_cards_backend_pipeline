@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to a pull request supersedes the running check; a push to
+# main always gets its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Full history: the hygiene gate diffs against the base branch.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # The six steps below are sync.yml's dependency setup, copied verbatim;
+      # tests/test_ci_workflow.py fails if the two workflows drift apart.
+      - name: Resolve upstream revisions
+        id: revisions
+        env:
+          PINNED_EEE_REVISION: ${{ vars.EEE_REVISION }}
+          PINNED_ENTITY_REGISTRY_REVISION: ${{ vars.ENTITY_REGISTRY_REVISION }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: bash scripts/ci_resolve_revisions.sh
+
+      - name: Check out eval-entity-registry (for taxonomy seed YAMLs)
+        uses: actions/checkout@v6
+        with:
+          repository: evaleval/eval-entity-registry
+          ref: ${{ env.RESOLVER_REF }}
+          path: eval-entity-registry
+
+      - name: Check the registry checkout has the seed and the resolver
+        run: |
+          for dir in seed packages/eval-entity-resolver; do
+            if [ ! -d "eval-entity-registry/$dir" ]; then
+              echo "::error::eval-entity-registry@${RESOLVER_REF} has no $dir directory"
+              exit 1
+            fi
+          done
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Configure resolver dep for CI
+        run: python3 scripts/ci_install_resolver.py
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      # Lint tooling is its own dependency group so a bake can sync without it.
+      - name: Install lint tooling
+        run: uv sync --group lint
+
+      - name: Pre-commit hooks
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
+      - name: Code hygiene on the pull request's added lines
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/check_code_hygiene.py --diff origin/${{ github.base_ref || 'main' }}...HEAD
+
+      # `before` is all zeros when the push creates the branch; fall back to
+      # the last commit then.
+      - name: Code hygiene on the pushed commits' added lines
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            range="HEAD~1...HEAD"
+          else
+            range="$BEFORE...${{ github.sha }}"
+          fi
+          python3 scripts/check_code_hygiene.py --diff "$range"
+
+      - name: Run tests
+        env:
+          HF_HUB_OFFLINE: "1"
+        run: uv run pytest tests/ -q --timeout=120

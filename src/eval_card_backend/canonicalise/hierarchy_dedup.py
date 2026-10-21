@@ -21,6 +21,9 @@ from typing import Any
 PROTECTED_LEADERBOARD_FAMILIES: frozenset[str] = frozenset({"hf-open-llm-v2"})
 AGGREGATOR_FAMILY_KEYS: frozenset[str] = frozenset({"llm-stats"})
 
+# (family, benchmark, the list that benchmark sits in) so a drop can edit the list in place.
+BenchHandle = tuple[dict, dict, list[dict]]
+
 # Families explicitly defined in canonical_families (registry-curated)
 # are exempt from dedup removal. Set by write_hierarchy before dedup runs.
 _curated_family_keys: frozenset[str] = frozenset()
@@ -427,7 +430,7 @@ def dedup_aggregator_benchmarks(
     _TOLERANCE = 1e-9
     _MIN_SHARED = 3
 
-    all_handles: list[tuple[dict, dict, list[dict]]] = []
+    all_handles: list[BenchHandle] = []
     for fam in families:
         if fam.get("benchmarks"):
             for b in fam["benchmarks"]:

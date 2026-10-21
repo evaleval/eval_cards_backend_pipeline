@@ -8,7 +8,9 @@ Skipped if duckdb isn't installed (it's now a hard dep so this is just paranoia)
 """
 from __future__ import annotations
 
+import datetime
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -833,6 +835,184 @@ def test_pipeline_drops_score_sentinel_when_scale_excludes_it(tmp_path, monkeypa
     assert snap["row_counts"]["fact_results"] == 2
 
 
+def _assert_dedup_by_config_sums_to_row_counts(snap: dict) -> None:
+    """Per-config dedup counts must add up to the global row_counts."""
+    by_config = snap["dedup_by_config"]
+    totals = snap["dedup_by_config_totals"]
+    keys = {
+        "staging", "after_fact_id_pass", "after_content_pass",
+        "residual_timestamp_only", "residual_generation_args_only",
+        "residual_both",
+    }
+    assert set(snap["configs"]) == set(by_config)
+    for counts in by_config.values():
+        assert set(counts) == keys
+        assert all(isinstance(v, int) for v in counts.values())
+    assert totals == {
+        k: sum(c[k] for c in by_config.values()) for k in keys
+    }
+    rc = snap["row_counts"]
+    assert totals["staging"] == rc["fact_results_pre_drop"]
+    assert totals["after_fact_id_pass"] == (
+        rc["fact_results_pre_drop"] - rc["dropped_rows_no_score"]
+        - rc["dropped_rows_sentinel"] - rc["dropped_rows_dedup"]
+    )
+    assert totals["after_content_pass"] == rc["fact_results"]
+    assert snap["dedup_by_config_consistent"] is True
+
+
+def test_fixture_corpus_dedup_stats_add_up_on_both_paths(
+    fixture_corpus_build, tmp_path, monkeypatch,
+):
+    """The per-config counts come from the Stage E decision table, so they
+    add up to the global row counts on a fresh bake and again when Stage E
+    is restored from its cache for a `--from-stage F` rebuild."""
+    from eval_card_backend.canonicalise import pipeline
+    from eval_card_backend.config import Settings
+    from tests.fixture_corpus import FIXTURES
+
+    snap = json.loads((fixture_corpus_build.out_dir / "snapshot_meta.json").read_text())
+    _assert_dedup_by_config_sums_to_row_counts(snap)
+    assert snap["row_counts"]["fact_results"] > 0
+
+    # Rebuild from a copy of the stage cache so a failure here cannot
+    # disturb the session-shared bake.
+    cache_root = tmp_path / "cache"
+    shutil.copytree(fixture_corpus_build.cache_dir.parent, cache_root)
+    monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(FIXTURES / "eee"))
+    monkeypatch.setenv(
+        "BENCHMARK_METADATA_LOCAL_DIR", str(FIXTURES / "auto_benchmarkcards")
+    )
+    out_dir = pipeline.run(
+        Settings.from_env(),
+        snapshot_id=fixture_corpus_build.snapshot_id,
+        warehouse_dir=str(tmp_path / "warehouse"),
+        registry_local_dir=str(fixture_corpus_build.registry_dir),
+        cache_root=str(cache_root),
+        from_stage="F",
+    )
+    snap2 = json.loads((out_dir / "snapshot_meta.json").read_text())
+    _assert_dedup_by_config_sums_to_row_counts(snap2)
+    stage_e_keys = (
+        "fact_results_pre_drop", "fact_results", "dropped_rows_no_score",
+        "dropped_rows_sentinel", "dropped_rows_dedup", "dropped_rows_content_dedup",
+    )
+    for key in stage_e_keys:
+        assert snap2["row_counts"][key] == snap["row_counts"][key], key
+    for key in (
+        "dedup_by_config", "dedup_by_config_totals", "dedup_by_config_consistent",
+    ):
+        assert snap2[key] == snap[key], key
+
+
+def test_snapshot_meta_refuses_fact_rows_the_dedup_stats_do_not_account_for(
+    monkeypatch,
+):
+    from eval_card_backend.canonicalise import pipeline, stages
+    from eval_card_backend.config import Settings
+
+    monkeypatch.setattr(pipeline, "_hf_dataset_snapshot", lambda *a, **k: None)
+    by_config = {"minibench": {
+        "staging": 3, "after_fact_id_pass": 2, "after_content_pass": 1,
+        "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+        "residual_both": 0,
+    }}
+    stats = stages.StageEStats(
+        pre=3, n_dropped_no_score=0, n_dropped_sentinel=0,
+        n_dropped_dedup=1, n_dropped_content_dedup=1, post=1,
+        dedup_by_config=by_config,
+    )
+    kwargs = dict(
+        snapshot_id="2026-05-01T00:00:00Z", chosen=["minibench"],
+        settings=Settings.from_env(),
+        n_eee=0, n_cards=0, n_exploded=0, n_synth_collisions=0,
+        n_unit_inconsistent=0, view_layer_emitted=False,
+        eee_root=None, registry_root=None, cards_root=None,
+    )
+    meta = pipeline._build_snapshot_meta(stage_e_stats=stats, n_fact_results=1, **kwargs)
+    assert meta["dedup_by_config_consistent"] is True
+
+    # One more row in the materialised fact_results than the content pass kept.
+    with pytest.raises(
+        stages.StageEInvariantError,
+        match="fact_results has 2 rows but stage_e_dedup_stats "
+              "after_content_pass sums to 1",
+    ):
+        pipeline._build_snapshot_meta(stage_e_stats=stats, n_fact_results=2, **kwargs)
+
+    meta = pipeline._build_snapshot_meta(
+        stage_e_stats=stats._replace(dedup_by_config=None), n_fact_results=2,
+        **kwargs,
+    )
+    assert meta["dedup_by_config_consistent"] is None
+    assert meta["dedup_by_config_totals"] is None
+
+
+def test_observation_key_fields_are_pinned():
+    """Every field in the Stage E observation key decides what counts as one
+    observation; adding or dropping one changes which rows survive the
+    content pass, so the list changes only deliberately, here and there."""
+    from eval_card_backend.canonicalise import stages
+
+    assert stages._OBSERVATION_KEY_FIELDS == (
+        ("source_config", "source_config"),
+        ("reporting_org", "org_raw"),
+        ("evaluator_relationship", "evaluator_relationship"),
+        ("source_type", "source_type"),
+        ("model_raw", "model_raw"),
+        ("inference_platform", "inference_platform"),
+        ("evaluation_name", "evaluation_name"),
+        ("benchmark_raw", "benchmark_raw"),
+        ("benchmark_id", "benchmark_id"),
+        ("benchmark_subset", "benchmark_subset"),
+        ("slice_key", "slice_key"),
+        ("slice_name", "slice_name"),
+        ("aggregate_level", "aggregate_level"),
+        ("observation_role", "observation_role"),
+        ("collection_id", "collection_id"),
+        ("metric_raw", "metric_raw"),
+        ("metric_id", "metric_id"),
+        ("metric_key", "metric_key"),
+        ("metric_qualifier", "metric_qualifier"),
+        ("split", "split"),
+        ("score", "score"),
+        ("n_samples", "n_samples"),
+        ("evaluation_timestamp", "evaluation_timestamp"),
+        ("generation_args", "generation_args_json"),
+        ("generation_details", "generation_additional_details"),
+        ("agent_scaffold", "agent_scaffold_raw"),
+        ("harness_raw", "harness_raw"),
+        ("harness_id", "harness_id"),
+        ("eval_library_name", "eval_library_name"),
+        ("eval_library_version", "eval_library_version"),
+        ("protocol_condition", "protocol_condition"),
+        ("judge_condition", "judge_condition"),
+        ("instance_checksum", "instance_checksum"),
+        ("instance_hash_algorithm", "instance_hash_algorithm"),
+        ("instance_rows", "instance_rows"),
+    )
+    assert len(stages._OBSERVATION_KEY_FIELDS) == 35
+
+
+def test_observation_key_renders_real_and_looser_struct_from_one_list():
+    from eval_card_backend.canonicalise import stages
+
+    real = stages._observation_key_sql()
+    no_ts = stages._observation_key_sql(exclude=stages._TIMESTAMP_ONLY_EXCLUDES)
+    no_args = stages._observation_key_sql(exclude=stages._GENERATION_ARGS_ONLY_EXCLUDES)
+    assert all(s.startswith("struct_pack(") for s in (real, no_ts, no_args))
+    assert "evaluation_timestamp := evaluation_timestamp" in real
+    assert "generation_args := generation_args_json" in real
+    assert "evaluation_timestamp" not in no_ts
+    assert "generation_args := generation_args_json" in no_ts
+    assert "generation_args :=" not in no_args
+    assert "evaluation_timestamp := evaluation_timestamp" in no_args
+    assert "generation_details := generation_additional_details" in no_args
+    assert len(real.split(", ")) == len(no_ts.split(", ")) + 1 == len(no_args.split(", ")) + 1
+    with pytest.raises(ValueError):
+        stages._observation_key_sql(exclude=frozenset({"retrieved_timestamp"}))
+
+
 def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
     """Two EEE records with the same evaluation_id collide on fact_id.
     Pipeline must keep the row with the latest retrieved_timestamp and surface
@@ -921,6 +1101,12 @@ def test_pipeline_dedupes_fact_id_collisions(tmp_path, monkeypatch):
     assert snap["row_counts"]["fact_results"] == 1
     assert snap["row_counts"]["dropped_rows_dedup"] == 1
     assert snap["row_counts"]["dropped_rows_no_score"] == 0
+    _assert_dedup_by_config_sums_to_row_counts(snap)
+    assert snap["dedup_by_config"] == {"minibench": {
+        "staging": 2, "after_fact_id_pass": 1, "after_content_pass": 1,
+        "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+        "residual_both": 0,
+    }}
 
 
 def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatch):
@@ -928,6 +1114,9 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
 
     The content key must still retain changed values, source configs, and
     generation conditions. Equal-timestamp ties have a deterministic winner.
+    snapshot_meta reports the per-config counts at each dedup boundary, and
+    the residual of survivors that differ only in evaluation_timestamp,
+    generation_args, or both, identically on a fresh run and a from-cache rebuild.
     """
     pytest.importorskip("duckdb")
 
@@ -946,12 +1135,13 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
         score: float,
         *,
         temperature: float = 0.0,
+        evaluated: str = "2026-04-29T00:00:00Z",
     ) -> dict:
         return {
             "evaluation_id": evaluation_id,
             "schema_version": "0.2.2",
             "retrieved_timestamp": retrieved,
-            "evaluation_timestamp": "2026-04-29T00:00:00Z",
+            "evaluation_timestamp": evaluated,
             "model_info": {
                 "developer": "openai", "name": "GPT-4o",
                 "id": "openai/gpt-4o", "inference_platform": "openai-api",
@@ -1019,6 +1209,50 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
         ("other-source", "other.json", json.dumps(_record(
             "other_source", "2026-05-03T00:00:00Z", 0.8,
         ))),
+        # Same content under two stated evaluation times: both survive the
+        # content pass and show up as that config's residual.
+        ("ts-source", "ts-a.json", json.dumps(_record(
+            "ts_a", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-28T00:00:00Z",
+        ))),
+        ("ts-source", "ts-b.json", json.dumps(_record(
+            "ts_b", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-29T00:00:00Z",
+        ))),
+        # Same content apart from both the stated evaluation time and the
+        # generation arguments: only the combined relaxation sees the pair.
+        ("both-source", "both-a.json", json.dumps(_record(
+            "both_a", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-28T00:00:00Z",
+        ))),
+        ("both-source", "both-b.json", json.dumps(_record(
+            "both_b", "2026-05-03T00:00:00Z", 0.8, evaluated="2026-04-29T00:00:00Z",
+            temperature=0.7,
+        ))),
+    ]
+
+    def _with(record: dict, **fields) -> dict:
+        """The one result of `record` with `fields` set on it."""
+        result = record["evaluation_results"][0]
+        for key, value in fields.items():
+            if key == "hf_split":
+                result["source_data"]["hf_split"] = value
+            else:
+                result[key] = value
+        return record
+
+    records += [
+        # Same value on two dataset splits: two observations.
+        ("split-source", "split-test.json", json.dumps(_with(
+            _record("split_test", "2026-05-03T00:00:00Z", 0.8), hf_split="test",
+        ))),
+        ("split-source", "split-validation.json", json.dumps(_with(
+            _record("split_validation", "2026-05-03T00:00:00Z", 0.8), hf_split="validation",
+        ))),
+        # Same value on two slices of one benchmark: two observations.
+        ("slice-source", "slice-a.json", json.dumps(_with(
+            _record("slice_a", "2026-05-03T00:00:00Z", 0.8), evaluation_name="minibench.part_a",
+        ))),
+        ("slice-source", "slice-b.json", json.dumps(_with(
+            _record("slice_b", "2026-05-03T00:00:00Z", 0.8), evaluation_name="minibench.part_b",
+        ))),
     ]
     write_eee_datastore(eee_root, records)
 
@@ -1030,9 +1264,250 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
     from eval_card_backend.canonicalise import pipeline
     from eval_card_backend.config import Settings
 
+    run_kwargs = dict(
+        snapshot_id="2026-05-03T00:00:00Z",
+        warehouse_dir=str(warehouse),
+        registry_local_dir=str(reg_root),
+        taxonomy_seed_dir=str(seed_root),
+        cache_root=str(tmp_path / "cache"),
+    )
+    out_dir = pipeline.run(Settings.from_env(), **run_kwargs)
+
+    import duckdb
+
+    fact_path = out_dir / "fact_results.parquet"
+    rows = duckdb.connect().execute(
+        f"SELECT source_config, evaluation_id, score, temperature "
+        f"FROM read_parquet('{fact_path}') "
+        f"ORDER BY source_config, score, temperature, evaluation_id"
+    ).fetchall()
+    assert rows == [
+        ("both-source", "both_a", 0.8, 0.0),
+        ("both-source", "both_b", 0.8, 0.7),
+        ("minibench", "two_channels", 0.6, 0.0),
+        ("minibench", "two_channels", 0.6, 0.0),
+        ("minibench", "tie_z", 0.7, 0.0),
+        ("minibench", "same_new", 0.8, 0.0),
+        ("minibench", "different_generation", 0.8, 0.7),
+        ("minibench", "different_value", 0.9, 0.0),
+        ("other-source", "other_source", 0.8, 0.0),
+        ("slice-source", "slice_a", 0.8, 0.0),
+        ("slice-source", "slice_b", 0.8, 0.0),
+        ("split-source", "split_test", 0.8, 0.0),
+        ("split-source", "split_validation", 0.8, 0.0),
+        ("ts-source", "ts_a", 0.8, 0.0),
+        ("ts-source", "ts_b", 0.8, 0.0),
+    ]
+    axes = duckdb.connect().execute(
+        f"SELECT evaluation_id, benchmark_id, split, slice_key "
+        f"FROM read_parquet('{fact_path}') "
+        f"WHERE source_config IN ('split-source', 'slice-source') "
+        f"ORDER BY evaluation_id"
+    ).fetchall()
+    # slice_key is the cleaned raw name once a benchmark has more than one
+    # raw spelling in the snapshot, so the whole-benchmark rows carry
+    # "minibench" rather than NULL.
+    assert axes == [
+        ("slice_a", "minibench", None, "minibench part a"),
+        ("slice_b", "minibench", None, "minibench part b"),
+        ("split_test", "minibench", "test", "minibench"),
+        ("split_validation", "minibench", "validation", "minibench"),
+    ]
+
+    snap = json.loads((out_dir / "snapshot_meta.json").read_text())
+    assert snap["row_counts"]["fact_results"] == 15
+    assert snap["row_counts"]["dropped_rows_dedup"] == 0
+    assert snap["row_counts"]["dropped_rows_content_dedup"] == 2
+    _assert_dedup_by_config_sums_to_row_counts(snap)
+    # minibench's residual is same_new vs different_generation: equal on
+    # every key field except generation_args. ts-source's is ts_a vs ts_b:
+    # equal except for the stated evaluation time. Both also count once
+    # both fields are dropped, and both-source counts only then.
+    assert snap["dedup_by_config"] == {
+        "both-source": {
+            "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+            "residual_both": 1,
+        },
+        "minibench": {
+            "staging": 8, "after_fact_id_pass": 8, "after_content_pass": 6,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 1,
+            "residual_both": 1,
+        },
+        "other-source": {
+            "staging": 1, "after_fact_id_pass": 1, "after_content_pass": 1,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+            "residual_both": 0,
+        },
+        "slice-source": {
+            "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+            "residual_both": 0,
+        },
+        "split-source": {
+            "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
+            "residual_timestamp_only": 0, "residual_generation_args_only": 0,
+            "residual_both": 0,
+        },
+        "ts-source": {
+            "staging": 2, "after_fact_id_pass": 2, "after_content_pass": 2,
+            "residual_timestamp_only": 1, "residual_generation_args_only": 0,
+            "residual_both": 1,
+        },
+    }
+    assert snap["dedup_by_config_totals"] == {
+        "staging": 17, "after_fact_id_pass": 17, "after_content_pass": 15,
+        "residual_timestamp_only": 1, "residual_generation_args_only": 1,
+        "residual_both": 3,
+    }
+
+    # A from-cache rebuild recovers the same counts from the cached tables.
+    out_dir2 = pipeline.run(Settings.from_env(), **run_kwargs, from_stage="F")
+    snap2 = json.loads((out_dir2 / "snapshot_meta.json").read_text())
+    _assert_dedup_by_config_sums_to_row_counts(snap2)
+    assert snap2["row_counts"] == snap["row_counts"]
+    assert snap2["dedup_by_config"] == snap["dedup_by_config"]
+    assert snap2["dedup_by_config_totals"] == snap["dedup_by_config_totals"]
+
+
+_RETRIEVED_INSTANT_CASES = [
+    ("2026-05-01T00:00:00+02:00", datetime.datetime(2026, 4, 30, 22, 0)),
+    ("2026-05-01T00:00:00-07:00", datetime.datetime(2026, 5, 1, 7, 0)),
+    ("2026-05-01T00:00:00Z", datetime.datetime(2026, 5, 1, 0, 0)),
+    ("2026-05-01T00:00:00", datetime.datetime(2026, 5, 1, 0, 0)),
+    ("2026-05-01", datetime.datetime(2026, 5, 1, 0, 0)),
+    ("1777766400", datetime.datetime(2026, 5, 3, 0, 0)),
+    ("1777766400.5", datetime.datetime(2026, 5, 3, 0, 0, 0, 500000)),
+    ("20260501", None),
+    ("1777766400000", None),
+    ("inf", None),
+    ("nan", None),
+    ("", None),
+    (None, None),
+]
+
+
+@pytest.mark.parametrize("time_zone", ["Asia/Tokyo", "America/Los_Angeles"])
+def test_retrieved_instant_sql_is_utc_bounded_and_session_zone_independent(time_zone):
+    """An explicit offset shifts the instant, a zoneless string is UTC, an
+    epoch outside 2001..2096 (a bare date digit-string, milliseconds, inf)
+    is NULL rather than a far-off year, and none of it moves with the
+    session time zone."""
+    import duckdb
+
+    from eval_card_backend.canonicalise import stages
+
+    con = duckdb.connect()
+    con.execute(f"SET TimeZone = '{time_zone}'")
+    con.execute("CREATE TABLE t (i INTEGER, retrieved_timestamp VARCHAR)")
+    con.executemany(
+        "INSERT INTO t VALUES (?, ?)",
+        [(i, raw) for i, (raw, _) in enumerate(_RETRIEVED_INSTANT_CASES)],
+    )
+    rows = con.execute(
+        f"SELECT i, {stages.retrieved_instant_sql('retrieved_timestamp')} "
+        f"FROM t ORDER BY i"
+    ).fetchall()
+    assert [parsed for _, parsed in rows] == [
+        expected for _, expected in _RETRIEVED_INSTANT_CASES
+    ]
+    # The +02:00 retrieval (30 Apr 22:00Z) orders before the epoch retrieval
+    # on 3 May, as instants, not as text.
+    ordered = con.execute(
+        f"SELECT retrieved_timestamp FROM t "
+        f"WHERE retrieved_timestamp IN ('2026-05-01T00:00:00+02:00', '1777766400') "
+        f"ORDER BY {stages.retrieved_instant_sql('retrieved_timestamp')}"
+    ).fetchall()
+    assert [r[0] for r in ordered] == ["2026-05-01T00:00:00+02:00", "1777766400"]
+
+
+def test_pipeline_dedup_orders_mixed_retrieved_timestamp_formats(
+    tmp_path, monkeypatch,
+):
+    """retrieved_timestamp arrives as epoch seconds or ISO-8601 text. Both
+    dedup passes must keep the later retrieval by parsed instant, not by
+    text order (which ranks every ISO string above every epoch string).
+    1777766400 is 2026-05-03T00:00:00Z; 1777852800 is 2026-05-04T00:00:00Z.
+    """
+    pytest.importorskip("duckdb")
+
+    eee_root = tmp_path / "eee"
+    reg_root = tmp_path / "reg"
+    cards_root = tmp_path / "cards"
+    warehouse = tmp_path / "warehouse"
+    _write_registry_fixture(reg_root)
+    seed_root = tmp_path / "seed"
+    _write_minimal_seed_fixture(seed_root)
+    _write_cards_fixture(cards_root)
+
+    def _record(evaluation_id: str, retrieved: str, score: float) -> dict:
+        return {
+            "evaluation_id": evaluation_id,
+            "schema_version": "0.2.2",
+            "retrieved_timestamp": retrieved,
+            "evaluation_timestamp": "2026-04-29T00:00:00Z",
+            "model_info": {
+                "developer": "openai", "name": "GPT-4o",
+                "id": "openai/gpt-4o", "inference_platform": "openai-api",
+            },
+            "source_metadata": {
+                "source_name": "OpenAI", "source_type": "documentation",
+                "source_organization_name": "OpenAI",
+                "evaluator_relationship": "first_party",
+            },
+            "eval_library": {"name": "minibench", "version": "1.0"},
+            "evaluation_results": [{
+                "evaluation_name": "minibench",
+                "source_data": {
+                    "dataset_name": "minibench", "source_type": "other",
+                },
+                "metric_config": {
+                    "metric_id": "minibench.acc", "metric_name": "accuracy",
+                    "evaluation_description": "Accuracy on minibench",
+                    "lower_is_better": False,
+                },
+                "score_details": {"score": score},
+                "generation_config": {
+                    "generation_args": {"temperature": 0.0, "max_tokens": 1024}
+                },
+            }],
+        }
+
+    write_eee_datastore(eee_root, [
+        # fact_id collision: the epoch copy is the later retrieval.
+        ("minibench", "fid-iso.json", json.dumps(_record(
+            "ev_mixed", "2026-05-01T00:00:00Z", 0.30,
+        ))),
+        ("minibench", "fid-epoch.json", json.dumps(_record(
+            "ev_mixed", "1777766400.5", 0.85,
+        ))),
+        # Content re-emission under fresh ids: the epoch copy is later.
+        ("minibench", "content-iso.json", json.dumps(_record(
+            "content_iso", "2026-05-01T00:00:00Z", 0.8,
+        ))),
+        ("minibench", "content-epoch.json", json.dumps(_record(
+            "content_epoch", "1777766400", 0.8,
+        ))),
+        # Two epoch strings: the later instant wins.
+        ("minibench", "epoch-old.json", json.dumps(_record(
+            "epoch_old", "1777766400.25", 0.6,
+        ))),
+        ("minibench", "epoch-new.json", json.dumps(_record(
+            "epoch_new", "1777852800.25", 0.6,
+        ))),
+    ])
+
+    monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
+    monkeypatch.setenv("BENCHMARK_METADATA_LOCAL_DIR", str(cards_root))
+    monkeypatch.delenv("EEE_REFRESH_SNAPSHOT", raising=False)
+    monkeypatch.delenv("BENCHMARK_METADATA_REFRESH", raising=False)
+
+    from eval_card_backend.canonicalise import pipeline
+    from eval_card_backend.config import Settings
+
     out_dir = pipeline.run(
         Settings.from_env(),
-        snapshot_id="2026-05-03T00:00:00Z",
+        snapshot_id="2026-05-05T00:00:00Z",
         warehouse_dir=str(warehouse),
         registry_local_dir=str(reg_root),
         taxonomy_seed_dir=str(seed_root),
@@ -1043,24 +1518,19 @@ def test_pipeline_dedupes_reemitted_observations_by_content(tmp_path, monkeypatc
 
     fact_path = out_dir / "fact_results.parquet"
     rows = duckdb.connect().execute(
-        f"SELECT source_config, evaluation_id, score, temperature "
-        f"FROM read_parquet('{fact_path}') "
-        f"ORDER BY source_config, score, temperature"
+        f"SELECT evaluation_id, score FROM read_parquet('{fact_path}') "
+        f"ORDER BY score"
     ).fetchall()
     assert rows == [
-        ("minibench", "two_channels", 0.6, 0.0),
-        ("minibench", "two_channels", 0.6, 0.0),
-        ("minibench", "tie_z", 0.7, 0.0),
-        ("minibench", "same_new", 0.8, 0.0),
-        ("minibench", "different_generation", 0.8, 0.7),
-        ("minibench", "different_value", 0.9, 0.0),
-        ("other-source", "other_source", 0.8, 0.0),
+        ("epoch_new", 0.6),
+        ("content_epoch", 0.8),
+        ("ev_mixed", 0.85),
     ]
 
     snap = json.loads((out_dir / "snapshot_meta.json").read_text())
-    assert snap["row_counts"]["fact_results"] == 7
-    assert snap["row_counts"]["dropped_rows_dedup"] == 0
+    assert snap["row_counts"]["dropped_rows_dedup"] == 1
     assert snap["row_counts"]["dropped_rows_content_dedup"] == 2
+    _assert_dedup_by_config_sums_to_row_counts(snap)
 
 
 def test_metric_name_pre_step_end_to_end(tmp_path, monkeypatch):

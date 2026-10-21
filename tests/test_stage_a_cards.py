@@ -17,7 +17,6 @@ import logging
 from types import SimpleNamespace
 
 import duckdb
-import pytest
 
 from eval_card_backend.canonicalise import stages
 from eval_card_backend.canonicalise.resolver_setup import register_udfs

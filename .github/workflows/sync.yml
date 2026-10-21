@@ -114,7 +114,7 @@ jobs:
         run: python3 scripts/ci_install_resolver.py
 
       - name: Sync dependencies
-        run: uv sync --all-groups
+        run: uv sync --group dev
 
       # Stage cache (.cache/canonicalise/) is intentionally NOT cached:
       # production runs always mint fresh snapshot IDs and never invoke

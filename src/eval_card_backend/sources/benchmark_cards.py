@@ -8,6 +8,7 @@ Two on-disk shapes are supported:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -18,11 +19,14 @@ from huggingface_hub import snapshot_download
 from eval_card_backend.config import BENCHMARK_METADATA_DATASET_REPO
 from eval_card_backend.sources._revision_cache import (
     cache_revision_ok as _cache_revision_ok,
+    hand_built_snapshot as _hand_built_snapshot,
     cached_revision,  # re-exported: the revision this cache actually holds
     write_cache_revision as _write_cache_revision,
 )
 
 __all__ = ["cached_revision", "ensure_snapshot", "load_cards"]
+
+log = logging.getLogger(__name__)
 
 
 def _has_cached(target: Path) -> bool:
@@ -38,10 +42,13 @@ def ensure_snapshot(
     revision: str | None = None,
 ) -> Path | None:
     target = Path(local_dir).resolve()
+    if _hand_built_snapshot(
+        target, revision, "benchmark cards", _has_cached(target), log, force_refresh,
+    ):
+        return target
     if force_refresh and target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
-
     if _has_cached(target) and _cache_revision_ok(target, revision):
         return target
     if _has_cached(target):
