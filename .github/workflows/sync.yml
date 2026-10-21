@@ -52,8 +52,6 @@ env:
   # Processed collection extracts from the private dataset, overlaid on their
   # public member records (see README). The job's HF_TOKEN needs read access.
   EEE_INCLUDE_PRIVATE: "1"
-  # Remove when EEE_REVISION moves to a commit that holds the member records.
-  EEE_PRIVATE_ALLOW_ZERO_MEMBERS: "1"
   EEE_PRIVATE_REVISION: d655e56ca6b90ef85c99777debfcf0119c452788
   # Benchmark cards stay pinned here; bump the sha to accept new cards.
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba

@@ -919,7 +919,6 @@ def test_workflow_env_carries_no_hardcoded_followed_revisions(sync_workflow):
     assert set(env) == {
         "HF_TARGET_DATASET",
         "EEE_INCLUDE_PRIVATE",
-        "EEE_PRIVATE_ALLOW_ZERO_MEMBERS",
         "EEE_PRIVATE_REVISION",
         "BENCHMARK_METADATA_REVISION",
     }
