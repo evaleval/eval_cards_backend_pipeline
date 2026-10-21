@@ -20,8 +20,8 @@ EEE datastore's per-sample JSONLs into complete per-setting results:
                           expected drop count, extraction stats +
                           reconciliation evidence
 
-The raw records and transcripts are no longer on any HF dataset; they are
-read from a local directory laid out like the datastore
+The member records in EEE carry aggregates only. Extraction reads the raw
+records and transcripts from a local directory laid out like the datastore
 (`data/<benchmark>/<developer>/<model>/<uuid>.json` plus the
 `<uuid>_samples.jsonl` next to each record):
 
@@ -29,13 +29,13 @@ read from a local directory laid out like the datastore
         --source-dir /path/to/aisi_raw
 
 Transcripts are parsed and discarded, never persisted. CI never runs this.
-`--revision <EEE_REVISION>` instead reads the public datastore at that
-commit (aggregates via the pipeline's snapshot step, samples streamed with
-`hf_hub_download`), for a datastore revision that still holds the records.
+`--revision <EEE_REVISION>` reads a datastore revision instead; it needs one
+that also holds the sample files.
 
-How to publish: the extract is not vendored in this repo. It is served
-from the private dataset `EEE_PRIVATE_DATASET_REPO` and read by canonicalise
-only with EEE_INCLUDE_PRIVATE=1.
+How to publish: the extract is not vendored in this repo. It is served from
+the private dataset `EEE_PRIVATE_DATASET_REPO` and read by canonicalise only
+with EEE_INCLUDE_PRIVATE=1. Its `EEE_PRIVATE_REVISION` pin is independent of
+the public datastore pin. Moving `EEE_REVISION` does not force re-extraction.
 
 1. Run the extractor; it writes manifest.json, results.parquet and
    trajectories.parquet to `--out-dir` (default
@@ -362,10 +362,10 @@ def enumerate_members(
     source_dir: Path | None = None,
 ) -> tuple[list[Member], Path]:
     """Read every aggregate record at `revision` and keep the study's
-    members. Predicate: slug(source_name) == study slug — org is
+    members. Predicate: slug(source_name) == study slug; org is
     corroboration only (the Institute/Initiative spelling split means
     exact-org matching leaks fragments). Unreadable listing entries are
-    counted, not silently skipped — a missing member would undercount
+    counted, not silently skipped because a missing member would undercount
     `expected_drop_count` (the canonicalise leak guard backstops, but the
     miss should be visible here first). `source_dir` reads a local
     datastore-shaped dir instead of a datastore revision."""

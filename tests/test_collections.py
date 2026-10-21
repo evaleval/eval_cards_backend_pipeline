@@ -1236,7 +1236,7 @@ def test_assert_no_member_leak_fails_on_an_empty_manifest():
     con = duckdb.connect()
     collections_src.create_collection_tables(con)
     con.execute(
-        "CREATE TABLE results_resolved AS SELECT "
+        "CREATE TABLE eee_raw AS SELECT "
         "'minibench/model/a' AS evaluation_id, "
         "{'source_name': 'Mini Study'} AS source_metadata"
     )
@@ -1244,7 +1244,7 @@ def test_assert_no_member_leak_fails_on_an_empty_manifest():
         "INSERT INTO collection_study_slugs VALUES ('test-study', ?)",
         [collections_src.slug("Mini Study")],
     )
-    with pytest.raises(RuntimeError, match="leak guard.*test-study: 1 row"):
+    with pytest.raises(RuntimeError, match="leak guard.*test-study: 1 "):
         collections_src.assert_no_member_leak(con)
 
     con.execute(

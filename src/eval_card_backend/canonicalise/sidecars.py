@@ -108,6 +108,9 @@ def write_manifest(con, out_dir: Path, snapshot_meta: dict) -> Path:
         # is `{repo_id, sha, last_modified}`; values are None on lookup
         # failure (best-effort, never fatal — see _hf_dataset_snapshot).
         "upstream_pins":         snapshot_meta.get("upstream_pins") or {},
+        "collection_adapter_accounting": (
+            snapshot_meta.get("collection_adapter_accounting") or {}
+        ),
         # raw_verified coverage — drives the 1st/3rd-party classification
         # for llm-stats rows. Tracking coverage
         # makes it visible when upstream EEE starts populating the field

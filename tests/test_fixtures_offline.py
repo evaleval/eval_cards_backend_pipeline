@@ -393,7 +393,7 @@ def _env_vars_settings_reads(monkeypatch) -> set[str]:
 def _selects_upstream_data(field: str) -> bool:
     return (
         field.startswith("refresh_") or field.endswith("_revision")
-        or field == "include_private_eee"
+        or field in ("include_private_eee", "eee_private_allow_zero_members")
     )
 
 

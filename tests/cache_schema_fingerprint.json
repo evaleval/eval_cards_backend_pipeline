@@ -1,5 +1,5 @@
 {
-  "cache_schema_version": 16,
+  "cache_schema_version": 17,
   "tables": {
     "aliases": [
       ["raw_value", "VARCHAR"],
@@ -154,6 +154,17 @@
       ["card", "STRUCT(benchmark_details STRUCT(\"name\" VARCHAR, overview VARCHAR, data_type VARCHAR, domains VARCHAR[], languages VARCHAR[], similar_benchmarks VARCHAR[], resources VARCHAR[]), purpose_and_intended_users STRUCT(goal VARCHAR, audience VARCHAR[], tasks VARCHAR[], limitations VARCHAR, out_of_scope_uses VARCHAR[]), \"data\" STRUCT(\"source\" VARCHAR, size VARCHAR, format VARCHAR, annotation VARCHAR), methodology STRUCT(methods VARCHAR[], metrics VARCHAR[], calculation VARCHAR, interpretation VARCHAR, baseline_results VARCHAR, validation VARCHAR), ethical_and_legal_considerations STRUCT(privacy_and_anonymity VARCHAR, data_licensing VARCHAR, consent_procedures VARCHAR, compliance_with_regulations VARCHAR))"],
       ["benchmark_id", "VARCHAR"],
       ["card_resolution_strategy", "VARCHAR"]
+    ],
+    "collection_adapter_accounting": [
+      ["collection_id", "VARCHAR"],
+      ["members_total", "BIGINT"],
+      ["members_present", "BIGINT"],
+      ["members_absent", "BIGINT"],
+      ["members_absent_nonzero", "BIGINT"],
+      ["expected_drop", "BIGINT"],
+      ["dropped", "BIGINT"],
+      ["injected", "BIGINT"],
+      ["private_revision", "VARCHAR"]
     ],
     "collection_keys": [
       ["raw_key", "VARCHAR"],

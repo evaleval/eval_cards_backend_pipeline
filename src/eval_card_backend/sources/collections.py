@@ -1,8 +1,7 @@
 """Collections: submission-channel tagging + vendored collection adapters.
 
-Two parts: tagging every fact row with a collection id, and the
-canonicalise-time half of collection reassembly (the extractor half runs
-by hand):
+This module derives stable collection ids from raw submission fields and
+applies processed collection extracts during canonicalisation:
 
 - **collection_id derivation**: every fact row is keyed to the
   (`source_organization_name`, `source_name`) pair it arrived under, via a
@@ -35,16 +34,15 @@ The tables this module creates on the connection are Stage B outputs
   collections; Stage I joins resolved ids and emits
   `collection_trajectories.parquet`.
 
-Private collections: some extracts are not vendored in this repo but
+Private extracts: some processed extracts are not vendored in this repo but
 published to the private dataset `EEE_PRIVATE_DATASET_REPO` under
 `collections/<name>/` (same three files). With `EEE_INCLUDE_PRIVATE=1`,
-`ensure_private_collections` downloads them and the adapter applies them
-self-contained: their member records are on no public repo, so nothing is
-dropped and every synthetic result and trajectory is injected. With the
-toggle off nothing is downloaded or read, and `active_collections` holds
-the curated entries marked `private_source` out of the guards that expect
-them to be observed; `assert_no_private_rows` fails the run if rows of
-such a collection turn up anyway.
+`ensure_private_collections` downloads them at `EEE_PRIVATE_REVISION`. The
+adapter drops any public member result rows and injects the complete processed
+result and trajectory set; with `EEE_PRIVATE_ALLOW_ZERO_MEMBERS=1` it also
+accepts a corpus with no public members. With the toggle off, nothing private is read
+and public member records flow through as ordinary records. Curated collection
+metadata applies in both modes.
 """
 from __future__ import annotations
 
@@ -267,108 +265,57 @@ def ensure_private_collections(
 
 @dataclass(frozen=True)
 class ActiveCollections:
-    """What the private-source toggle leaves in force for one run.
+    """Collection metadata and composite guard exemptions for one run.
 
     `curated`: curated entries whose curated-key guard applies.
     `exempt_composites`: taxonomy composites whose scoped-member guard is
-    skipped because their only producer is a private collection that is
-    switched off this run.
-    `held_out`: curated entries of those private collections, which the
-    no-private-rows guard checks against.
+    skipped. The composite remains active.
+    `optional_curated`: entries allowed to be unobserved while the private
+    toggle is off.
     """
 
     curated: dict[str, dict]
     exempt_composites: frozenset[str]
-    held_out: dict[str, dict]
+    optional_curated: frozenset[str]
 
 
 def active_collections(
-    include_private: bool, *, curated: dict[str, dict] | None = None,
+    include_private: bool,
+    *,
+    allow_zero_private_members: bool = False,
+    curated: dict[str, dict] | None = None,
 ) -> ActiveCollections:
-    """The one filter every toggle-dependent step reads. With the private
-    source on, everything is in force; off, curated entries marked
-    `private_source` and the composites they declare are held out."""
-    curated = curated if curated is not None else load_curated()
-    if include_private:
-        return ActiveCollections(dict(curated), frozenset(), {})
-    held_out = {
-        cid: entry for cid, entry in curated.items()
-        if _private_source(entry) is not None
-    }
-    exempt = frozenset(
-        slug
-        for entry in held_out.values()
-        for slug in (_private_source(entry).get("composites") or [])
-    )
-    return ActiveCollections(
-        {cid: e for cid, e in curated.items() if cid not in held_out},
-        exempt,
-        held_out,
-    )
+    """Return collection metadata active in either private-toggle mode.
 
-
-def assert_no_private_rows(con, held_out: dict[str, dict], *, where: str) -> None:
-    """Hard-fail when rows of a private collection are on the connection
-    although the private source is off (a stage cache restored from an
-    earlier run, or the records reappearing in the public datastore). A row
-    belongs to a private collection when its raw collection key is one of
-    the entry's `merge_raw_keys`, or its collection_id is the entry's id.
-
-    Checks every row-carrying table present, so the same call works after
-    Stage A, after a cache restore and before a warehouse write.
+    `include_private` controls only whether processed extracts are loaded. It
+    does not hide collections whose aggregate member records are public. Off,
+    and only with `allow_zero_private_members`, a private-source entry may be
+    unobserved and exempts its declared composites from the strict
+    scoped-member guard.
     """
-    if not held_out:
-        return
-    keys = sorted({
-        k for cid, entry in held_out.items()
-        for k in (entry.get("merge_raw_keys") or [cid])
-    })
-    ids = sorted(held_out)
-    raw_key = collection_raw_key_sql(
-        "source_metadata.source_organization_name",
-        "source_metadata.source_name",
-        "eval_library.name",
-        "source_config",
-    )
-    hits: list[str] = []
-    for table in (
-        "eee_raw", "results_exploded", "results_resolved",
-        "fact_results_staging", "fact_results_signaled", "fact_results",
-        "eval_results_view",
-    ):
-        cols = {
-            r[0] for r in con.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = ?", [table],
-            ).fetchall()
-        }
-        preds, params = [], []
-        if {"source_metadata", "eval_library", "source_config"} <= cols:
-            preds.append(f"{raw_key} IN ({', '.join('?' for _ in keys)})")
-            params += keys
-        if "collection_id" in cols:
-            preds.append(f"collection_id IN ({', '.join('?' for _ in ids)})")
-            params += ids
-        if not preds:
-            continue
-        n = con.execute(
-            f"SELECT count(*) FROM {table} WHERE " + " OR ".join(preds), params
-        ).fetchone()[0]
-        if n:
-            hits.append(f"{table}: {n} row(s)")
-    if hits:
-        raise RuntimeError(
-            f"private-source guard ({where}): EEE_INCLUDE_PRIVATE is off but "
-            f"rows of a private collection ({', '.join(ids)}) are present "
-            f"({'; '.join(hits)}). A stage cache from a run with the private "
-            f"source on is being reused, or the public datastore carries "
-            f"these records again. Rebuild from Stage A, or curate the "
-            f"collection as public."
+    curated = curated if curated is not None else load_curated()
+    exempt = frozenset()
+    optional = frozenset()
+    if not include_private and allow_zero_private_members:
+        exempt = frozenset(
+            composite
+            for entry in curated.values()
+            if _private_source(entry) is not None
+            for composite in (_private_source(entry).get("composites") or [])
         )
+        optional = frozenset(
+            cid for cid, entry in curated.items()
+            if _private_source(entry) is not None
+        )
+    return ActiveCollections(dict(curated), exempt, optional)
 
 
 def assert_curated_keys_observed(
-    con, curated: dict[str, dict], *, strict: bool
+    con,
+    curated: dict[str, dict],
+    *,
+    strict: bool,
+    optional: frozenset[str] = frozenset(),
 ) -> None:
     """Build-time assertion: every curated ENTRY must match ≥1
     observed raw key, else the build fails loudly — prevents a curated
@@ -382,7 +329,8 @@ def assert_curated_keys_observed(
 
     `strict=False` (config-subset debug runs, where the collection's
     configs may simply not be loaded) degrades the detach failure to a
-    warning too.
+    warning too. Entries in `optional` may be wholly unobserved; this supports
+    the toggle-off transition before their aggregate records are public.
     """
     observed = {
         r[0] for r in con.execute(
@@ -393,7 +341,13 @@ def assert_curated_keys_observed(
     for cid, entry in curated.items():
         keys = entry.get("merge_raw_keys") or [cid]
         missing = [k for k in keys if k not in observed]
-        if missing and len(missing) == len(keys):
+        if missing and len(missing) == len(keys) and cid in optional:
+            log.warning(
+                "collections: optional curated entry %s is unobserved on this "
+                "public revision while its processed extract is off",
+                cid,
+            )
+        elif missing and len(missing) == len(keys):
             detached.append(f"{cid}: no observed raw key among {keys}")
         elif missing:
             log.warning(
@@ -451,6 +405,13 @@ def create_collection_tables(con) -> None:
         "collection_id VARCHAR, study_slug VARCHAR)"
     )
     con.execute(
+        "CREATE TABLE IF NOT EXISTS collection_adapter_accounting ("
+        "collection_id VARCHAR, members_total BIGINT, members_present BIGINT, "
+        "members_absent BIGINT, members_absent_nonzero BIGINT, "
+        "expected_drop BIGINT, dropped BIGINT, injected BIGINT, "
+        "private_revision VARCHAR)"
+    )
+    con.execute(
         f"CREATE TABLE IF NOT EXISTS collection_trajectories_raw "
         f"({_TRAJECTORIES_DDL})"
     )
@@ -473,6 +434,9 @@ def apply_vendor_collections(
     vendor_dir: Path | None = None,
     curated: dict[str, dict] | None = None,
     private_collections_dir: Path | None = None,
+    private_revision: str | None = None,
+    strict_membership: bool = True,
+    allow_zero_private_members: bool = False,
 ) -> None:
     """Stage B collection step: create the collection tables, load the
     curated merge map, and apply every vendored collection adapter found
@@ -489,9 +453,11 @@ def apply_vendor_collections(
        and inject the vendored synthetic results whose base member record is
        present.
 
-    Adapters under `private_collections_dir` (the private dataset's
-    extracts, passed only when `EEE_INCLUDE_PRIVATE=1`) are self-contained:
-    see `_apply_one_adapter`.
+    Adapters under `private_collections_dir` are processed private extracts,
+    passed only when `EEE_INCLUDE_PRIVATE=1`. They may now have public member
+    records. Their immutable source pin is `private_revision`, already checked
+    by `ensure_private_collections`; `manifest.eee_revision` describes the raw
+    extraction input and is not an adapter pin.
     """
     create_collection_tables(con)
 
@@ -511,7 +477,14 @@ def apply_vendor_collections(
         _apply_one_adapter(con, manifest_path, eee_root, eee_revision)
     for manifest_path in _manifest_paths(private_collections_dir):
         _apply_one_adapter(
-            con, manifest_path, eee_root, eee_revision, self_contained=True
+            con,
+            manifest_path,
+            eee_root,
+            eee_revision,
+            private_extract=True,
+            private_revision=private_revision,
+            strict_membership=strict_membership,
+            allow_zero_private_members=allow_zero_private_members,
         )
 
 
@@ -521,20 +494,26 @@ def _apply_one_adapter(
     eee_root: Path | None,
     eee_revision: str | None,
     *,
-    self_contained: bool = False,
+    private_extract: bool = False,
+    private_revision: str | None = None,
+    strict_membership: bool = True,
+    allow_zero_private_members: bool = False,
 ) -> None:
-    """Apply one adapter. A `self_contained` adapter (from the private
-    dataset) has no member records in any loaded corpus: nothing is
-    dropped, every synthetic result and trajectory is injected, and its pin
-    is the private dataset revision it was downloaded at, so the EEE
-    revision check does not apply. A member record present in `eee_raw`
-    is then a hard failure (the study would be counted twice)."""
+    """Apply one adapter.
+
+    A `private_extract` adapter is downloaded at `private_revision`, which is
+    independent of the public EEE revision. Public member rows are dropped
+    when present, while the complete private result and trajectory set is
+    always injected. A corpus with no public members is accepted only with
+    `EEE_PRIVATE_ALLOW_ZERO_MEMBERS=1`. Otherwise, a strict full run
+    requires every absent member to account for zero result rows.
+    """
     adapter_dir = manifest_path.parent
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     collection_id = manifest["collection_id"]
     study_slug = manifest["study_slug"]
     members = manifest["members"]
-    if not self_contained and not manifest.get("eee_revision"):
+    if not private_extract and not manifest.get("eee_revision"):
         # The extract's pin is asserted — a manifest without one can't be
         # tied to any datastore state and must not ship.
         raise RuntimeError(
@@ -552,6 +531,33 @@ def _apply_one_adapter(
         raise RuntimeError(
             f"collection {collection_id}: {len(bad_members)} manifest "
             f"member(s) lack a non-empty evaluation_id — corrupt extract."
+        )
+    try:
+        member_result_counts = {
+            m["evaluation_id"]: int(m.get("n_results", 0)) for m in members
+        }
+        expected_total = int(manifest["expected_drop_count"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"collection {collection_id}: manifest result accounting is "
+            f"missing or invalid."
+        ) from exc
+    if len(member_result_counts) != len(members):
+        raise RuntimeError(
+            f"collection {collection_id}: manifest member evaluation_ids "
+            f"must be unique."
+        )
+    if any(n < 0 for n in member_result_counts.values()):
+        raise RuntimeError(
+            f"collection {collection_id}: manifest n_results values must be "
+            f"non-negative."
+        )
+    accounted_total = sum(member_result_counts.values())
+    if accounted_total != expected_total:
+        raise RuntimeError(
+            f"collection {collection_id}: manifest members account for "
+            f"{accounted_total} result row(s), not expected_drop_count "
+            f"{expected_total}."
         )
 
     con.execute(
@@ -572,20 +578,119 @@ def _apply_one_adapter(
             [collection_id],
         ).fetchall()
     }
-    if self_contained:
-        if present:
+    if private_extract:
+        missing = member_ids - present
+        missing_nonempty = sorted(
+            eid for eid in missing if member_result_counts[eid] > 0
+        )
+        missing_result_rows = sum(member_result_counts[eid] for eid in missing)
+        public_revision = _consumed_eee_revision(eee_root, eee_revision)
+        if (
+            not present
+            and missing_nonempty
+            and strict_membership
+            and not allow_zero_private_members
+        ):
             raise RuntimeError(
-                f"collection {collection_id}: served from the private dataset "
-                f"but {len(present)} of its member record(s) are also in the "
-                f"EEE corpus (e.g. {sorted(present)[:3]}). Remove them upstream "
-                f"or ship the collection as an in-repo vendored extract."
+                f"collection {collection_id}: zero public members are present "
+                f"at datastore pin {public_revision or 'unknown'}, but the "
+                f"manifest has {len(missing_nonempty)} member(s) with "
+                f"n_results > 0 and EEE_PRIVATE_ALLOW_ZERO_MEMBERS is off."
             )
-        _inject_synthetic(con, adapter_dir, collection_id, None)
+        if not present and missing_nonempty and allow_zero_private_members:
+            log.warning(
+                "collection %s: no public members at datastore pin %s "
+                "(EEE_PRIVATE_ALLOW_ZERO_MEMBERS=1); %d manifest member(s) "
+                "with n_results > 0 are absent",
+                collection_id,
+                public_revision or "unknown",
+                len(missing_nonempty),
+            )
+        if present and missing_result_rows and strict_membership:
+            raise RuntimeError(
+                f"collection {collection_id}: {len(present)} public member "
+                f"record(s) are present, but {len(missing_nonempty)} absent "
+                f"member(s) account for {missing_result_rows} expected result "
+                f"row(s) (e.g. {missing_nonempty[:3]}). The public snapshot is "
+                f"an incomplete study ingest."
+            )
+        if present and missing_result_rows:
+            log.warning(
+                "collection %s: non-strict subset has %d public members and "
+                "%d expected result row(s) in absent members",
+                collection_id, len(present), missing_result_rows,
+            )
+
+        expected_present_drop = _validate_present_member_result_counts(
+            con, collection_id, present, member_result_counts
+        )
+        n_before = con.execute(
+            "SELECT count(*) FROM results_exploded"
+        ).fetchone()[0]
+        con.execute(
+            "DELETE FROM results_exploded WHERE evaluation_id IN "
+            "(SELECT evaluation_id FROM collection_member_ids "
+            "WHERE collection_id = ?)",
+            [collection_id],
+        )
+        n_dropped = n_before - con.execute(
+            "SELECT count(*) FROM results_exploded"
+        ).fetchone()[0]
+        if n_dropped != expected_present_drop:
+            raise RuntimeError(
+                f"collection {collection_id}: dropped {n_dropped} public "
+                f"member result row(s), but the manifest accounts for "
+                f"{expected_present_drop} across the {len(present)} present "
+                f"member record(s). The private extract and public datastore "
+                f"are out of sync."
+            )
+        log.info(
+            "collection %s: private extract revision=%s; public members "
+            "%d/%d present, %d/%d absent members account for zero rows; "
+            "dropped %d/%d manifest result row(s)",
+            collection_id,
+            private_revision or "unknown",
+            len(present),
+            len(member_ids),
+            sum(member_result_counts[eid] == 0 for eid in missing),
+            len(missing),
+            n_dropped,
+            expected_total,
+        )
+        n_injected = _inject_synthetic(
+            con, adapter_dir, collection_id, None, n_dropped
+        )
+        _record_adapter_accounting(
+            con,
+            collection_id=collection_id,
+            members_total=len(member_ids),
+            members_present=len(present),
+            members_absent=len(missing),
+            members_absent_nonzero=len(missing_nonempty),
+            expected_drop=expected_total,
+            dropped=n_dropped,
+            injected=n_injected,
+            private_revision=private_revision,
+        )
         return
     if not present:
         log.info(
             "collection %s: no member records in this run's corpus — adapter inert",
             collection_id,
+        )
+        _record_adapter_accounting(
+            con,
+            collection_id=collection_id,
+            members_total=len(member_ids),
+            members_present=0,
+            members_absent=len(member_ids),
+            members_absent_nonzero=sum(
+                count > 0 for count in member_result_counts.values()
+            ),
+            expected_drop=expected_total,
+            dropped=0,
+            injected=0,
+            private_revision=None,
         )
         return
 
@@ -607,8 +712,8 @@ def _apply_one_adapter(
         )
 
     # --- Drop member fragment rows, keyed strictly by manifest ids.
-    expected_present_drop = sum(
-        int(m.get("n_results", 0)) for m in members if m["evaluation_id"] in present
+    expected_present_drop = _validate_present_member_result_counts(
+        con, collection_id, present, member_result_counts
     )
     n_before = con.execute("SELECT count(*) FROM results_exploded").fetchone()[0]
     con.execute(
@@ -627,7 +732,6 @@ def _apply_one_adapter(
             f"extract is out of sync with the datastore — re-run the extractor."
         )
     if present == member_ids:
-        expected_total = int(manifest["expected_drop_count"])
         if n_dropped != expected_total:
             raise RuntimeError(
                 f"collection {collection_id}: full membership present but "
@@ -641,7 +745,92 @@ def _apply_one_adapter(
             collection_id, len(present), len(member_ids), n_dropped,
         )
 
-    _inject_synthetic(con, adapter_dir, collection_id, sorted(present), n_dropped)
+    n_injected = _inject_synthetic(
+        con, adapter_dir, collection_id, sorted(present), n_dropped
+    )
+    _record_adapter_accounting(
+        con,
+        collection_id=collection_id,
+        members_total=len(member_ids),
+        members_present=len(present),
+        members_absent=len(member_ids - present),
+        members_absent_nonzero=sum(
+            member_result_counts[eid] > 0 for eid in member_ids - present
+        ),
+        expected_drop=expected_total,
+        dropped=n_dropped,
+        injected=n_injected,
+        private_revision=None,
+    )
+
+
+def _validate_present_member_result_counts(
+    con,
+    collection_id: str,
+    present: set[str],
+    member_result_counts: dict[str, int],
+) -> int:
+    """Validate every present member before any result rows are deleted."""
+    if not present:
+        return 0
+    placeholders = ", ".join("?" for _ in present)
+    observed = dict(
+        con.execute(
+            f"SELECT evaluation_id, count(*) FROM results_exploded "
+            f"WHERE evaluation_id IN ({placeholders}) GROUP BY evaluation_id",
+            sorted(present),
+        ).fetchall()
+    )
+    mismatches = [
+        (
+            evaluation_id,
+            member_result_counts[evaluation_id],
+            observed.get(evaluation_id, 0),
+        )
+        for evaluation_id in sorted(present)
+        if observed.get(evaluation_id, 0) != member_result_counts[evaluation_id]
+    ]
+    if mismatches:
+        detail = ", ".join(
+            f"{evaluation_id}: manifest={expected}, observed={actual}"
+            for evaluation_id, expected, actual in mismatches
+        )
+        raise RuntimeError(
+            f"collection {collection_id}: public member result count mismatch "
+            f"before deletion ({detail}). The collection extract and public "
+            f"datastore are out of sync."
+        )
+    return sum(member_result_counts[eid] for eid in present)
+
+
+def _record_adapter_accounting(
+    con,
+    *,
+    collection_id: str,
+    members_total: int,
+    members_present: int,
+    members_absent: int,
+    members_absent_nonzero: int,
+    expected_drop: int,
+    dropped: int,
+    injected: int,
+    private_revision: str | None,
+) -> None:
+    con.execute(
+        "INSERT INTO collection_adapter_accounting VALUES "
+        "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            collection_id,
+            members_total,
+            members_present,
+            members_absent,
+            members_absent_nonzero,
+            expected_drop,
+            dropped,
+            injected,
+            private_revision,
+        ],
+    )
 
 
 def _inject_synthetic(
@@ -650,7 +839,7 @@ def _inject_synthetic(
     collection_id: str,
     present_list: list[str] | None,
     n_dropped: int = 0,
-) -> None:
+) -> int:
     """Inject the adapter's synthetic results, protocol points and
     trajectories. `present_list` limits the results to those base member
     records; None injects all of them."""
@@ -697,6 +886,10 @@ def _inject_synthetic(
     else:
         where = f"evaluation_id IN ({', '.join('?' for _ in present_list)})"
         params = present_list
+    n_before = con.execute("SELECT count(*) FROM results_exploded").fetchone()[0]
+    n_expected = con.execute(
+        f"SELECT count(*) FROM read_parquet('{rp}') WHERE {where}", params
+    ).fetchone()[0]
     try:
         con.execute(
             f"""
@@ -721,9 +914,13 @@ def _inject_synthetic(
             f"re-run the extractor."
         ) from exc
     n_injected = con.execute(
-        f"SELECT count(*) FROM read_parquet('{rp}') WHERE {where}",
-        params,
-    ).fetchone()[0]
+        "SELECT count(*) FROM results_exploded"
+    ).fetchone()[0] - n_before
+    if n_injected != n_expected:
+        raise RuntimeError(
+            f"collection {collection_id}: injected {n_injected} synthetic "
+            f"result row(s), expected {n_expected}."
+        )
 
     con.execute(
         f"""
@@ -750,6 +947,7 @@ def _inject_synthetic(
         "result(s)",
         collection_id, n_dropped, n_injected,
     )
+    return n_injected
 
 
 def assert_cache_has_collections(
@@ -787,10 +985,11 @@ def assert_cache_has_collections(
 
 
 def assert_no_member_leak(con) -> None:
-    """Post-Stage-C leak + new-record guard: zero surviving rows may
-    carry a registered study's source_name slug without being in that
-    collection's manifest. A hit means a member escaped the manifest or new
-    upstream records arrived — either way the extract must be regenerated.
+    """Post-Stage-C guard for unknown public records of an adapted study.
+
+    Check record grain so an unknown record with no evaluation results still
+    fails. Known manifest members may be public and are the normal private
+    adapter input.
     """
     create_collection_tables(con)
     n_slugs = con.execute(
@@ -800,21 +999,25 @@ def assert_no_member_leak(con) -> None:
         return
     rows = con.execute(
         f"""
-        SELECT s.collection_id, count(*) AS n
-        FROM results_resolved rr
+        SELECT s.collection_id, count(DISTINCT e.evaluation_id) AS n
+        FROM eee_raw e
         JOIN collection_study_slugs s
-          ON {slug_sql('rr.source_metadata.source_name')} = s.study_slug
-        WHERE rr.evaluation_id NOT IN
-              (SELECT evaluation_id FROM collection_member_ids)
+          ON {slug_sql('e.source_metadata.source_name')} = s.study_slug
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM collection_member_ids m
+            WHERE m.collection_id = s.collection_id
+              AND m.evaluation_id = e.evaluation_id
+        )
         GROUP BY 1
         """
     ).fetchall()
     if rows:
         detail = ", ".join(f"{cid}: {n} row(s)" for cid, n in rows)
         raise RuntimeError(
-            f"collection leak guard: rows matching a registered study's "
-            f"source_name are not in its manifest ({detail}). Either a member "
-            f"escaped the manifest or new upstream records arrived — re-run "
-            f"the collection extractor and commit the regenerated vendor "
-            f"files before consuming this EEE revision."
+            f"collection leak guard: public records matching a registered "
+            f"study's source_name are not in its manifest ({detail}). Re-run "
+            f"the collection extractor, publish the regenerated private "
+            f"extract, and bump EEE_PRIVATE_REVISION before consuming this "
+            f"EEE revision."
         )

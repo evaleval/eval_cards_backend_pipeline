@@ -1824,7 +1824,11 @@ def _apply_slice_key(con) -> None:
 
 
 def stage_d_join_dims_and_flatten(
-    con, *, strict_collections: bool = False, include_private: bool = False,
+    con,
+    *,
+    strict_collections: bool = False,
+    include_private: bool = False,
+    allow_zero_private_members: bool = False,
 ) -> None:
     """Flatten + JOIN.
 
@@ -1839,8 +1843,8 @@ def stage_d_join_dims_and_flatten(
     shapes for these are still in flux). `generation_args_json` is the
     canonical serialised form fed to `variant_key_udf` and divergence UDFs.
 
-    `include_private` is the private-source toggle: off, curated entries of
-    a private source are exempt from the curated-key guard.
+    `include_private` is the processed-extract toggle. Collection curation
+    remains active in both modes because aggregate members are public.
     """
     # Curated "was the evaluation submitted by the org that ran it" lookup,
     # keyed by evaluation_id. Materialised as a deduped view (an evaluation_id can
@@ -2614,7 +2618,11 @@ def stage_d_join_dims_and_flatten(
     _log_flat_exact_wholes(con)
 
     _build_collection_keys(
-        con, collection_raw_key, strict_collections, include_private
+        con,
+        collection_raw_key,
+        strict_collections,
+        include_private,
+        allow_zero_private_members,
     )
 
 
@@ -2844,6 +2852,7 @@ def _log_malformed_metric_models(con) -> None:
 def _build_collection_keys(
     con, collection_raw_key: str, strict_collections: bool,
     include_private: bool = False,
+    allow_zero_private_members: bool = False,
 ) -> None:
     """Materialise `collection_keys` — one row per observed raw collection
     key with its post-merge collection_id, a representative source_name
@@ -2856,9 +2865,9 @@ def _build_collection_keys(
     Initiative-spelled AISI record) never produce exploded rows but must
     still count as observing their raw key.
 
-    A collection served from the private dataset has no records in
-    `eee_raw`: its members are observed through their synthetic rows, one
-    per member evaluation_id.
+    A processed private extract can be applied before its public members are
+    available. In that transition state, members are observed through their
+    synthetic rows, one per member evaluation_id.
     """
     con.execute(
         f"""
@@ -2910,10 +2919,15 @@ def _build_collection_keys(
         GROUP BY 1, 2, 3
         """
     )
+    active = collections_src.active_collections(
+        include_private,
+        allow_zero_private_members=allow_zero_private_members,
+    )
     collections_src.assert_curated_keys_observed(
         con,
-        collections_src.active_collections(include_private).curated,
+        active.curated,
         strict=strict_collections,
+        optional=active.optional_curated,
     )
 
 
@@ -3389,9 +3403,10 @@ def _assert_stage_e_conservation(
 def _apply_composite_partitions(
     con, *, strict: bool, exempt: frozenset[str] = frozenset()
 ) -> None:
-    """Composite org-partition pass, applied to `fact_results_signaled` —
-    the post-supersession population, so a superseded row can never split
-    a page whose surviving rows are single-org.
+    """Composite organization partition pass applied to
+    `fact_results_signaled`, the post-supersession
+    population, so a superseded row can never split a page whose
+    surviving rows are single-org.
 
     1. **Scoped-member guard**: a curated (config, org[, source]) member
        matching zero surviving rows is a hard error while its config
@@ -5064,9 +5079,10 @@ def stage_j_eval_results_view(
     `1 - (position-1) / (total-1)`.
 
     **Unlinked collections**: rows whose representative collection_id is in
-    `unlinked_collections` (collections served from the private dataset,
-    whose raw records are on no public repo) get NULL `eee_record_url` and
-    `instance_file_url`. Other rows are unaffected.
+    `unlinked_collections` were derived from a processed private extract and
+    get NULL `eee_record_url` and `instance_file_url`. A synthetic cell is not
+    necessarily represented by a public member record, and its retained raw
+    sample pointer must not become a public link. Other rows are unaffected.
 
     **Headline** — `fact_headline` (materialised here) maps every fact row
     to the one condition row that represents its (composite, benchmark,

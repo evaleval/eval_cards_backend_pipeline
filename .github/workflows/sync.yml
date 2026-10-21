@@ -49,17 +49,11 @@ concurrency:
 #   RESOLVER_REF (derived):   d3f2248108de432b3d3ba8669f653510e4b07d4b
 env:
   HF_TARGET_DATASET: evaleval/card_backend
-  # Private collection source: the UK AISI inference-scaling extract
-  # (manifest.json, results.parquet, trajectories.parquet) is served from
-  # collections/aisi_inference_scaling/ in the private dataset
-  # evaleval/aisi-inference-scaling-data, downloaded into .cache/eee_private
-  # (never into the public cache below). EEE_INCLUDE_PRIVATE=1 applies it;
-  # the code default is off, and off the pipeline makes no request to that
-  # repo. The job's HF_TOKEN needs read access to the private dataset. To
-  # update the extract: run scripts/collections/aisi_inference_scaling.py,
-  # upload its three files to that folder, then set EEE_PRIVATE_REVISION
-  # (a commit sha) to the upload's commit.
+  # Processed collection extracts from the private dataset, overlaid on their
+  # public member records (see README). The job's HF_TOKEN needs read access.
   EEE_INCLUDE_PRIVATE: "1"
+  # Remove when EEE_REVISION moves to a commit that holds the member records.
+  EEE_PRIVATE_ALLOW_ZERO_MEMBERS: "1"
   EEE_PRIVATE_REVISION: d655e56ca6b90ef85c99777debfcf0119c452788
   # Benchmark cards stay pinned here; bump the sha to accept new cards.
   BENCHMARK_METADATA_REVISION: 0a86cea5b55d6070bd7f1f020f01281e1631adba
@@ -189,6 +183,20 @@ jobs:
           CANONICALISE_MEMORY_LIMIT: 6GB
           CANONICALISE_BATCH_ROWS: "50000"
         run: uv run eval-card-backend canonicalise --warehouse warehouse
+
+      - name: Summarise collection adapter accounting
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot_meta="$(find warehouse -mindepth 2 -maxdepth 2 -name snapshot_meta.json -print -quit)"
+          test -n "$snapshot_meta"
+          {
+            echo "## Collection adapter accounting"
+            echo '```json'
+            jq '{collection_adapter_accounting, upstream_pins}' "$snapshot_meta"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Schedule and push runs carry no inputs, so they always publish and
       # never override the shrink guard. Only a manual run can turn publish
