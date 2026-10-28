@@ -17,9 +17,11 @@ import logging
 from types import SimpleNamespace
 
 import duckdb
+import pytest
 
 from eval_card_backend.canonicalise import stages
 from eval_card_backend.canonicalise.resolver_setup import register_udfs
+from eval_card_backend.sources.benchmark_cards import LoadedCard
 
 
 class _FixedMappingResolver:
@@ -43,7 +45,8 @@ def _con_with_resolver(mapping):
     return con
 
 
-def test_card_collision_warns_and_first_by_key_wins(caplog):
+@pytest.mark.parametrize("source_path", ["cards/mmlu.json", None])
+def test_card_collision_warns_and_first_by_key_wins(caplog, source_path):
     """Two cards resolving to the same canonical benchmark_id:
       - cards_resolved retains both rows so an operator can inspect them
       - cards_raw retains one (first-by-card_key alphabetically)
@@ -54,12 +57,12 @@ def test_card_collision_warns_and_first_by_key_wins(caplog):
         "mmlu_alias": "mmlu",
     })
     cards = {
-        "mmlu": {
-            "benchmark_details": {"name": "MMLU (canonical card)"},
-        },
-        "mmlu_alias": {
+        "mmlu_alias": LoadedCard({
             "benchmark_details": {"name": "MMLU (aliased duplicate)"},
-        },
+        }, "cards/mmlu-alias.json"),
+        "mmlu": LoadedCard({
+            "benchmark_details": {"name": "MMLU (canonical card)"},
+        }, source_path),
     }
 
     with caplog.at_level(logging.WARNING, logger="eval_card_backend.canonicalise.stages"):
@@ -79,9 +82,10 @@ def test_card_collision_warns_and_first_by_key_wins(caplog):
 
     # The winning row is mmlu (lower card_key wins lexicographically)
     winner = con.execute(
-        "SELECT card_key FROM cards_raw WHERE benchmark_id = 'mmlu'"
-    ).fetchone()[0]
-    assert winner == "mmlu"
+        "SELECT card_key, card.benchmark_details.name, benchmark_card_source_path "
+        "FROM cards_raw WHERE benchmark_id = 'mmlu'"
+    ).fetchone()
+    assert winner == ("mmlu", "MMLU (canonical card)", source_path)
 
     # WARN log fired with the collision count and the count is correct
     collision_warns = [
@@ -105,8 +109,8 @@ def test_no_collision_no_warn(caplog):
         "swebench-verified": "swebench-verified",
     })
     cards = {
-        "mmlu": {"benchmark_details": {"name": "MMLU"}},
-        "swebench-verified": {"benchmark_details": {"name": "SWE-bench Verified"}},
+        "mmlu": LoadedCard({"benchmark_details": {"name": "MMLU"}}),
+        "swebench-verified": LoadedCard({"benchmark_details": {"name": "SWE-bench Verified"}}),
     }
 
     with caplog.at_level(logging.WARNING, logger="eval_card_backend.canonicalise.stages"):
@@ -124,8 +128,10 @@ def test_orphan_cards_preserved_no_warn(caplog):
     NULL) — they don't trigger the collision warn."""
     con = _con_with_resolver({"mmlu": "mmlu"})  # 'unknown' won't resolve
     cards = {
-        "mmlu": {"benchmark_details": {"name": "MMLU"}},
-        "unknown_benchmark": {"benchmark_details": {"name": "Unknown"}},
+        "mmlu": LoadedCard({"benchmark_details": {"name": "MMLU"}}),
+        "unknown_benchmark": LoadedCard(
+            {"benchmark_details": {"name": "Unknown"}}, "cards/unknown-benchmark.json",
+        ),
     }
 
     with caplog.at_level(logging.WARNING, logger="eval_card_backend.canonicalise.stages"):
@@ -138,10 +144,21 @@ def test_orphan_cards_preserved_no_warn(caplog):
         "SELECT COUNT(*) FROM cards_raw WHERE benchmark_id IS NULL"
     ).fetchone()[0]
     assert orphan_count == 1
+    assert con.execute(
+        "SELECT benchmark_card_source_path FROM cards_raw WHERE benchmark_id IS NULL"
+    ).fetchone() == ("cards/unknown-benchmark.json",)
 
     # No collision WARN — distinct benchmark_ids (mmlu and NULL).
     assert not [
         r for r in caplog.records
         if "had multiple cards resolve" in r.message
     ]
+    con.close()
+
+
+def test_empty_cards_have_nullable_source_path_column():
+    con = _con_with_resolver({})
+    assert stages.stage_a_load_cards(con, {}) == 0
+    cols = {row[0]: row[1] for row in con.execute("DESCRIBE cards_raw").fetchall()}
+    assert cols["benchmark_card_source_path"] == "VARCHAR"
     con.close()

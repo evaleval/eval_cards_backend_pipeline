@@ -110,7 +110,7 @@ def test_evals_view_columns_match_spec(tmp_path, monkeypatch):
         "missing_generation_config_count",
         "best_model", "worst_model",
         "avg_score", "avg_score_norm", "top_score",
-        "has_card", "benchmark_card",
+        "has_card", "benchmark_card", "benchmark_card_source_path",
         "is_aggregated", "aggregate_sources",
         "is_summary_score",
         "tags", "source_data",
@@ -133,6 +133,7 @@ def test_evals_view_columns_match_spec(tmp_path, monkeypatch):
     assert cols["family_id"] == "VARCHAR"
     assert cols["parent_benchmark_id"] == "VARCHAR"
     assert cols["parent_benchmark_display_name"] == "VARCHAR"
+    assert cols["benchmark_card_source_path"] == "VARCHAR"
 
 
 def test_parent_benchmark_display_name_null_for_roots(tmp_path, monkeypatch):

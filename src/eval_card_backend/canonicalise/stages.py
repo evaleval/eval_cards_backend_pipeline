@@ -35,6 +35,7 @@ from eval_card_backend.signals.reproducibility import (
 from eval_card_backend.canonicalise import taxonomy, udfs
 from eval_card_backend.config import EEE_DATASET_REPO
 from eval_card_backend.sources import collections as collections_src
+from eval_card_backend.sources.benchmark_cards import LoadedCard
 from eval_card_backend.sources.registry import read_parquet_arg
 from eval_card_backend.sources.scoring_modes import (
     OUTPUT_TYPE_MODES,
@@ -734,7 +735,7 @@ def stage_a_load_eee(
     return n_rows
 
 
-def stage_a_load_cards(con, cards: dict) -> int:
+def stage_a_load_cards(con, cards: dict[str, LoadedCard]) -> int:
     """Stage AutoBenchmarkCards into `cards_raw_in`, then resolve card keys to
     canonical benchmark_ids into `cards_raw`.
     """
@@ -742,6 +743,7 @@ def stage_a_load_cards(con, cards: dict) -> int:
         # Empty placeholder so LEFT JOINs cleanly miss.
         con.execute(
             "CREATE TABLE cards_raw (card_key VARCHAR, card JSON, "
+            "benchmark_card_source_path VARCHAR, "
             "benchmark_id VARCHAR, card_resolution_strategy VARCHAR)"
         )
         return 0
@@ -751,7 +753,11 @@ def stage_a_load_cards(con, cards: dict) -> int:
     )
     with tmp:
         for k, v in cards.items():
-            tmp.write(json.dumps({"card_key": k, "card": v}, default=str, ensure_ascii=False))
+            tmp.write(json.dumps({
+                "card_key": k,
+                "card": v.payload,
+                "benchmark_card_source_path": v.source_path,
+            }, default=str, ensure_ascii=False))
             tmp.write("\n")
 
     con.execute(
@@ -769,6 +775,7 @@ def stage_a_load_cards(con, cards: dict) -> int:
         SELECT
             card_key,
             card,
+            CAST(benchmark_card_source_path AS VARCHAR) AS benchmark_card_source_path,
             resolve_canonical_id(card_key, 'benchmark', NULL) AS benchmark_id,
             resolve_strategy(card_key, 'benchmark', NULL)     AS card_resolution_strategy
         FROM cards_raw_in
@@ -783,7 +790,7 @@ def stage_a_load_cards(con, cards: dict) -> int:
     con.execute(
         """
         CREATE TABLE cards_raw AS
-        SELECT card_key, card, benchmark_id, card_resolution_strategy
+        SELECT card_key, card, benchmark_card_source_path, benchmark_id, card_resolution_strategy
         FROM (
             SELECT *,
                 row_number() OVER (
@@ -799,7 +806,7 @@ def stage_a_load_cards(con, cards: dict) -> int:
         -- Cards whose key didn't resolve (benchmark_id IS NULL) are kept as
         -- orphans for the triage path. They never join to fact_results because
         -- benchmark_id IS NULL on both sides.
-        SELECT card_key, card, benchmark_id, card_resolution_strategy
+        SELECT card_key, card, benchmark_card_source_path, benchmark_id, card_resolution_strategy
         FROM cards_resolved
         WHERE benchmark_id IS NULL
         """
@@ -4250,7 +4257,8 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
         f"""
         CREATE TABLE benchmarks AS
         WITH cards_json AS (
-            SELECT card_key, benchmark_id, to_json(card) AS card_j FROM cards_raw
+            SELECT card_key, benchmark_id, benchmark_card_source_path,
+                   to_json(card) AS card_j FROM cards_raw
         ),
         card_missing_per_benchmark AS (
             SELECT
@@ -4374,6 +4382,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             TRY_CAST(cb.metadata AS JSON) AS registry_metadata,
             cb.review_status,
 
+            c.benchmark_card_source_path,
             json_extract_string(c.card_j, '$.benchmark_details.name')      AS card_name,
             json_extract_string(c.card_j, '$.benchmark_details.overview')  AS overview,
             json_extract_string(c.card_j, '$.benchmark_details.data_type') AS data_type,
@@ -8028,6 +8037,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
             pm.top_score                                 AS top_score,
 
             COALESCE(b.card_present, FALSE)              AS has_card,
+            b.benchmark_card_source_path,
             -- All VARCHAR[] fields normalise NULL → [] at the boundary so the
             -- consumer-facing TS contract (`string[]`, non-nullable) holds.
             -- Upstream JSON extraction returns NULL when the source omits a

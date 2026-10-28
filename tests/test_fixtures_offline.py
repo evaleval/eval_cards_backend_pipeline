@@ -79,7 +79,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr(eee_src, "hf_hub_download", _network)
     monkeypatch.setattr(eee_src, "HfApi", _NoApi)
     monkeypatch.setattr(registry_src, "snapshot_download", _network)
-    monkeypatch.setattr(cards_src, "snapshot_download", _network)
+    monkeypatch.setattr(cards_src, "_fetch_cards", _network)
     return calls
 
 
@@ -368,7 +368,17 @@ def test_a_downloaded_cache_under_another_pin_is_still_refreshed(
             (target / rel).parent.mkdir(parents=True, exist_ok=True)
             (target / rel).write_bytes(b"y")
 
-    monkeypatch.setattr(module, "snapshot_download", _download)
+    if module is cards_src:
+        def _fetch(dest, _token, revision):
+            calls.append({"revision": revision})
+            for rel in _tree(fixture_dir):
+                (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+                (dest / rel).write_bytes(b"y")
+            return PIN
+
+        monkeypatch.setattr(module, "_fetch_cards", _fetch)
+    else:
+        monkeypatch.setattr(module, "snapshot_download", _download)
     out = module.ensure_snapshot(str(target), None, False, revision=PIN)
 
     assert out == target.resolve()

@@ -1,5 +1,5 @@
 {
-  "cache_schema_version": 17,
+  "cache_schema_version": 18,
   "tables": {
     "aliases": [
       ["raw_value", "VARCHAR"],
@@ -34,6 +34,7 @@
       ["registry_tags", "VARCHAR[]"],
       ["registry_metadata", "JSON"],
       ["review_status", "VARCHAR"],
+      ["benchmark_card_source_path", "VARCHAR"],
       ["card_name", "VARCHAR"],
       ["overview", "VARCHAR"],
       ["data_type", "VARCHAR"],
@@ -152,6 +153,7 @@
     "cards_raw": [
       ["card_key", "VARCHAR"],
       ["card", "STRUCT(benchmark_details STRUCT(\"name\" VARCHAR, overview VARCHAR, data_type VARCHAR, domains VARCHAR[], languages VARCHAR[], similar_benchmarks VARCHAR[], resources VARCHAR[]), purpose_and_intended_users STRUCT(goal VARCHAR, audience VARCHAR[], tasks VARCHAR[], limitations VARCHAR, out_of_scope_uses VARCHAR[]), \"data\" STRUCT(\"source\" VARCHAR, size VARCHAR, format VARCHAR, annotation VARCHAR), methodology STRUCT(methods VARCHAR[], metrics VARCHAR[], calculation VARCHAR, interpretation VARCHAR, baseline_results VARCHAR, validation VARCHAR), ethical_and_legal_considerations STRUCT(privacy_and_anonymity VARCHAR, data_licensing VARCHAR, consent_procedures VARCHAR, compliance_with_regulations VARCHAR))"],
+      ["benchmark_card_source_path", "VARCHAR"],
       ["benchmark_id", "VARCHAR"],
       ["card_resolution_strategy", "VARCHAR"]
     ],
@@ -366,6 +368,7 @@
       ["avg_score_norm", "DOUBLE"],
       ["top_score", "DOUBLE"],
       ["has_card", "BOOLEAN"],
+      ["benchmark_card_source_path", "VARCHAR"],
       ["benchmark_card", "STRUCT(benchmark_details STRUCT(\"name\" VARCHAR, overview VARCHAR, data_type VARCHAR, domains VARCHAR[], languages VARCHAR[], similar_benchmarks VARCHAR[], resources VARCHAR[]), purpose_and_intended_users STRUCT(goal VARCHAR, audience VARCHAR[], tasks VARCHAR[], limitations VARCHAR, out_of_scope_uses VARCHAR[]), \"data\" STRUCT(\"source\" VARCHAR, size VARCHAR, format VARCHAR, annotation VARCHAR), methodology STRUCT(methods VARCHAR[], metrics VARCHAR[], calculation VARCHAR, interpretation VARCHAR, baseline_results VARCHAR, validation VARCHAR), ethical_and_legal_considerations STRUCT(privacy_and_anonymity VARCHAR, data_licensing VARCHAR, consent_procedures VARCHAR, compliance_with_regulations VARCHAR), possible_risks STRUCT(category VARCHAR, description VARCHAR[], url VARCHAR)[], flagged_fields JSON, missing_fields VARCHAR[], card_info STRUCT(created_at VARCHAR, llm VARCHAR))"],
       ["is_aggregated", "BOOLEAN"],
       ["aggregate_sources", "STRUCT(evaluation_id VARCHAR, composite_slug VARCHAR, composite_display_name VARCHAR, models_count INTEGER, avg_score_norm DOUBLE)[]"],

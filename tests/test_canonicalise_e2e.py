@@ -177,7 +177,8 @@ def _write_cards_fixture(cards_root: Path) -> None:
     (cards_root / "cards" / "minibench.json").write_text(json.dumps(card))
 
 
-def test_pipeline_end_to_end(tmp_path, monkeypatch):
+@pytest.mark.parametrize("card_layout", ["per_file", "flat_only", "both", "none"])
+def test_pipeline_end_to_end(tmp_path, monkeypatch, card_layout):
     pytest.importorskip("duckdb")
 
     eee_root = tmp_path / "eee"
@@ -189,6 +190,14 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     seed_root = tmp_path / "seed"
     _write_minimal_seed_fixture(seed_root)
     _write_cards_fixture(cards_root)
+    card_file = cards_root / "cards" / "minibench.json"
+    if card_layout in {"flat_only", "both"}:
+        payload = json.loads(card_file.read_text())["benchmark_card"]
+        (cards_root / "benchmark-metadata.json").write_text(json.dumps({"minibench": payload}))
+    if card_layout in {"flat_only", "none"}:
+        card_file.unlink()
+    if card_layout == "none":
+        (cards_root / "benchmark-metadata.json").write_text("{}")
 
     # Force the source loaders into local-only mode by setting the env vars.
     monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
@@ -238,10 +247,11 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     # Per-row completeness: full card (22 + 1 partial-data full) + 3 EEE
     # source_metadata (set in fixture) + 0 reserved = 26 / 28. Both rows
     # share the same EEE record's source_metadata so both should match.
+    populated_count = 3 if card_layout == "none" else 26
     for r in rows:
         assert r[9] == 28              # total_fields_evaluated
-        assert r[8] == 26              # populated_count
-        assert abs(r[7] - 26 / 28) < 1e-9
+        assert r[8] == populated_count
+        assert abs(r[7] - populated_count / 28) < 1e-9
     # Metric-meta hotfix: registry has score_type='continuous',
     # min=0, max=1, lower=False but no metric_kind/metric_unit. EEE per-record
     # has metric_name='accuracy' but no metric_kind/metric_unit either.
@@ -263,7 +273,16 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
         f"FROM read_parquet('{bench}')"
     ).fetchall()
     # All 23 card-derived field scores are 1 → card_missing_count = 0.
-    assert bench_rows == [("minibench", "MiniBench", True, 0)]
+    if card_layout != "none":
+        assert bench_rows == [("minibench", "MiniBench", True, 0)]
+    else:
+        assert bench_rows[0][:3] == ("minibench", "MiniBench", False)
+
+    expected_path = "cards/minibench.json" if card_layout in {"per_file", "both"} else None
+    for table in ("benchmarks", "evals_view"):
+        assert con.execute(
+            f"SELECT benchmark_card_source_path FROM read_parquet('{out_dir}/{table}.parquet')"
+        ).fetchall() == [(expected_path,)]
 
     # benchmark_completeness.parquet is not emitted — completeness lives
     # on fact_results columns instead.

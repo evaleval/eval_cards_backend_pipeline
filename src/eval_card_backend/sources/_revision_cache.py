@@ -20,6 +20,8 @@ import logging
 from pathlib import Path
 
 _MARKER = ".pinned_revision"
+# The commit a git-fetched cache holds: unlike `_MARKER`, never a branch name.
+_FETCHED_COMMIT = ".fetched_commit"
 HAND_BUILT_SENTINEL = ".hand_built"
 
 # `huggingface_hub` writes one metadata file per downloaded file under the
@@ -125,6 +127,11 @@ def write_cache_revision(target: Path, revision: str | None) -> None:
     (target / _MARKER).write_text(revision, encoding="utf-8")
 
 
+def write_fetched_commit(target: Path, commit: str) -> None:
+    """Record the commit a git fetch checked out, for `cached_revision`."""
+    (target / _FETCHED_COMMIT).write_text(commit, encoding="utf-8")
+
+
 def clear_cache_revision(target: Path) -> None:
     """Drop the marker, e.g. after re-indexing an existing cache unpinned."""
     (target / _MARKER).unlink(missing_ok=True)
@@ -143,7 +150,8 @@ def hf_download_commit(target: Path, filename: str) -> str | None:
 def cached_revision(target: Path | None) -> str | None:
     """The revision the snapshot on disk was actually downloaded at, or None.
 
-    Prefers `huggingface_hub`'s per-file download metadata over `_MARKER`:
+    A git-fetched cache records its commit in `_FETCHED_COMMIT`. Otherwise
+    prefers `huggingface_hub`'s per-file download metadata over `_MARKER`:
     the marker only records *pinned* downloads (`write_cache_revision` is a
     no-op when unpinned), so it can outlive the content it names, whereas
     the metadata is rewritten by every download.
@@ -154,6 +162,9 @@ def cached_revision(target: Path | None) -> str | None:
     """
     if target is None:
         return None
+    fetched = Path(target) / _FETCHED_COMMIT
+    if fetched.is_file():
+        return fetched.read_text(encoding="utf-8").strip() or None
     meta_root = Path(target) / _HF_DOWNLOAD_META_DIR
     if meta_root.is_dir():
         seen: set[str] = set()
