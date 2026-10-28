@@ -638,6 +638,10 @@ def load_arrow_table(
     eee_root: Path | None,
     configs: Iterable[str],
     hf_token: str | None,
+    datafix_enabled: bool = False,
+    datafix_summary: Any | None = None,
+    collect_declarations: bool = False,
+    eee_revision: str | None = None,
 ) -> pa.Table:
     """Read EEE records, validate via Pydantic, cast to a typed Arrow table.
 
@@ -646,7 +650,11 @@ def load_arrow_table(
     one config's rows are in Python memory at a time.
     """
     _, table_schema = _arrow_table_schema()
-    tables = [t for _, t in iter_arrow_tables(eee_root, configs, hf_token)]
+    tables = [t for _, t in iter_arrow_tables(
+        eee_root, configs, hf_token, datafix_enabled=datafix_enabled,
+        datafix_summary=datafix_summary,
+        collect_declarations=collect_declarations, eee_revision=eee_revision,
+    )]
     if not tables:
         return pa.Table.from_pylist([], schema=table_schema)
     return pa.concat_tables(tables)
@@ -656,6 +664,10 @@ def iter_arrow_tables(
     eee_root: Path | None,
     configs: Iterable[str],
     hf_token: str | None,
+    datafix_enabled: bool = False,
+    datafix_summary: Any | None = None,
+    collect_declarations: bool = False,
+    eee_revision: str | None = None,
 ) -> Iterator[tuple[str, pa.Table]]:
     """Yield (config, typed Arrow table) per config, validating via Pydantic.
 
@@ -678,6 +690,13 @@ def iter_arrow_tables(
     from eval_card_backend.schemas.eee_arrow import pad_record_for_cast
     from eval_card_backend.schemas.eee_types import EvaluationLog
 
+    from eval_card_backend import datafix
+
+    overlay = datafix if datafix_enabled else None
+    accounting = (
+        datafix_summary if datafix_summary is not None else datafix.DatafixSummary()
+    )
+    declaring_configs = datafix.annotating_configs() if collect_declarations else frozenset()
     base_schema, table_schema = _arrow_table_schema()
 
     # Records per yielded batch: bounds the Python-side working set (parsed
@@ -731,6 +750,26 @@ def iter_arrow_tables(
                     cfg, f"validation_error:{type(exc).__name__}", path, str(exc)
                 )
                 continue
+
+            if cfg in declaring_configs:
+                datafix.annotation_log().record(path, cfg, rec, eee_revision)
+
+            if overlay is not None and overlay.covers(cfg):
+                patched, events, _ = overlay.apply_fixes(
+                    rec, cfg, summary=accounting
+                )
+                if events:
+                    try:
+                        EvaluationLog.model_validate(patched)
+                    except Exception as exc:
+                        # The overlay produced something the upstream contract
+                        # rejects, which is our bug, not bad input. Never silently drop
+                        # a record the unpatched version validated.
+                        raise RuntimeError(
+                            f"patch_invalid: datafix overlay produced an invalid "
+                            f"record for {path}: {type(exc).__name__}: {exc}"
+                        ) from exc
+                    rec = patched
 
             padded = pad_record_for_cast(rec, base_schema)
             padded["source_config"] = cfg

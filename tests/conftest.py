@@ -27,7 +27,9 @@ from tests.fixture_corpus import UPSTREAM_ENV_VARS
 # Otherwise ensure_snapshot refreshes a fixture dir, or reads it as a stale
 # cache under a pin. The private-source settings go too: CI turns the private
 # EEE source on, and a test that wants it sets them itself.
-_PINNED_ENV_VARS = UPSTREAM_ENV_VARS + ("EEE_PRIVATE_LOCAL_DATASET_DIR",)
+_PINNED_ENV_VARS = UPSTREAM_ENV_VARS + (
+    "EEE_PRIVATE_LOCAL_DATASET_DIR", "EEE_DATAFIX", "REPRO_EXEMPT_NON_GENERATIVE",
+)
 for _rev_var in _PINNED_ENV_VARS:
     os.environ.pop(_rev_var, None)
 

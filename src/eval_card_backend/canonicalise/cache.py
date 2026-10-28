@@ -9,11 +9,19 @@ have to recompute.
 Stage outputs are declared as a static mapping (`STAGE_OUTPUTS`). Stages
 that produce intermediate tables (e.g. F's `fact_results_grouped_annotated`)
 don't appear here — only the table the *next* stage reads from.
+
+The marker file also records what Stage A was fed (upstream revision,
+selected configs, datafix overlay state) and the datafix summary that run
+produced. A `--from-stage` run checks the inputs before restoring
+anything, so cached records built under one overlay can never be resumed
+into a run configured for another, and reports the restored summary
+instead of zeros for data it did not re-read.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,7 +31,7 @@ log = logging.getLogger(__name__)
 # whenever a stage's cached output gains, loses or re-types a column: a
 # `--from-stage` run against an older cache would otherwise restore the old
 # shape and fail deep inside a later stage's SQL with a binder error.
-CACHE_SCHEMA_VERSION = 18
+CACHE_SCHEMA_VERSION = 20
 
 _SCHEMA_MARKER = "_cache_schema.json"
 # Which EEE sources the cached tables were built from (private-source toggle
@@ -37,7 +45,7 @@ STAGE_ORDER: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G", "I", "J")
 # stage runs and what gets restored when --from-stage skips it.
 STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     "A": (
-        "eee_raw",
+        "eee_raw", "eee_result_annotations",
         "cards_raw",
         "canonical_orgs",
         "canonical_models",
@@ -149,6 +157,11 @@ class StageCache:
         self.enabled = enabled
         self.source_state = source_state
         self._dir = self.root / _snapshot_dir_name(snapshot_id)
+        # Stamped into the marker alongside the schema version. Set by the
+        # orchestrator before the first write_stage; carried forward
+        # unchanged when Stage A was restored rather than re-run.
+        self.stage_a_inputs: dict | None = None
+        self.datafix_summary: dict | None = None
 
     @property
     def dir(self) -> Path:
@@ -165,12 +178,91 @@ class StageCache:
         return self._dir / _SCHEMA_MARKER
 
     def _write_schema_version(self) -> None:
-        self._marker_path.write_text(
-            json.dumps({"cache_schema_version": CACHE_SCHEMA_VERSION})
-        )
+        payload = {"cache_schema_version": CACHE_SCHEMA_VERSION}
+        if self.stage_a_inputs is not None:
+            payload["stage_a_inputs"] = self.stage_a_inputs
+        if self.datafix_summary is not None:
+            payload["datafix_summary"] = self.datafix_summary
+        # Sibling temp file + rename: a reader never sees a half-written
+        # marker, and an interrupted write leaves the previous one intact.
+        tmp = self._marker_path.with_name(f".{_SCHEMA_MARKER}.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        os.replace(tmp, self._marker_path)
 
     def _clear_schema_version(self) -> None:
         self._marker_path.unlink(missing_ok=True)
+
+    def _read_marker(self) -> dict:
+        try:
+            return json.loads(self._marker_path.read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def cached_stage_a_inputs(self) -> dict | None:
+        return self._read_marker().get("stage_a_inputs")
+
+    def cached_datafix_summary(self) -> dict | None:
+        return self._read_marker().get("datafix_summary")
+
+    def assert_stage_a_inputs(self, current: dict) -> None:
+        """Fail fast when the cached Stage A output was built from other inputs.
+
+        Only keys this run actually knows are compared, and `None` is how a
+        run says it does not know one: a `--from-stage J` run that selects
+        no configs and restates no upstream pin is checked on the overlay
+        alone. A key whose value is stated is always compared, so a resume
+        that does name a config selection has to name the cached one --
+        including the empty selection, which is a statement of its own.
+        """
+        if not self._dir.exists():
+            return
+        cached = self.cached_stage_a_inputs()
+        if cached is None:
+            raise RuntimeError(
+                f"stage cache at {self._dir} records no Stage A inputs; it was "
+                f"written by a pipeline that predates the input fingerprint, so "
+                f"there is no way to tell what the cached records were built "
+                f"from. Re-run from Stage A (drop --from-stage, or pass "
+                f"--from-stage A) to rebuild the cache."
+            )
+        differing = [
+            f"{key}: cache has {cached.get(key)!r}, this run has {value!r}"
+            for key, value in current.items()
+            if value is not None and cached.get(key) != value
+        ]
+        if differing:
+            raise RuntimeError(
+                f"stage cache at {self._dir} was built from different Stage A "
+                f"inputs ({'; '.join(differing)}). Resuming would mix records "
+                f"loaded under one configuration into stages running under "
+                f"another. Re-run from Stage A (drop --from-stage, or pass "
+                f"--from-stage A), or use a cache root of its own."
+            )
+
+    def assert_datafix_summary(self) -> None:
+        """Fail fast when the cache records inputs but no account of the overlay.
+
+        Stage A is always part of a restore, and only the run that read the
+        records knows what the overlay filled in them. A marker carrying the
+        inputs but no usable summary would let a resumed run publish patched
+        records under an empty overlay report.
+        """
+        if not self._dir.exists() or self.cached_stage_a_inputs() is None:
+            return
+        summary = self.cached_datafix_summary()
+        if (
+            isinstance(summary, dict)
+            and "enabled" in summary
+            and isinstance(summary.get("fixes"), dict)
+        ):
+            return
+        raise RuntimeError(
+            f"stage cache at {self._dir} records Stage A inputs but no usable "
+            f"datafix summary ({summary!r}). Only the run that read the raw "
+            f"records knows what the overlay filled in them, so resuming would "
+            f"report an overlay this run never ran. Re-run from Stage A (drop "
+            f"--from-stage, or pass --from-stage A) to rebuild the cache."
+        )
 
     def assert_sources_match(self) -> None:
         if self.source_state is None or not self._dir.exists():
@@ -301,6 +393,9 @@ class StageCache:
         `CatalogException: table not found` deep inside a later stage.
         """
         self.assert_schema_current()
+        if self.stage_a_inputs is not None:
+            self.assert_stage_a_inputs(self.stage_a_inputs)
+        self.assert_datafix_summary()
         self.assert_sources_match()
         wanted: list[tuple[str, str]] = []
         for stage in STAGE_ORDER:

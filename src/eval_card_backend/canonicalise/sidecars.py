@@ -50,6 +50,10 @@ log = logging.getLogger(__name__)
 
 CONFIG_VERSION = 2
 SIGNAL_VERSION = "1.1"
+# Appended to `signal_version` when the run honours a source's statement
+# that a result sampled no text, so a consumer can tell which rule the
+# reproducibility numbers in a snapshot were computed under.
+NON_GENERATIVE_EXEMPT_SUFFIX = "+non-generative-exempt"
 
 # Warehouse contract version, carried on manifest.json. 2 = judge conditions,
 # rename-at-resolution `metric_key`, fact-level canonical scores.
@@ -215,15 +219,28 @@ def _tag_filter_clause(tag: str | None, alias: str = "erv") -> str:
     )
 
 
-def _reproducibility_block(con, tag: str | None) -> dict:
+def reproducibility_rollup(
+    con,
+    tag: str | None,
+    *,
+    fact_predicate: str | None = None,
+    exemption_on: bool = False,
+) -> dict:
     """Triple-level rollups for reproducibility.
 
     Per-field missingness scans `fact_results` for every fact row's
     `repro_missing_fields[]`, then BOOL_OR's per-triple — a triple is
     flagged as missing field f if *any* of its rows had f in the gap.
-    Base fields are denominated against all triples; agentic fields
-    against agentic triples only (a triple is agentic if any row in it
-    is_agentic).
+    Base fields are denominated against the triples the base rule applies
+    to; agentic fields against agentic triples only (a triple is agentic
+    if any row in it is_agentic).
+
+    `fact_predicate` is a SQL fragment over the `fr` alias restricting
+    which fact rows enter the rollup at all. The published block is the
+    one with no predicate: every triple in the corpus, each read as the
+    union of its rows. A caller that wants the gap rate over a subset of
+    the rows passes one here rather than recomputing the rollup, so the
+    two readings are the same arithmetic over different rows.
     """
     if tag is None:
         tag_join = ""
@@ -245,12 +262,16 @@ def _reproducibility_block(con, tag: str | None) -> dict:
         )
     field_flags_sql = ",\n            ".join(field_flags_sql_parts)
 
+    predicate_where = f"AND ({fact_predicate})" if fact_predicate else ""
+
     triple_rollup_sql = f"""
         WITH triple_rollups AS (
             SELECT
                 fr.model_aggregation_key, fr.benchmark_key, fr.metric_key,
                 BOOL_OR(fr.has_reproducibility_gap) AS triple_has_gap,
                 BOOL_OR(fr.is_agentic)              AS triple_agentic,
+                BOOL_OR(fr.repro_base_applicable)   AS triple_base_applicable,
+                BOOL_OR(fr.repro_applicable)        AS triple_applicable,
                 {field_flags_sql}
             FROM fact_results fr
             {tag_join}
@@ -258,6 +279,7 @@ def _reproducibility_block(con, tag: str | None) -> dict:
               AND fr.benchmark_key         IS NOT NULL
               AND fr.metric_key            IS NOT NULL
               {tag_where}
+              {predicate_where}
             GROUP BY 1, 2, 3
         )
         SELECT
@@ -266,6 +288,10 @@ def _reproducibility_block(con, tag: str | None) -> dict:
             AVG(CASE WHEN triple_has_gap THEN 1.0 ELSE 0.0 END)
                                                 AS gap_rate,
             SUM(CASE WHEN triple_agentic THEN 1 ELSE 0 END) AS agentic_triples,
+            SUM(CASE WHEN triple_base_applicable THEN 1 ELSE 0 END)
+                                                AS base_applicable_triples,
+            SUM(CASE WHEN NOT triple_applicable THEN 1 ELSE 0 END)
+                                                AS not_applicable_triples,
             {",".join(
                 f"SUM(CASE WHEN missing_{f} THEN 1 ELSE 0 END) AS n_missing_{f}"
                 for f in BASE_REPRODUCIBILITY_FIELDS + AGENTIC_REPRODUCIBILITY_FIELDS
@@ -280,15 +306,22 @@ def _reproducibility_block(con, tag: str | None) -> dict:
     triples_with_gap = int(rec["triples_with_gap"] or 0)
     gap_rate = rec["gap_rate"]
     agentic = int(rec["agentic_triples"] or 0)
+    base_applicable = int(rec["base_applicable_triples"] or 0)
+    not_applicable = int(rec["not_applicable_triples"] or 0)
+
+    # A base field can only be missing from a triple the base rule
+    # applies to, so that is its denominator. With no exemption honoured
+    # every triple is one, and the label says so.
+    base_denominator = "base_applicable_triples" if exemption_on else "all_triples"
 
     per_field: dict[str, dict] = {}
     for f in BASE_REPRODUCIBILITY_FIELDS:
         n = int(rec[f"n_missing_{f}"] or 0)
         per_field[f] = {
             "missing_count":     n,
-            "missing_rate":      (n / total) if total else None,
-            "denominator":       "all_triples",
-            "denominator_count": total,
+            "missing_rate":      (n / base_applicable) if base_applicable else None,
+            "denominator":       base_denominator,
+            "denominator_count": base_applicable,
         }
     for f in AGENTIC_REPRODUCIBILITY_FIELDS:
         n = int(rec[f"n_missing_{f}"] or 0)
@@ -302,8 +335,17 @@ def _reproducibility_block(con, tag: str | None) -> dict:
     return {
         "total_triples":                       total,
         "triples_with_reproducibility_gap":    triples_with_gap,
+        # Over every triple, including the ones the rule asks nothing of.
+        # `not_applicable_triples` is what a reading that leaves those out
+        # needs to work from the published numbers alone.
         "reproducibility_gap_rate":            gap_rate,
         "agentic_triples":                     agentic,
+        "not_applicable_triples":              not_applicable,
+        "applicable_triples":                  total - not_applicable,
+        "applicable_reproducibility_gap_rate": (
+            triples_with_gap / (total - not_applicable)
+            if total > not_applicable else None
+        ),
         "per_field_missingness":               per_field,
     }
 
@@ -598,11 +640,25 @@ def write_headline(con, out_dir: Path, snapshot_meta: dict) -> Path:
             "by_tag":   {t: builder(con, t) for t in sorted(VALID_TAGS)},
         }
 
+    # A run that honours a declaration source computes the reproducibility
+    # signal under a different rule, so it says so rather than publishing
+    # the two under one version.
+    exemption_on = bool(
+        (snapshot_meta.get("repro_exemption") or {}).get("declaration_sources")
+    )
+    signal_version = (
+        SIGNAL_VERSION + NON_GENERATIVE_EXEMPT_SUFFIX
+        if exemption_on
+        else SIGNAL_VERSION
+    )
+
     payload = {
         "generated_at":              snapshot_meta["snapshot_id"],
-        "signal_version":            SIGNAL_VERSION,
+        "signal_version":            signal_version,
         "stratification_dimensions": ["tag"],
-        "reproducibility": _stratified(_reproducibility_block),
+        "reproducibility": _stratified(
+            lambda c, t: reproducibility_rollup(c, t, exemption_on=exemption_on)
+        ),
         "completeness":    _stratified(_completeness_block),
         "provenance":      _stratified(_provenance_block),
         "comparability":   _stratified(_comparability_block),

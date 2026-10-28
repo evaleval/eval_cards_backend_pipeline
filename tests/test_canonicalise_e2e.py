@@ -942,6 +942,8 @@ def test_snapshot_meta_refuses_fact_rows_the_dedup_stats_do_not_account_for(
         dedup_by_config=by_config,
     )
     kwargs = dict(
+        datafix_summary={"enabled": False, "fixes": {}},
+        repro_exemption={"declaration_sources": [], "declared": {}},
         snapshot_id="2026-05-01T00:00:00Z", chosen=["minibench"],
         settings=Settings.from_env(),
         n_eee=0, n_cards=0, n_exploded=0, n_synth_collisions=0,

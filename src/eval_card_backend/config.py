@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from eval_card_backend.signals.reproducibility import parse_declaration_sources
+
 # src/eval_card_backend/config.py -> repo root. Same anchor the other
 # repo-relative data paths already use (see `sources/collections.py`).
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -79,6 +81,9 @@ class Settings:
     eee_revision: str | None
     benchmark_metadata_revision: str | None
     registry_revision: str | None
+    # Opt-in metadata fills; raw upstream records remain the default.
+    datafix_enabled: bool = False
+    repro_exempt_declaration_sources: frozenset[str] = frozenset()
     # Processed private collection extract (see EEE_PRIVATE_DATASET_REPO). Off
     # by default. `eee_private_revision` must be a commit sha when set; unset
     # resolves HEAD to a sha once per run. This pin is independent of the
@@ -115,6 +120,10 @@ class Settings:
                 os.environ.get("BENCHMARK_METADATA_REVISION") or None
             ),
             registry_revision=os.environ.get("ENTITY_REGISTRY_REVISION") or None,
+            datafix_enabled=os.environ.get("EEE_DATAFIX") == "1",
+            repro_exempt_declaration_sources=parse_declaration_sources(
+                os.environ.get("REPRO_EXEMPT_NON_GENERATIVE")
+            ),
             include_private_eee=os.environ.get("EEE_INCLUDE_PRIVATE") == "1",
             eee_private_allow_zero_members=(
                 os.environ.get("EEE_PRIVATE_ALLOW_ZERO_MEMBERS") == "1"

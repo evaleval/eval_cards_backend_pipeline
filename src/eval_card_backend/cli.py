@@ -106,6 +106,284 @@ def _cmd_canonicalise(args: argparse.Namespace) -> int:
     return 0
 
 
+def _datafix_diagnostics_path(args: argparse.Namespace, fix_id: str):
+    from pathlib import Path
+
+    from eval_card_backend.config import REPO_ROOT
+
+    if args.diagnostics:
+        return Path(args.diagnostics)
+    return REPO_ROOT / ".cache" / "datafix" / f"{fix_id}_diagnostics.json"
+
+
+def _publish_table(table_name: str, table, changes, accept_changes: bool) -> int:
+    """Write a rebuilt table, unless it would change a vendored one.
+
+    A vendored table is a reviewed artifact: the numbers in it are what a
+    bake fills, so a rebuild that produces something else has to be looked
+    at before it lands. Identical content is a no-op rather than a rewrite.
+    """
+    from eval_card_backend.datafix import builders
+
+    old = builders.vendored_table(table_name)
+    if old is not None and not builders.table_differs(old, table):
+        print(f"unchanged: {builders.DATA_DIR / table_name}")
+        return 0
+    if old is not None and not accept_changes:
+        print(
+            f"refusing to change the vendored {table_name}; "
+            f"the rebuild differs from what is shipped:",
+            file=sys.stderr,
+        )
+        for line in changes(old, table) or ["  content differs"]:
+            print(line, file=sys.stderr)
+        print(
+            "Re-run with --accept-changes to write it, after reading the "
+            "differences above.",
+            file=sys.stderr,
+        )
+        return 1
+    path = builders.write_table(table_name, table)
+    print(f"wrote {path}")
+    return 0
+
+
+def _cmd_datafix_build_vals(args: argparse.Namespace) -> int:
+    from collections import Counter
+    from pathlib import Path
+
+    from eval_card_backend.datafix import builders, vals_ai
+    from eval_card_backend.datafix.core import atomic_write_text, canonical_json
+
+    table, diagnostics = builders.build_vals_table(
+        Path(args.eee_root), args.eee_revision
+    )
+    diag_path = _datafix_diagnostics_path(args, vals_ai.FIX_ID)
+    atomic_write_text(diag_path, canonical_json(diagnostics))
+
+    status = _publish_table(
+        vals_ai.TABLE_NAME, table, builders.vals_table_changes, args.accept_changes
+    )
+    if status != 0:
+        return status
+
+    print(f"  patches: {len(table['patches'])}")
+    for field, count in sorted(Counter(p["field"] for p in table["patches"]).items()):
+        print(f"  {field}: {count}")
+    for tier, count in sorted(Counter(p["tier"] for p in table["patches"]).items()):
+        print(f"  {tier}: {count}")
+    print(f"  uncorroborated gaps: {len(diagnostics['uncorroborated'])}")
+    print(f"diagnostics: {diag_path}")
+    return 0
+
+
+def _cmd_datafix_build_hfopenllm(args: argparse.Namespace) -> int:
+    import re
+    from pathlib import Path
+
+    from eval_card_backend.datafix import builders, hfopenllm_v2
+    from eval_card_backend.datafix.core import atomic_write_text, canonical_json
+
+    results_dir = Path(args.results_dir)
+    revision = args.revision or results_dir.name
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        print(
+            "--revision is required: the results directory name "
+            f"({results_dir.name!r}) is not a commit sha.",
+            file=sys.stderr,
+        )
+        return 2
+
+    table, diagnostics = builders.build_hfopenllm_table(results_dir, revision)
+    diag_path = _datafix_diagnostics_path(args, hfopenllm_v2.FIX_ID)
+    atomic_write_text(diag_path, canonical_json(diagnostics))
+
+    status = _publish_table(
+        hfopenllm_v2.TABLE_NAME, table, builders.hfopenllm_table_changes,
+        args.accept_changes,
+    )
+    if status != 0:
+        return status
+
+    print(f"  files read: {diagnostics['files_read']}, "
+          f"rejected: {len(diagnostics['files_rejected'])}")
+    for benchmark, models in table["verified"].items():
+        print(f"  {benchmark}: {len(models)} verified models, "
+              f"default {json.dumps(table['defaults'].get(benchmark))}")
+    print(f"  overrides: {len(table['overrides'])}, "
+          f"conflicts: {len(table['conflicts'])}")
+    print(f"diagnostics: {diag_path}")
+    return 0
+
+
+def _cmd_datafix_build_arc_agi(args: argparse.Namespace) -> int:
+    from collections import Counter
+    from pathlib import Path
+
+    from eval_card_backend.datafix import arc_agi, builders
+    from eval_card_backend.datafix.core import atomic_write_text, canonical_json
+
+    histories = {
+        name: builders.read_run_history(
+            Path(args.history_root) / source["directory"], source["revision"]
+        )
+        for name, source in builders.ARC_PUBLIC_RUNS.items()
+    }
+    table, diagnostics = builders.build_arc_table(
+        Path(args.eee_root), args.eee_revision, Path(args.runs_root), histories
+    )
+    diag_path = _datafix_diagnostics_path(args, arc_agi.FIX_ID)
+    atomic_write_text(diag_path, canonical_json(diagnostics))
+
+    status = _publish_table(
+        arc_agi.TABLE_NAME, table, builders.arc_table_changes, args.accept_changes
+    )
+    if status != 0:
+        return status
+
+    print(f"  runs read: {diagnostics['runs_read']}, "
+          f"patches: {len(table['patches'])}")
+    by_name = Counter(p["evaluation_name"] for p in table["patches"])
+    for name, count in sorted(by_name.items()):
+        print(f"  {name}: {count}")
+    print(f"  with a temperature: "
+          f"{sum(1 for p in table['patches'] if 'temperature' in p['fields'])}")
+    for reason, count in sorted(
+        Counter(r["reason"] for r in diagnostics["rejected_runs"]).items()
+    ):
+        print(f"  runs rejected, {reason}: {count}")
+    for reason, count in sorted(
+        Counter(r["reason"] for r in diagnostics["rejected_results"]).items()
+    ):
+        print(f"  results rejected, {reason}: {count}")
+    print(f"diagnostics: {diag_path}")
+    return 0
+
+
+def _cmd_datafix_export(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from eval_card_backend.datafix import builders
+
+    configs = None
+    if args.configs:
+        configs = [c.strip() for c in args.configs.split(",") if c.strip()]
+    try:
+        counts = builders.export_patched_records(
+            Path(args.eee_root), Path(args.out), configs
+        )
+    except FileExistsError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    print(f"exported to {args.out}")
+    for key in ("records_scanned", "records_patched", "results_patched", "fields_patched"):
+        print(f"  {key}: {counts.get(key, 0)}")
+    return 0
+
+
+def _add_datafix_parser(subs) -> None:
+    datafix = subs.add_parser(
+        "datafix",
+        help="Build and export the EEE datafix overlay's patch tables.",
+    )
+    ops = datafix.add_subparsers(dest="datafix_command", required=True)
+
+    vals = ops.add_parser(
+        "build-vals-table",
+        help="Rebuild the Vals.ai output-cap patch table from an EEE snapshot.",
+    )
+    vals.add_argument("--eee-root", required=True, help="Local EEE snapshot directory.")
+    vals.add_argument(
+        "--eee-revision", required=True,
+        help="Dataset commit sha the snapshot was taken at; recorded in the table.",
+    )
+    vals.add_argument(
+        "--diagnostics",
+        help="Where to write the builder's triage output (default: "
+             ".cache/datafix/<fix_id>_diagnostics.json). Not vendored.",
+    )
+    vals.add_argument(
+        "--accept-changes", action="store_true",
+        help="Write the rebuilt table even though it differs from the "
+             "vendored one. Without it the build prints the differences and "
+             "exits non-zero, leaving the shipped table alone.",
+    )
+    vals.set_defaults(func=_cmd_datafix_build_vals)
+
+    hfo = ops.add_parser(
+        "build-hfopenllm-table",
+        help="Rebuild the Open LLM v2 harness-config table from the published dumps.",
+    )
+    hfo.add_argument(
+        "--results-dir", required=True,
+        help="Local snapshot of open-llm-leaderboard/results.",
+    )
+    hfo.add_argument(
+        "--revision",
+        help="Dataset commit sha; defaults to the snapshot directory's name.",
+    )
+    hfo.add_argument(
+        "--diagnostics",
+        help="Where to write the builder's triage output (default: "
+             ".cache/datafix/<fix_id>_diagnostics.json). Not vendored.",
+    )
+    hfo.add_argument(
+        "--accept-changes", action="store_true",
+        help="Write the rebuilt table even though it differs from the "
+             "vendored one. Without it the build prints the differences and "
+             "exits non-zero, leaving the shipped table alone.",
+    )
+    hfo.set_defaults(func=_cmd_datafix_build_hfopenllm)
+
+    arc = ops.add_parser(
+        "build-arc-agi-table",
+        help="Rebuild the ARC Prize table from the published run outputs.",
+    )
+    arc.add_argument("--eee-root", required=True, help="Local EEE snapshot directory.")
+    arc.add_argument(
+        "--eee-revision", required=True,
+        help="Dataset commit sha the snapshot was taken at; recorded in the table.",
+    )
+    arc.add_argument(
+        "--runs-root", required=True,
+        help="Directory holding one bulk snapshot per public set, in "
+             "subdirectories named as the pinned sources are.",
+    )
+    arc.add_argument(
+        "--history-root", required=True,
+        help="Directory holding a clone of each published dataset, in the "
+             "same subdirectories; read once for the commits that touched "
+             "each run, so a rewritten run can be refused.",
+    )
+    arc.add_argument(
+        "--diagnostics",
+        help="Where to write the builder's triage output (default: "
+             ".cache/datafix/<fix_id>_diagnostics.json). Not vendored.",
+    )
+    arc.add_argument(
+        "--accept-changes", action="store_true",
+        help="Write the rebuilt table even though it differs from the "
+             "vendored one. Without it the build prints the differences and "
+             "exits non-zero, leaving the shipped table alone.",
+    )
+    arc.set_defaults(func=_cmd_datafix_build_arc_agi)
+
+    export = ops.add_parser(
+        "export",
+        help="Write patched copies of the affected records plus a patch manifest.",
+    )
+    export.add_argument("--eee-root", required=True, help="Local EEE snapshot directory.")
+    export.add_argument(
+        "--out", required=True,
+        help="Output directory; must be empty or not exist yet.",
+    )
+    export.add_argument(
+        "--configs",
+        help="Comma-separated configs to export; default: every config a fix applies to.",
+    )
+    export.set_defaults(func=_cmd_datafix_export)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="eval-card-backend")
     subs = parser.add_subparsers(dest="command")
@@ -174,10 +452,14 @@ def main(argv: list[str] | None = None) -> int:
              "produce the full view-layer warehouse.",
     )
 
+    _add_datafix_parser(subs)
+
     args = parser.parse_args(argv)
 
     if args.command == "canonicalise":
         return _cmd_canonicalise(args)
+    if args.command == "datafix":
+        return args.func(args)
     return _cmd_summary(args)
 
 

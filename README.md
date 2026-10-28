@@ -134,6 +134,8 @@ them.
 | `BENCHMARK_METADATA_REFRESH` | unset | Set to `1` to force-refetch the cards. |
 | `ENTITY_REGISTRY_REFRESH` | unset | Set to `1` to force-refetch the registry. |
 | `HF_OPENNESS_PROBE` | `1` | Set to `0` to skip the open-weights backfill (offline bakes, or to pin a snapshot to exactly what the registry states). |
+| `EEE_DATAFIX` | unset | Set to `1` to fill verified missing metadata from source evidence. Default off. |
+| `REPRO_EXEMPT_NON_GENERATIVE` | unset | Comma-separated declaration sources to exempt from temperature and max_tokens requirements: `lm_eval_output_type`, `rewardbench_model_type`. Empty means off. |
 | `EEE_INCLUDE_PRIVATE` | unset | Set to `1` to replace public collection-member rows with processed private extract rows (see below). |
 | `EEE_PRIVATE_ALLOW_ZERO_MEMBERS` | unset | Set to `1` to allow a private extract whose member records are not public yet. |
 | `EEE_PRIVATE_DATASET_REPO` | `evaleval/aisi-inference-scaling-data` | The private dataset. |
@@ -193,6 +195,100 @@ proprietary model from one that was renamed, deleted, made private, or
 never spelled the same way upstream. Verdicts are cached under
 `<cache-root>/hf_openness.json`; network failures are not cached and never
 fail the bake.
+
+## EEE datafix overlay
+
+Some upstream EEE records omit run settings the source itself publishes
+elsewhere, which makes the interpretive signals read a documentation gap as
+a reproducibility gap. The opt-in overlay corrects those records at the Stage A boundary, so every stage below it
+works from corrected data and nothing downstream needs to know.
+
+These are temporary data hotfixes. Their source rules and appliers live in
+`canonicalise/resolution_hotfixes.py`, with an upstream adapter PR pointer
+and a removal condition on each builder. Generic accounting, evidence files,
+and table-building tools remain in `datafix/`. Remove the fills once the
+pinned datastore has been re-ingested with the upstream fixes and no covered
+field gaps remain. `EEE_DATAFIX` defaults off so normal runs retain the
+upstream records until the overlay is explicitly selected.
+
+Each fix is two separable halves:
+
+- a **patch table** under `datafix/data/`, vendored as canonical JSON and
+  keyed by the record identity the upstream datastore uses, so it carries no
+  backend paths, no cache state and nothing specific to this pipeline;
+- a **pure applier** over one record dict, plus a **builder** that
+  regenerates the table from its evidence source. Reruns on the same
+  evidence are byte-identical, so a rebuild can be diffed rather than
+  trusted.
+
+A fix whose evidence is inside the record itself needs no table and is
+registered for every source config instead of one; the registry answers per
+config, so a config no fix reaches still opens nothing.
+
+Four fixes ship today:
+
+| Fix | What it fills | Evidence |
+| --- | --- | --- |
+| `vals_ai_max_tokens` | The output-token cap and the temperature on SAGE, MedCode and MedScribe results that state neither. | The benchmarks' own pages state, in one sentence each, temperature 1 and a 30,000-token cap. The two fields are corroborated independently: a gap is filled only where the same record, or the same model on the same benchmark, states that number for that field elsewhere. |
+| `hfopenllm_v2_harness_configs` | Temperature and output-token cap on IFEval and MATH Level 5 results. | The leaderboard's published lm-evaluation-harness dumps, matched to the record by exact model id. |
+| `inspect_plan_config` | Temperature and output-token cap on results converted from inspect_ai logs, in any config. | The log's own plan, whose config is the task's generate config. Taken only under a closed rule: a checked inspect_ai version with no other package, a plan whose solvers are all ones the rule was read against, a last step that generates with the run's own model, and no step setting a temperature or a cap of its own. |
+| `arc_agi_logged_request_args` | The output-token cap, and a temperature where one was sent, on ARC-AGI public-set scores. | ARC Prize's published run outputs, where every attempt records the arguments the request carried. A run is used only when its logs reconstruct the published score and cost, state one cap throughout, name the pair index of every attempt, finished before the record was read, and no path its directory ever held was touched by a second commit. |
+
+Doctrine, the same for every fix: only ever fill a value that is missing,
+never overwrite one that is present, never replace a container that is not
+a dict, and leave anything ambiguous missing and counted. The overlay
+writes only `generation_config.generation_args`; provenance lives in the
+patch tables, the export manifest and `snapshot_meta.datafix`, never as a
+marker inside the record. A record is validated against the upstream
+contract before the overlay runs (so a fix can never mask malformed input)
+and again afterwards if it changed (a patched record that fails is a bug
+here, and fails the run).
+
+Every fix reads a record as it arrived, so a value one fills is never what
+another reads as already stated. Two fixes landing on the same field of the
+same result are therefore two proposals about one gap: agreeing on the
+value they fill it once, attributed to whichever the registry lists first
+and naming the others on the manifest event; disagreeing, the field stays
+missing and each of them is counted `cross_fix_conflict`.
+
+`snapshot_meta.json` carries a top-level `datafix` block: whether the
+overlay was on, its revision and fingerprint, and per fix the table
+checksum, the evidence revision, and what was filled, skipped or left
+alone. A fix that never ran is reported from the registry's own entry, so
+identifying the overlay and reporting a run that filled nothing open no
+patch table. The counts belong to the run, not to the process. The stage
+cache records the same fingerprint alongside the upstream revision and
+config selection, so `--from-stage` refuses to run later stages over
+records loaded under a different overlay, and a resumed run reports the
+counts of the data actually in `eee_raw`.
+
+Rebuilding a table, and replaying the corrections outside the pipeline:
+
+```bash
+# Regenerate a patch table from its evidence (writes datafix/data/*.json)
+uv run eval-card-backend datafix build-vals-table \
+    --eee-root .cache/eee_datastore --eee-revision <sha>
+uv run eval-card-backend datafix build-hfopenllm-table \
+    --results-dir path/to/open-llm-leaderboard-results/<sha>
+# --runs-root holds one bulk snapshot of each published ARC dataset,
+# --history-root a clone of each, read once for the commits per file
+uv run eval-card-backend datafix build-arc-agi-table \
+    --eee-root .cache/eee_datastore --eee-revision <sha> \
+    --runs-root .cache/arc_public_eval --history-root .cache/arc_history
+
+# Write patched copies of the affected records, in datastore layout,
+# plus patch_manifest.jsonl listing every field written. --out has to be
+# empty or absent, so a re-export can't leave records from an earlier one
+# standing next to a manifest that does not list them
+uv run eval-card-backend datafix export \
+    --eee-root .cache/eee_datastore --out path/to/export
+```
+
+A build that produces the table already shipped is a no-op. One that
+produces something else prints what changed (patches added or removed,
+defaults, overrides, conflicts, verified-model counts) and exits non-zero
+without touching the vendored file; `--accept-changes` writes it once the
+differences have been read.
 
 ## Tests
 
@@ -321,3 +417,16 @@ what it would post unless `write` is on.
 3. If `warehouse/latest` is bad in the meantime, point the frontend
    Space's `SNAPSHOT_URL` at the last good dated folder
    (`warehouse/<snapshot_id>`); dated folders are never overwritten.
+
+The non-generative exemption is independent of `EEE_DATAFIX`. It accepts only
+explicit source declarations from HF Open LLM v2 harness likelihood scoring or RewardBench
+classifier/DPO model types. Unknown source names fail configuration loading.
+Agentic plan and limit requirements remain active. Rows with no remaining
+requirements carry `repro_applicable=false`; model bands exclude them and become `not_applicable`
+when no applicable cells remain. Both settings are recorded in snapshot
+metadata and stage caches reject a change to either setting on resume.
+Cells containing exempt observations publish the union of their observations'
+requirements and missing fields, so an exempt representative cannot hide an
+applicable observation. The headline retains its all-triple gap rate and also
+publishes `applicable_triples` and `applicable_reproducibility_gap_rate`; the
+latter is null when no triple is applicable.

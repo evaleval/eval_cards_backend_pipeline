@@ -1,0 +1,74 @@
+{
+  "documented_statements": {
+    "medcode": {
+      "max_tokens": {
+        "page_sha256": "e64e0ee3a4fdac087e0580855eace09192332b5e91b82771e5429cb84a649852",
+        "quote": "All models are evaluated with temperature 1, and produce at most 30k tokens.",
+        "url": "https://www.vals.ai/benchmarks/medcode",
+        "value": 30000,
+        "verified_on": "2026-10-21"
+      },
+      "temperature": {
+        "page_sha256": "e64e0ee3a4fdac087e0580855eace09192332b5e91b82771e5429cb84a649852",
+        "quote": "All models are evaluated with temperature 1, and produce at most 30k tokens.",
+        "url": "https://www.vals.ai/benchmarks/medcode",
+        "value": 1.0,
+        "verified_on": "2026-10-21"
+      }
+    },
+    "medscribe": {
+      "max_tokens": {
+        "page_sha256": "e4250edb7f804703dfb56720f014433112fc4e583a2e4b6032c8b12b3c9d3c66",
+        "quote": "All models are evaluated with temperature 1, and produce at most 30k tokens.",
+        "url": "https://www.vals.ai/benchmarks/medscribe",
+        "value": 30000,
+        "verified_on": "2026-10-21"
+      },
+      "temperature": {
+        "page_sha256": "e4250edb7f804703dfb56720f014433112fc4e583a2e4b6032c8b12b3c9d3c66",
+        "quote": "All models are evaluated with temperature 1, and produce at most 30k tokens.",
+        "url": "https://www.vals.ai/benchmarks/medscribe",
+        "value": 1.0,
+        "verified_on": "2026-10-21"
+      }
+    },
+    "mmmu": {
+      "max_tokens": {
+        "page_sha256": "403785fcf9a50f899cb9f1d75026bada929f9d37e2b9296dcd1331494631ed87",
+        "quote": "We established a consistent baseline by using a default configuration of 8192 maximum output tokens for all models to ensure that outputs were not truncated.",
+        "url": "https://www.vals.ai/benchmarks/mmmu",
+        "value": 8192,
+        "verified_on": "2026-10-21"
+      },
+      "temperature": {
+        "page_sha256": "403785fcf9a50f899cb9f1d75026bada929f9d37e2b9296dcd1331494631ed87",
+        "quote": "All models were ran with a temperature of 0.",
+        "url": "https://www.vals.ai/benchmarks/mmmu",
+        "value": 0.0,
+        "verified_on": "2026-10-21"
+      }
+    },
+    "sage": {
+      "max_tokens": {
+        "page_sha256": "fb3f238f596cc1402e066d95d95a2cb71936fb2f0350ba3a3376dba78714ca6b",
+        "quote": "All models are evaluated with temperature 1, and produce at most 30K tokens (the length of a short book - more than enough to adequately grade student work).",
+        "url": "https://www.vals.ai/benchmarks/sage",
+        "value": 30000,
+        "verified_on": "2026-10-21"
+      },
+      "temperature": {
+        "page_sha256": "fb3f238f596cc1402e066d95d95a2cb71936fb2f0350ba3a3376dba78714ca6b",
+        "quote": "All models are evaluated with temperature 1, and produce at most 30K tokens (the length of a short book - more than enough to adequately grade student work).",
+        "url": "https://www.vals.ai/benchmarks/sage",
+        "value": 1.0,
+        "verified_on": "2026-10-21"
+      }
+    }
+  },
+  "fix_id": "vals_ai_max_tokens",
+  "policy": "benchmark_page_default",
+  "source": {
+    "dataset": "evaleval/EEE_datastore",
+    "revision": "5d022848fa4a13be240835fabf39a7a5dea3da5f"
+  }
+}

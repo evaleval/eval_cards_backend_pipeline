@@ -1,0 +1,3196 @@
+{
+  "fix_id": "arc_agi_logged_request_args",
+  "patches": [
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "claude-opus-4-5-20251101-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-16k/1775549757.5773911",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-16k/1775549757.5773911#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-5-20251101-thinking-16k",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "claude-opus-4-5-20251101-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-16k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-5-20251101-thinking-16k",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "claude-opus-4-5-20251101-thinking-none",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-none/1775549757.578542",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-none/1775549757.578542#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-5-20251101-thinking-none",
+        "score_details/uncertainty/num_samples": 249,
+        "source_data/additional_details/scored_tasks": "249"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "claude-opus-4-5-20251101-thinking-none",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-none/1775549757.578542",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-none/1775549757.578542#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-5-20251101-thinking-none",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "claude-opus-4-5-20251101-thinking-none",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-none/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-5-20251101-thinking-none",
+        "score_details/uncertainty/num_samples": 249,
+        "source_data/additional_details/scored_tasks": "249"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "claude-opus-4-5-20251101-thinking-none",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-none/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-5-20251101-thinking-none",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-high",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-high/1775549757.578887",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-high/1775549757.578887#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-6-thinking-120K-high",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-high",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-high/1775549757.578887",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-high/1775549757.578887#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-6-thinking-120K-high",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-high",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-high/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-6-thinking-120K-high",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-high",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-high/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-6-thinking-120K-high",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-low",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-low/1775549757.5792232",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-low/1775549757.5792232#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-6-thinking-120K-low",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-low",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-low/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-6-thinking-120K-low",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-max",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-max/1775549757.579558",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-max/1775549757.579558#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-6-thinking-120K-max",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-max",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-max/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-6-thinking-120K-max",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-medium",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-medium/1775549757.5798862",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-medium/1775549757.5798862#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-6-thinking-120K-medium",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "claude-opus-4-6-thinking-120K-medium",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-medium/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-6-thinking-120K-medium",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-high",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-high/1775549757.591108",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-flash-preview-thinking-high/1775549757.591108#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-flash-preview-thinking-high",
+        "score_details/uncertainty/num_samples": 330,
+        "source_data/additional_details/scored_tasks": "330"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-high",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-high/1775549757.591108",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-flash-preview-thinking-high/1775549757.591108#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-flash-preview-thinking-high",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-high",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-high/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-flash-preview-thinking-high",
+        "score_details/uncertainty/num_samples": 330,
+        "source_data/additional_details/scored_tasks": "330"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-high",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-high/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-flash-preview-thinking-high",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-low",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-low/1775549757.591407",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-flash-preview-thinking-low/1775549757.591407#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-flash-preview-thinking-low",
+        "score_details/uncertainty/num_samples": 228,
+        "source_data/additional_details/scored_tasks": "228"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-low",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-low/1775549757.591407",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-flash-preview-thinking-low/1775549757.591407#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-flash-preview-thinking-low",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-low",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-low/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-flash-preview-thinking-low",
+        "score_details/uncertainty/num_samples": 228,
+        "source_data/additional_details/scored_tasks": "228"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-low",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-low/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-flash-preview-thinking-low",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-medium",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-medium/1775549757.5917141",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-flash-preview-thinking-medium/1775549757.5917141#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-flash-preview-thinking-medium",
+        "score_details/uncertainty/num_samples": 363,
+        "source_data/additional_details/scored_tasks": "363"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-medium",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-medium/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-flash-preview-thinking-medium",
+        "score_details/uncertainty/num_samples": 363,
+        "source_data/additional_details/scored_tasks": "363"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-minimal",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-minimal/1775549757.592084",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-flash-preview-thinking-minimal/1775549757.592084#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-flash-preview-thinking-minimal",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-minimal",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-minimal/1775549757.592084",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-flash-preview-thinking-minimal/1775549757.592084#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-flash-preview-thinking-minimal",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-minimal",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-minimal/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-flash-preview-thinking-minimal",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gemini-3-flash-preview-thinking-minimal",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-minimal/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 64000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-flash-preview-thinking-minimal",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-1-2025-11-13-thinking-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-low/1775549757.5983539",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-low/1775549757.5983539#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-1-2025-11-13-thinking-low",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-1-2025-11-13-thinking-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-low/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-1-2025-11-13-thinking-low",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-1-2025-11-13-thinking-none",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-none/1775549757.5991511",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-none/1775549757.5991511#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-1-2025-11-13-thinking-none",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-1-2025-11-13-thinking-none",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-none/1775549757.5991511",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-none/1775549757.5991511#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-1-2025-11-13-thinking-none",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-1-2025-11-13-thinking-none",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-none/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-1-2025-11-13-thinking-none",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-1-2025-11-13-thinking-none",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-none/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-1-2025-11-13-thinking-none",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-high/1775549757.599508",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-high/1775549757.599508#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-high",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-high/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-high",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-low/1775549757.599811",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-low/1775549757.599811#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-low",
+        "score_details/uncertainty/num_samples": 396,
+        "source_data/additional_details/scored_tasks": "396"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-low/1775549757.599811",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-low/1775549757.599811#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-low",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-low/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-low",
+        "score_details/uncertainty/num_samples": 396,
+        "source_data/additional_details/scored_tasks": "396"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-low/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-low",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-medium/1775549757.600107",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-medium/1775549757.600107#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-medium",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-medium/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-medium",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-none",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-none/1775549757.6004102",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-none/1775549757.6004102#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-none",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-none",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-none/1775549757.6004102",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-none/1775549757.6004102#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-none",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-none",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-none/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-none",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-2-2025-12-11-thinking-none",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-none/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 196608
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-none",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-pro-2025-12-11-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-medium/1775549757.601366",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-medium/1775549757.601366#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-pro-2025-12-11-medium",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-2-pro-2025-12-11-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-medium/1775549757.601366",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-medium/1775549757.601366#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-pro-2025-12-11-medium",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v1_public_eval",
+      "directory": "gpt-5-2-pro-2025-12-11-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-medium/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-pro-2025-12-11-medium",
+        "score_details/uncertainty/num_samples": 400,
+        "source_data/additional_details/scored_tasks": "400"
+      },
+      "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+    },
+    {
+      "cap_key": "max_output_tokens",
+      "dataset": "arcprize/arc_agi_v2_public_eval",
+      "directory": "gpt-5-2-pro-2025-12-11-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-medium/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {
+        "max_tokens": 128000
+      },
+      "metadata": {
+        "generation_config/additional_details/cap_key": "max_output_tokens",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-pro-2025-12-11-medium",
+        "score_details/uncertainty/num_samples": 120,
+        "source_data/additional_details/scored_tasks": "120"
+      },
+      "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+    }
+  ],
+  "rejected_patches": [
+    {
+      "directory": "qwen3-235b-a22b-instruct-2507",
+      "evaluation_id": "arc-agi/alibaba/qwen3-235b-a22b-instruct-2507/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/qwen3-235b-a22b-instruct-2507"
+      }
+    },
+    {
+      "directory": "qwen3-235b-a22b-instruct-2507",
+      "evaluation_id": "arc-agi/alibaba/qwen3-235b-a22b-instruct-2507/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/qwen3-235b-a22b-instruct-2507"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-16k/1775549757.573982",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-16k/1775549757.573982#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-16k/1775549757.573982",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-16k/1775549757.573982#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-16k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-16k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-1k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-1k/1775549757.574522",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-1k/1775549757.574522#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001-thinking-1k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-1k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-1k/1775549757.574522",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-1k/1775549757.574522#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001-thinking-1k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-1k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-1k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001-thinking-1k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-1k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-1k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001-thinking-1k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-32k/1775549757.575113",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-32k/1775549757.575113#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-32k/1775549757.575113",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-32k/1775549757.575113#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-32k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-32k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-8k/1775549757.575538",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-8k/1775549757.575538#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-8k/1775549757.575538",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-8k/1775549757.575538#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-8k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001-thinking-8k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001/1775549757.573617",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001/1775549757.573617#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001/1775549757.573617",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-haiku-4-5-20251001/1775549757.573617#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-haiku-4-5-20251001"
+      }
+    },
+    {
+      "directory": "claude-haiku-4-5-20251001",
+      "evaluation_id": "arc-agi/anthropic/claude-haiku-4-5-20251001/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-haiku-4-5-20251001"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-16k/1775549757.5773911",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-16k/1775549757.5773911#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-5-20251101-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-16k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-5-20251101-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-32k/1775549757.577719",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-32k/1775549757.577719#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-5-20251101-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-32k/1775549757.577719",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-32k/1775549757.577719#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-5-20251101-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-32k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-5-20251101-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-32k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-5-20251101-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-8k/1775549757.578212",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-8k/1775549757.578212#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-5-20251101-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-8k/1775549757.578212",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-8k/1775549757.578212#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-5-20251101-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-8k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-5-20251101-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-5-20251101-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-5-20251101-thinking-8k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-5-20251101-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-opus-4-6-thinking-120K-low",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-low/1775549757.5792232",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-low/1775549757.5792232#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-6-thinking-120K-low"
+      }
+    },
+    {
+      "directory": "claude-opus-4-6-thinking-120K-low",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-low/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-opus-4-6-thinking-120K-low"
+      }
+    },
+    {
+      "directory": "claude-opus-4-6-thinking-120K-max",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-max/1775549757.579558",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-max/1775549757.579558#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-6-thinking-120K-max"
+      }
+    },
+    {
+      "directory": "claude-opus-4-6-thinking-120K-max",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-max/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-6-thinking-120K-max"
+      }
+    },
+    {
+      "directory": "claude-opus-4-6-thinking-120K-medium",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-medium/1775549757.5798862",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-medium/1775549757.5798862#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-6-thinking-120K-medium"
+      }
+    },
+    {
+      "directory": "claude-opus-4-6-thinking-120K-medium",
+      "evaluation_id": "arc-agi/anthropic/claude-opus-4-6-thinking-120k-medium/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-opus-4-6-thinking-120K-medium"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-16k/1775549757.581922",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-16k/1775549757.581922#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-16k/1775549757.581922",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-16k/1775549757.581922#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-16k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-16k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-16k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929-thinking-16k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-1k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-1k/1775549757.582247",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-1k/1775549757.582247#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929-thinking-1k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-1k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-1k/1775549757.582247",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-1k/1775549757.582247#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929-thinking-1k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-1k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-1k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929-thinking-1k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-1k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-1k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929-thinking-1k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-32k/1775549757.582564",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-32k/1775549757.582564#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-32k/1775549757.582564",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-32k/1775549757.582564#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-32k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-32k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-32k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929-thinking-32k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-8k/1775549757.58289",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-8k/1775549757.58289#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-8k/1775549757.58289",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-8k/1775549757.58289#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-8k/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929-thinking-8k",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929-thinking-8k/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929-thinking-8k"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929/1775549757.581595",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929/1775549757.581595#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929/1775549757.581595",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929/1775549757.581595#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/claude-sonnet-4-5-20250929"
+      }
+    },
+    {
+      "directory": "claude-sonnet-4-5-20250929",
+      "evaluation_id": "arc-agi/anthropic/claude-sonnet-4-5-20250929/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/claude-sonnet-4-5-20250929"
+      }
+    },
+    {
+      "directory": "deepseek-v3.2",
+      "evaluation_id": "arc-agi/deepseek/v3.2/1775549757.586973",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/deepseek/v3.2/1775549757.586973#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/deepseek-v3.2"
+      }
+    },
+    {
+      "directory": "deepseek-v3.2",
+      "evaluation_id": "arc-agi/deepseek/v3.2/1775549757.586973",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/deepseek/v3.2/1775549757.586973#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/deepseek-v3.2"
+      }
+    },
+    {
+      "directory": "deepseek-v3.2",
+      "evaluation_id": "arc-agi/deepseek/v3.2/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/deepseek-v3.2"
+      }
+    },
+    {
+      "directory": "deepseek-v3.2",
+      "evaluation_id": "arc-agi/deepseek/v3.2/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/deepseek-v3.2"
+      }
+    },
+    {
+      "directory": "gemini-3-1-pro-preview",
+      "evaluation_id": "arc-agi/google/gemini-3-1-pro-preview/1775549757.5903602",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-1-pro-preview/1775549757.5903602#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "cap_conflict",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-1-pro-preview"
+      }
+    },
+    {
+      "directory": "gemini-3-1-pro-preview",
+      "evaluation_id": "arc-agi/google/gemini-3-1-pro-preview/1775549757.5903602",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-1-pro-preview/1775549757.5903602#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "cap_conflict",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-1-pro-preview"
+      }
+    },
+    {
+      "directory": "gemini-3-1-pro-preview",
+      "evaluation_id": "arc-agi/google/gemini-3-1-pro-preview/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "cap_conflict",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-1-pro-preview"
+      }
+    },
+    {
+      "directory": "gemini-3-1-pro-preview",
+      "evaluation_id": "arc-agi/google/gemini-3-1-pro-preview/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "cap_conflict",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-1-pro-preview"
+      }
+    },
+    {
+      "directory": "gemini-3-1-pro-preview",
+      "evaluation_id": "arc-agi/google/gemini-3-1-pro-preview/1788508594.440488",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "cap_conflict",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gemini-3-1-pro-preview"
+      }
+    },
+    {
+      "directory": "gemini-3-1-pro-preview",
+      "evaluation_id": "arc-agi/google/gemini-3-1-pro-preview/1788508594.440488",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "cap_conflict",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-1-pro-preview"
+      }
+    },
+    {
+      "directory": "gemini-3-flash-preview-thinking-medium",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-medium/1775549757.5917141",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/google/gemini-3-flash-preview-thinking-medium/1775549757.5917141#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-flash-preview-thinking-medium"
+      }
+    },
+    {
+      "directory": "gemini-3-flash-preview-thinking-medium",
+      "evaluation_id": "arc-agi/google/gemini-3-flash-preview-thinking-medium/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gemini-3-flash-preview-thinking-medium"
+      }
+    },
+    {
+      "directory": "minimax-m2.5",
+      "evaluation_id": "arc-agi/minimax/m2.5/1775549757.5937831",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/minimax/m2.5/1775549757.5937831#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/minimax-m2.5"
+      }
+    },
+    {
+      "directory": "minimax-m2.5",
+      "evaluation_id": "arc-agi/minimax/m2.5/1775549757.5937831",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/minimax/m2.5/1775549757.5937831#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/minimax-m2.5"
+      }
+    },
+    {
+      "directory": "minimax-m2.5",
+      "evaluation_id": "arc-agi/minimax/m2.5/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/minimax-m2.5"
+      }
+    },
+    {
+      "directory": "minimax-m2.5",
+      "evaluation_id": "arc-agi/minimax/m2.5/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/minimax-m2.5"
+      }
+    },
+    {
+      "directory": "kimi-k2.5",
+      "evaluation_id": "arc-agi/moonshotai/kimi-k2.5/1775549757.595436",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/moonshotai/kimi-k2.5/1775549757.595436#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/kimi-k2.5"
+      }
+    },
+    {
+      "directory": "kimi-k2.5",
+      "evaluation_id": "arc-agi/moonshotai/kimi-k2.5/1775549757.595436",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/moonshotai/kimi-k2.5/1775549757.595436#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/kimi-k2.5"
+      }
+    },
+    {
+      "directory": "kimi-k2.5",
+      "evaluation_id": "arc-agi/moonshotai/kimi-k2.5/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/kimi-k2.5"
+      }
+    },
+    {
+      "directory": "kimi-k2.5",
+      "evaluation_id": "arc-agi/moonshotai/kimi-k2.5/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/kimi-k2.5"
+      }
+    },
+    {
+      "directory": "gpt-4-1-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-2025-04-14/1775549757.596294",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-4-1-2025-04-14/1775549757.596294#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-4-1-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-2025-04-14/1775549757.596294",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-4-1-2025-04-14/1775549757.596294#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-4-1-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-2025-04-14/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-4-1-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-2025-04-14/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-4-1-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-mini-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-mini-2025-04-14/1775549757.596637",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-4-1-mini-2025-04-14/1775549757.596637#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-4-1-mini-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-mini-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-mini-2025-04-14/1775549757.596637",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-4-1-mini-2025-04-14/1775549757.596637#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-4-1-mini-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-mini-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-mini-2025-04-14/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-4-1-mini-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-mini-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-mini-2025-04-14/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-4-1-mini-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-nano-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-nano-2025-04-14/1775549757.596954",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-4-1-nano-2025-04-14/1775549757.596954#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-4-1-nano-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-nano-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-nano-2025-04-14/1775549757.596954",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-4-1-nano-2025-04-14/1775549757.596954#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-4-1-nano-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-nano-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-nano-2025-04-14/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-4-1-nano-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-4-1-nano-2025-04-14",
+      "evaluation_id": "arc-agi/openai/gpt-4-1-nano-2025-04-14/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-4-1-nano-2025-04-14"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-high/1775549757.5980318",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-high/1775549757.5980318#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-1-2025-11-13-thinking-high"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-high/1775549757.5980318",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-high/1775549757.5980318#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-1-2025-11-13-thinking-high"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-high/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-1-2025-11-13-thinking-high"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-high/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-1-2025-11-13-thinking-high"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-low/1775549757.5983539",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-low/1775549757.5983539#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-1-2025-11-13-thinking-low"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-low/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-1-2025-11-13-thinking-low"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-medium/1775549757.598689",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-medium/1775549757.598689#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-1-2025-11-13-thinking-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-medium/1775549757.598689",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-medium/1775549757.598689#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-1-2025-11-13-thinking-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-medium/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-1-2025-11-13-thinking-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-1-2025-11-13-thinking-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-1-2025-11-13-thinking-medium/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-1-2025-11-13-thinking-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-2-2025-12-11-thinking-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-high/1775549757.599508",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-high/1775549757.599508#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-high"
+      }
+    },
+    {
+      "directory": "gpt-5-2-2025-12-11-thinking-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-high/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-high"
+      }
+    },
+    {
+      "directory": "gpt-5-2-2025-12-11-thinking-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-medium/1775549757.600107",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-medium/1775549757.600107#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-2-2025-12-11-thinking-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-medium/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-2-2025-12-11-thinking-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-xhigh/1775549757.600713",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-xhigh/1775549757.600713#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-2-2025-12-11-thinking-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-xhigh/1775549757.600713",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-xhigh/1775549757.600713#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-2-2025-12-11-thinking-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-xhigh/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-2025-12-11-thinking-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-2-2025-12-11-thinking-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-2025-12-11-thinking-xhigh/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-2025-12-11-thinking-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-2-pro-2025-12-11-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-high/1775549757.60104",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-high/1775549757.60104#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-pro-2025-12-11-high"
+      }
+    },
+    {
+      "directory": "gpt-5-2-pro-2025-12-11-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-high/1775549757.60104",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-high/1775549757.60104#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-pro-2025-12-11-high"
+      }
+    },
+    {
+      "directory": "gpt-5-2-pro-2025-12-11-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-high/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-pro-2025-12-11-high"
+      }
+    },
+    {
+      "directory": "gpt-5-2-pro-2025-12-11-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-high/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-2-pro-2025-12-11-high"
+      }
+    },
+    {
+      "directory": "gpt-5-2-pro-2025-12-11-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-xhigh/1775549757.6016698",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-xhigh/1775549757.6016698#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-pro-2025-12-11-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-2-pro-2025-12-11-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-2-pro-2025-12-11-xhigh/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "attempt_not_recorded",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-2-pro-2025-12-11-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-high/1775549757.603203",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-high/1775549757.603203#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-high/1775549757.603203",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-high/1775549757.603203#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-high/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-high/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-low/1775549757.6035452",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-low/1775549757.6035452#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-low/1775549757.6035452",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-low/1775549757.6035452#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-low/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-low/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-medium/1775549757.6038358",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-medium/1775549757.6038358#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-medium/1775549757.6038358",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-medium/1775549757.6038358#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-medium/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-medium/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-high/1775549757.604119",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-mini-high/1775549757.604119#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-mini-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-high/1775549757.604119",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-mini-high/1775549757.604119#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-mini-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-high/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-mini-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-high/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-mini-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-low/1775549757.604408",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-mini-low/1775549757.604408#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-mini-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-low/1775549757.604408",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-mini-low/1775549757.604408#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-mini-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-low/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-mini-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-low/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-mini-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-medium/1775549757.604688",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-mini-medium/1775549757.604688#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-mini-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-medium/1775549757.604688",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-mini-medium/1775549757.604688#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-mini-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-medium/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-mini-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-medium/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-mini-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-xhigh/1775549757.604979",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-mini-xhigh/1775549757.604979#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-mini-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-xhigh/1775549757.604979",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-mini-xhigh/1775549757.604979#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-mini-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-xhigh/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-mini-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-mini-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-mini-xhigh/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-mini-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-high/1775549757.605267",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-nano-high/1775549757.605267#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-nano-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-high/1775549757.605267",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-nano-high/1775549757.605267#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-nano-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-high/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-nano-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-high",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-high/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-nano-high"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-low/1775549757.605558",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-nano-low/1775549757.605558#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-nano-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-low/1775549757.605558",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-nano-low/1775549757.605558#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-nano-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-low/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-nano-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-low/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-nano-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-low/1788508594.440488",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-nano-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-low",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-low/1788508594.440488",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-nano-low"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-medium/1775549757.605841",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-nano-medium/1775549757.605841#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-nano-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-medium/1775549757.605841",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-nano-medium/1775549757.605841#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-nano-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-medium/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-nano-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-medium",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-medium/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-nano-medium"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-xhigh/1775549757.6061199",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-nano-xhigh/1775549757.6061199#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-nano-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-xhigh/1775549757.6061199",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-nano-xhigh/1775549757.6061199#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-nano-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-xhigh/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-nano-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-nano-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-nano-xhigh/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-nano-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-pro-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-pro-xhigh/1775549757.606405",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-pro-xhigh/1775549757.606405#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-pro-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-pro-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-pro-xhigh/1775549757.606405",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-4-pro-xhigh/1775549757.606405#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-pro-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-pro-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-pro-xhigh/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-4-pro-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-4-pro-xhigh",
+      "evaluation_id": "arc-agi/openai/gpt-5-4-pro-xhigh/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-4-pro-xhigh"
+      }
+    },
+    {
+      "directory": "gpt-5-pro-2025-10-06",
+      "evaluation_id": "arc-agi/openai/gpt-5-pro-2025-10-06/1775549757.6096609",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-pro-2025-10-06/1775549757.6096609#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-pro-2025-10-06"
+      }
+    },
+    {
+      "directory": "gpt-5-pro-2025-10-06",
+      "evaluation_id": "arc-agi/openai/gpt-5-pro-2025-10-06/1775549757.6096609",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/openai/gpt-5-pro-2025-10-06/1775549757.6096609#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-pro-2025-10-06"
+      }
+    },
+    {
+      "directory": "gpt-5-pro-2025-10-06",
+      "evaluation_id": "arc-agi/openai/gpt-5-pro-2025-10-06/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/gpt-5-pro-2025-10-06"
+      }
+    },
+    {
+      "directory": "gpt-5-pro-2025-10-06",
+      "evaluation_id": "arc-agi/openai/gpt-5-pro-2025-10-06/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/gpt-5-pro-2025-10-06"
+      }
+    },
+    {
+      "directory": "qwen3-235b-a22b-instruct-2507",
+      "evaluation_id": "arc-agi/qwen/qwen3-235b-a22b-instruct-2507/1775549757.6141162",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/qwen/qwen3-235b-a22b-instruct-2507/1775549757.6141162#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/qwen3-235b-a22b-instruct-2507"
+      }
+    },
+    {
+      "directory": "qwen3-235b-a22b-instruct-2507",
+      "evaluation_id": "arc-agi/qwen/qwen3-235b-a22b-instruct-2507/1775549757.6141162",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/qwen/qwen3-235b-a22b-instruct-2507/1775549757.6141162#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/qwen3-235b-a22b-instruct-2507"
+      }
+    },
+    {
+      "directory": "grok-4-fast-reasoning",
+      "evaluation_id": "arc-agi/xai/grok-4-fast-reasoning/1775549757.6156642",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/xai/grok-4-fast-reasoning/1775549757.6156642#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/grok-4-fast-reasoning"
+      }
+    },
+    {
+      "directory": "grok-4-fast-reasoning",
+      "evaluation_id": "arc-agi/xai/grok-4-fast-reasoning/1775549757.6156642",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/xai/grok-4-fast-reasoning/1775549757.6156642#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/grok-4-fast-reasoning"
+      }
+    },
+    {
+      "directory": "grok-4-fast-reasoning",
+      "evaluation_id": "arc-agi/xai/grok-4-fast-reasoning/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/grok-4-fast-reasoning"
+      }
+    },
+    {
+      "directory": "grok-4-fast-reasoning",
+      "evaluation_id": "arc-agi/xai/grok-4-fast-reasoning/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/grok-4-fast-reasoning"
+      }
+    },
+    {
+      "directory": "grok-4.20-beta-0309b-reasoning",
+      "evaluation_id": "arc-agi/xai/grok-4.20-beta-0309b-reasoning/1775549757.615995",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/xai/grok-4.20-beta-0309b-reasoning/1775549757.615995#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/grok-4.20-beta-0309b-reasoning"
+      }
+    },
+    {
+      "directory": "grok-4.20-beta-0309b-reasoning",
+      "evaluation_id": "arc-agi/xai/grok-4.20-beta-0309b-reasoning/1775549757.615995",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/xai/grok-4.20-beta-0309b-reasoning/1775549757.615995#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/grok-4.20-beta-0309b-reasoning"
+      }
+    },
+    {
+      "directory": "grok-4.20-beta-0309b-reasoning",
+      "evaluation_id": "arc-agi/xai/grok-4.20-beta-0309b-reasoning/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/grok-4.20-beta-0309b-reasoning"
+      }
+    },
+    {
+      "directory": "grok-4.20-beta-0309b-reasoning",
+      "evaluation_id": "arc-agi/xai/grok-4.20-beta-0309b-reasoning/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/grok-4.20-beta-0309b-reasoning"
+      }
+    },
+    {
+      "directory": "glm-5",
+      "evaluation_id": "arc-agi/zhipu-ai/glm-5/1786637127.6753032",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "v1_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/glm-5"
+      }
+    },
+    {
+      "directory": "glm-5",
+      "evaluation_id": "arc-agi/zhipu-ai/glm-5/1786637127.6753032",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "v2_Public_Eval::score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/glm-5"
+      }
+    },
+    {
+      "directory": "glm-5",
+      "evaluation_id": "arc-agi/zhipu/glm-5/1775549757.616313",
+      "evaluation_name": "v1_Public_Eval",
+      "evaluation_result_id": "arc-agi/zhipu/glm-5/1775549757.616313#v1_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v1_public_eval@3e9c9d1a8402aff82356815c106cecaea65cb7d9/glm-5"
+      }
+    },
+    {
+      "directory": "glm-5",
+      "evaluation_id": "arc-agi/zhipu/glm-5/1775549757.616313",
+      "evaluation_name": "v2_Public_Eval",
+      "evaluation_result_id": "arc-agi/zhipu/glm-5/1775549757.616313#v2_public_eval#score",
+      "expected_old": null,
+      "fields": {},
+      "metadata": {
+        "generation_config/additional_details/request_args_unavailable": "no_results_file",
+        "generation_config/additional_details/request_log": "arcprize/arc_agi_v2_public_eval@026789c1c12a4c34580a32e84dcaf5630d7e8f31/glm-5"
+      }
+    }
+  ],
+  "source": {
+    "datasets": {
+      "v1_Public_Eval": {
+        "dataset": "arcprize/arc_agi_v1_public_eval",
+        "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9"
+      },
+      "v2_Public_Eval": {
+        "dataset": "arcprize/arc_agi_v2_public_eval",
+        "revision": "026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+      }
+    },
+    "eee": {
+      "dataset": "evaleval/EEE_datastore",
+      "revision": "5d022848fa4a13be240835fabf39a7a5dea3da5f"
+    },
+    "revision": "3e9c9d1a8402aff82356815c106cecaea65cb7d9+026789c1c12a4c34580a32e84dcaf5630d7e8f31"
+  }
+}

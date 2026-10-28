@@ -310,6 +310,8 @@ def test_snapshot_meta_records_hand_built_dirs_under_a_pin(monkeypatch):
     monkeypatch.setenv("ENTITY_REGISTRY_REVISION", PIN)
     monkeypatch.setenv("BENCHMARK_METADATA_REVISION", "e" * 40)
     meta = pipeline._build_snapshot_meta(
+        datafix_summary={"enabled": False, "fixes": {}},
+        repro_exemption={"declaration_sources": [], "declared": {}},
         snapshot_id="2026-05-01T00:00:00Z",
         chosen=[],
         settings=Settings.from_env(),
@@ -494,6 +496,8 @@ def test_snapshot_meta_names_no_revision_for_a_hand_built_eee_tree(
     monkeypatch.setattr(pipeline, "_hf_dataset_snapshot", _snapshot)
     monkeypatch.setenv("EEE_REVISION", PIN)
     meta = pipeline._build_snapshot_meta(
+        datafix_summary={"enabled": False, "fixes": {}},
+        repro_exemption={"declaration_sources": [], "declared": {}},
         snapshot_id="2026-05-01T00:00:00Z",
         chosen=[],
         settings=Settings.from_env(),
@@ -555,6 +559,8 @@ def test_snapshot_meta_names_no_revision_for_a_hand_built_private_dir(monkeypatc
     monkeypatch.setenv("EEE_INCLUDE_PRIVATE", "1")
     monkeypatch.setenv("EEE_PRIVATE_REVISION", PIN)
     meta = pipeline._build_snapshot_meta(
+        datafix_summary={"enabled": False, "fixes": {}},
+        repro_exemption={"declaration_sources": [], "declared": {}},
         snapshot_id="2026-05-01T00:00:00Z",
         chosen=[],
         settings=Settings.from_env(),

@@ -39,6 +39,7 @@ from eval_card_backend.canonicalise.cache import (
     normalize_snapshot_id,
     validate_letter,
 )
+from eval_card_backend import datafix
 from eval_card_backend.canonicalise.resolver_setup import register_udfs
 from eval_card_backend.config import (
     BENCHMARK_METADATA_DATASET_REPO,
@@ -376,12 +377,31 @@ def run(
     if not skip_preflight and runs_stage_a:
         preflight(eee_root, registry_root, cards_root)
 
-    # Config list + cards are only needed when Stage A actually runs.
+    # Config list + cards are only needed when Stage A actually runs. A
+    # resume that names a selection of its own still resolves it, so the
+    # cache can be checked against what the operator asked for; `None`
+    # means this run states no selection and accepts the cached one.
     chosen: list[str] = []
     cards: dict = {}
+    selected: list[str] | None = None
     if runs_stage_a:
         chosen = _select_configs(eee_root, settings, configs, config_limit)
+        selected = sorted(chosen)
         cards = benchmark_cards.load_cards(cards_root) if cards_root else {}
+    elif configs is not None or config_limit is not None:
+        selected = sorted(_select_configs(eee_root, settings, configs, config_limit))
+
+    # What Stage A was (or would have been) fed. Stamped into the cache
+    # marker and checked before any restore, so a resumed run can't run
+    # later stages over records loaded from a different upstream revision,
+    # a different config selection, or a different datafix overlay.
+    cache.stage_a_inputs = {
+        "eee_revision": settings.eee_revision or eee.cached_revision(eee_root),
+        "configs": selected,
+        "datafix_enabled": settings.datafix_enabled,
+        "datafix_fingerprint": datafix.fingerprint(),
+        "repro_exempt_declaration_sources": sorted(settings.repro_exempt_declaration_sources),
+    }
 
     # 2. DuckDB + UDFs
     con, db_dir = _connect_duckdb()
@@ -390,6 +410,9 @@ def run(
     reset_provenance_counter()
     reset_purpose_shape_counter()
     eee.reset_drop_counter()
+    # One account of what the overlay does, belonging to this run.
+    datafix_accounting = datafix.DatafixSummary()
+    datafix.reset_annotations()
 
     # Load aliases and canonical metadata as one bundle. Constructing
     # Resolver(alias_store) alone silently disables leaf/lineage enrichment.
@@ -416,6 +439,16 @@ def run(
             "from_stage=%s — restored %d cached table(s) from %s: %s",
             from_stage, len(restored), cache.dir, restored,
         )
+
+        # The records in eee_raw were loaded by an earlier run; only that
+        # run knows what it was fed and what the overlay did to it. Adopt
+        # its account rather than reporting zeros, or a narrower set of
+        # inputs, for data this run never read.
+        cache.stage_a_inputs = cache.cached_stage_a_inputs()
+        cached_datafix = cache.cached_datafix_summary()
+        if cached_datafix is not None:
+            datafix_accounting.restore(cached_datafix)
+            cache.datafix_summary = cached_datafix
 
         # Guard: a cache written before the collection adapter existed
         # restores fragment-laden exploded tables with the collection
@@ -480,9 +513,20 @@ def run(
         if letter == "A":
             log.info("Stage A: loading sources …")
             n_eee = stages.stage_a_load_eee(
-                con, eee.iter_arrow_tables(eee_root, chosen, settings.hf_token)
+                con, eee.iter_arrow_tables(
+                    eee_root, chosen, settings.hf_token,
+                    datafix_enabled=settings.datafix_enabled,
+                    datafix_summary=datafix_accounting,
+                    collect_declarations=bool(settings.repro_exempt_declaration_sources),
+                    eee_revision=cache.stage_a_inputs["eee_revision"],
+                )
+            )
+            cache.datafix_summary = datafix_accounting.as_dict(
+                enabled=settings.datafix_enabled
             )
             log.info("  loaded %d EEE records (validated)", n_eee)
+            _log_datafix_summary(cache.datafix_summary)
+            stages.stage_a_load_result_annotations(con, datafix.annotation_log().as_arrow())
             n_cards = stages.stage_a_load_cards(con, cards)
             log.info("  loaded %d cards", n_cards)
             dim_paths = registry_src.open_dim_paths(registry_root)
@@ -550,6 +594,7 @@ def run(
         elif letter == "E":
             stage_e_stats = stages.stage_e_per_row_signals(
                 con,
+                exempt_declaration_sources=settings.repro_exempt_declaration_sources,
                 strict_composites=(configs is None and config_limit is None),
                 exempt_composites=active.exempt_composites,
             )
@@ -585,7 +630,10 @@ def run(
             # Must precede the views that read from eval_results_view, and
             # the parquet emit at the end of this branch.
             stages.stage_j_scoring_mode(con)
-            stages.stage_j_models_view(con, snapshot_id)
+            stages.stage_j_models_view(
+                con, snapshot_id,
+                exemption_on=bool(settings.repro_exempt_declaration_sources),
+            )
             stages.stage_j_evals_view(con, snapshot_id)
             stages.stage_j_merged_evals_view(con, snapshot_id)
             # Re-anchor out_dir when --from-stage J skips Stage I; the
@@ -671,6 +719,8 @@ def run(
         n_synth_collisions=n_synth_collisions,
         stage_e_stats=stage_e_stats,
         n_unit_inconsistent=n_unit_inconsistent,
+        datafix_summary=datafix_accounting.as_dict(enabled=settings.datafix_enabled),
+        repro_exemption=_repro_exemption_meta(con, settings),
         view_layer_emitted=j_in_slice,
         eee_root=eee_root,
         registry_root=registry_root,
@@ -761,6 +811,8 @@ def _build_snapshot_meta(
     n_synth_collisions: int | None,
     stage_e_stats: stages.StageEStats,
     n_unit_inconsistent: int | None,
+    datafix_summary: dict,
+    repro_exemption: dict,
     view_layer_emitted: bool,
     eee_root: Path | None,
     registry_root: Path | None,
@@ -872,6 +924,10 @@ def _build_snapshot_meta(
         "collection_adapter_accounting": collection_adapter_accounting or {},
         "tables": tables,
         "sidecars": sidecars,
+        # Not a row count: this is what the datafix overlay corrected in the
+        # raw records before any of those counts were taken.
+        "datafix": datafix_summary,
+        "repro_exemption": repro_exemption,
         "row_counts": row_counts,
         "dedup_by_config": stage_e_stats.dedup_by_config,
         "dedup_by_config_totals": dedup_totals,
@@ -948,6 +1004,50 @@ def _collection_row_count(con, table: str, collection_id: str) -> int | None:
         ).fetchone()[0]
     except duckdb.CatalogException:
         return None
+
+
+def _repro_exemption_meta(con, settings) -> dict:
+    """What the run honoured, and what the corpus declared.
+
+    The declaration counts are read back off `eee_result_annotations` so
+    a `--from-stage` resume reports the cached table rather than the
+    empty accumulator of a pass that never read a record.
+    """
+    declared: dict[str, dict] = {}
+    try:
+        rows = con.execute(
+            """
+            SELECT declaration_source, declared_value, COUNT(*) AS n
+            FROM eee_result_annotations
+            GROUP BY 1, 2 ORDER BY 1, 2
+            """
+        ).fetchall()
+    except duckdb.CatalogException:
+        rows = []
+    for source, value, n in rows:
+        block = declared.setdefault(source, {"results": 0, "by_value": {}})
+        block["results"] += int(n)
+        block["by_value"][value] = int(n)
+    return {
+        "declaration_sources": sorted(settings.repro_exempt_declaration_sources),
+        "declared": declared,
+    }
+
+
+def _log_datafix_summary(summary: dict) -> None:
+    if not summary.get("enabled"):
+        log.info("  datafix overlay disabled (EEE_DATAFIX=0)")
+        return
+    for fix_id, block in sorted(summary.get("fixes", {}).items()):
+        log.info(
+            "  datafix %s: %d record(s), %d result(s) patched (%s)",
+            fix_id, block.get("records_patched", 0), block.get("results_patched", 0),
+            ", ".join(
+                f"{key}={value}"
+                for key, value in sorted(block.items())
+                if key not in {"records_patched", "results_patched"}
+            ),
+        )
 
 
 def _table_count(con, table: str) -> int | None:
