@@ -2434,6 +2434,18 @@ def stage_d_join_dims_and_flatten(
             -- rescores (raw_verified='true'). Reclassify those on the row, not
             -- in the frontend, so every consumer agrees. Remove once upstream
             -- EEE emits the right value for that config directly.
+            --
+            -- A second exception of the same shape: the aiXamine configs
+            -- (QCRI's evaluation services) declare `first_party` on every
+            -- record, but they score other developers' models. The field is
+            -- the relationship between the evaluator and the model, so the
+            -- row is first party only when the model's developer is QCRI.
+            -- Remove once the upstream adapter emits the relationship per
+            -- model.
+            --
+            -- BenchPress scores labelled `other` take their relationship from
+            -- the publisher of the cited document (benchpress_relationship.py);
+            -- a score whose publisher is not known keeps `other`.
             CASE
                 WHEN j.source_config = 'llm-stats'
                 THEN CASE
@@ -2441,6 +2453,19 @@ def stage_d_join_dims_and_flatten(
                         THEN 'first_party'
                         ELSE 'third_party'
                      END
+                WHEN j.source_config LIKE 'aixamine%'
+                THEN CASE
+                        WHEN lower(TRIM(j.model_info.developer)) = 'qcri'
+                        THEN 'first_party'
+                        ELSE 'third_party'
+                     END
+                WHEN j.source_config = 'benchpress'
+                     AND j.source_metadata.evaluator_relationship = 'other'
+                THEN COALESCE(
+                        benchpress_relationship_udf(
+                            j.model_info.developer,
+                            json_extract_string(j.source_data, '$.additional_details.reference_url')),
+                        'other')
                 ELSE NULLIF(TRIM(j.source_metadata.evaluator_relationship), '')
             END                                                                          AS evaluator_relationship,
             -- Curated provenance flag: was this evaluation submitted by the org

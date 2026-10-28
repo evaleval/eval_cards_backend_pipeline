@@ -142,30 +142,38 @@ def test_null_registry_direction_falls_through_to_the_row():
 
 
 @pytest.mark.parametrize(
-    "source_config,raw_verified,submitted,expected",
+    "source_config,raw_verified,developer,submitted,expected",
     [
-        # every source but llm-stats: the submitter's own declaration
-        ("swissai_apertus_evals", None, "first_party", "first_party"),
-        ("swissai_apertus_evals", None, "third_party", "third_party"),
-        ("swissai_apertus_evals", None, "collaborative", "collaborative"),
-        ("swissai_apertus_evals", None, "  ", None),
+        # every source but llm-stats and aiXamine: the submitter's own declaration
+        ("swissai_apertus_evals", None, "swiss-ai", "first_party", "first_party"),
+        ("swissai_apertus_evals", None, "swiss-ai", "third_party", "third_party"),
+        ("swissai_apertus_evals", None, "swiss-ai", "collaborative", "collaborative"),
+        ("swissai_apertus_evals", None, "swiss-ai", "  ", None),
         # llm-stats carries the field from the aggregator's perspective, so
         # the row-level flag decides there and only there
-        ("llm-stats", "false", "third_party", "first_party"),
-        ("llm-stats", "true", "third_party", "third_party"),
-        ("llm-stats", "true", "first_party", "third_party"),
+        ("llm-stats", "false", "openai", "third_party", "first_party"),
+        ("llm-stats", "true", "openai", "third_party", "third_party"),
+        ("llm-stats", "true", "openai", "first_party", "third_party"),
+        # aiXamine declares first_party on every record; the model's
+        # developer decides
+        ("aixamine_jailbreak", None, "meta-llama", "first_party", "third_party"),
+        ("aixamine_safety_alignment", None, "QCRI", "first_party", "first_party"),
+        ("aixamine_hallucination", None, None, "first_party", "third_party"),
+        ("aixaminer", None, "QCRI", "first_party", "first_party"),  # prefix match is intended: every aiXamine config starts with aixamine
     ],
 )
-def test_evaluator_relationship(source_config, raw_verified, submitted, expected):
+def test_evaluator_relationship(source_config, raw_verified, developer, submitted, expected):
     con = duckdb.connect()
     got = con.execute(
-        """
+        r"""
         SELECT CASE
             WHEN ? = 'llm-stats'
             THEN CASE WHEN ? = 'false' THEN 'first_party' ELSE 'third_party' END
+            WHEN ? LIKE 'aixamine%'
+            THEN CASE WHEN lower(TRIM(?)) = 'qcri' THEN 'first_party' ELSE 'third_party' END
             ELSE NULLIF(TRIM(?), '')
         END
         """,
-        [source_config, raw_verified, submitted],
+        [source_config, raw_verified, source_config, developer, submitted],
     ).fetchone()[0]
     assert got == expected

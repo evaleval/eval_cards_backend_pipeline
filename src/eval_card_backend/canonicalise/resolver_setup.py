@@ -199,6 +199,14 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
         null_handling="special",
     )
 
+    from eval_card_backend.canonicalise.benchpress_relationship import benchpress_relationship
+
+    con.create_function(
+        "benchpress_relationship_udf", benchpress_relationship,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+
     # Group-level signal UDFs. `differing_setup_fields` is a list of
     # STRUCT(field, "values"); the UDF body produces those structs directly.
     group_row_type = (
