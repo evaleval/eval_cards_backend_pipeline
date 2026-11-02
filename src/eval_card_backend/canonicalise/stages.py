@@ -2311,17 +2311,15 @@ def stage_d_join_dims_and_flatten(
             -- in the frontend, so every consumer agrees. Remove once upstream
             -- EEE emits the right value for that config directly.
             --
-            -- A second exception of the same shape: the aiXamine configs
-            -- (QCRI's evaluation services) declare `first_party` on every
-            -- record, but they score other developers' models. The field is
-            -- the relationship between the evaluator and the model, so the
-            -- row is first party only when the model's developer is QCRI.
-            -- Remove once the upstream adapter emits the relationship per
-            -- model.
+            -- Hotfix (aiXamine): QCRI's configs declare `first_party` on every
+            -- record but score other developers' models, so a row is first
+            -- party only when the model's developer is QCRI. Remove when the
+            -- upstream adapter emits the relationship per model.
             --
-            -- BenchPress scores labelled `other` take their relationship from
-            -- the publisher of the cited document (benchpress_relationship.py);
-            -- a score whose publisher is not known keeps `other`.
+            -- Hotfix (BenchPress): scores labelled `other` take the relationship
+            -- of the cited document's publisher (benchpress_relationship.py);
+            -- an unknown publisher keeps `other`. Remove when the upstream
+            -- adapter derives the relationship from the cited document.
             CASE
                 WHEN j.source_config = 'llm-stats'
                 THEN CASE

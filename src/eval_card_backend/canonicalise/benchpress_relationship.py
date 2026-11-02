@@ -1,4 +1,4 @@
-"""Evaluator relationship for BenchPress scores the adapter labels `other`.
+"""Hotfix: evaluator relationship for BenchPress scores the adapter labels `other`.
 
 The BenchPress adapter labels a score `other` when it cannot tell who
 published the cited document: a provider's own page on a host that does not
