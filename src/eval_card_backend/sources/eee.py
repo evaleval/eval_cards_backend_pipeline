@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -61,7 +62,7 @@ from typing import Any, Iterable, Iterator
 
 import pyarrow as pa
 from huggingface_hub import HfApi, hf_hub_download
-from huggingface_hub.utils import EntryNotFoundError
+from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError
 
 from eval_card_backend.config import EEE_DATASET_REPO, IGNORED_CONFIGS
 from eval_card_backend.sources._revision_cache import (
@@ -461,6 +462,19 @@ def is_hand_built(local_dir: Path) -> bool:
     )
 
 
+# The hub counts every file fetch against a resolver quota per 5-minute
+# window. A pin move that adds more files than the quota allows gets 429s
+# partway through, and the hub client's own retries give up after about
+# 20 seconds, so a rate-limited fetch waits out the window here instead.
+_RATE_LIMIT_WAIT_SECONDS = 60
+_RATE_LIMIT_MAX_WAITS = 12
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    return isinstance(exc, HfHubHTTPError) and getattr(response, "status_code", None) == 429
+
+
 def ensure_snapshot(
     local_dir: str,
     hf_token: str | None,
@@ -502,20 +516,30 @@ def ensure_snapshot(
     )
 
     def _fetch(filename: str) -> None:
-        try:
-            hf_hub_download(
-                repo_id=EEE_DATASET_REPO,
-                filename=filename,
-                repo_type="dataset",
-                revision=rev,
-                local_dir=str(target),
-                token=hf_token,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"EEE download failed for {filename}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+        for waits in range(_RATE_LIMIT_MAX_WAITS + 1):
+            try:
+                hf_hub_download(
+                    repo_id=EEE_DATASET_REPO,
+                    filename=filename,
+                    repo_type="dataset",
+                    revision=rev,
+                    local_dir=str(target),
+                    token=hf_token,
+                )
+                return
+            except Exception as exc:
+                if _is_rate_limited(exc) and waits < _RATE_LIMIT_MAX_WAITS:
+                    log.warning(
+                        "EEE download rate-limited (429) for %s; waiting %ds "
+                        "(wait %d of %d)", filename, _RATE_LIMIT_WAIT_SECONDS,
+                        waits + 1, _RATE_LIMIT_MAX_WAITS,
+                    )
+                    time.sleep(_RATE_LIMIT_WAIT_SECONDS)
+                    continue
+                raise RuntimeError(
+                    f"EEE download failed for {filename}: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
 
     def _verify(filename: str) -> None:
         expected = sha_map.get(filename)

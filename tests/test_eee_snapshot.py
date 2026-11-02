@@ -19,8 +19,9 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 import pytest
-from huggingface_hub.utils import EntryNotFoundError
+from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError
 
 from eval_card_backend.config import EEE_DATASET_REPO
 from eval_card_backend.sources import eee as eee_src
@@ -347,3 +348,52 @@ def test_hand_built_tree_never_touches_network(hub, tmp_path):
     assert out == target.resolve()
     assert hub.downloads == [] and hub.tree_listings == 0 and hub.info_calls == 0
     assert eee_src._local_paths(target) == [A]
+
+
+def _rate_limited(hub: FakeHub, monkeypatch, filename: str, times: int) -> None:
+    """Make the hub answer 429 for `filename` the first `times` fetches."""
+    left = {"n": times}
+
+    def download(**kwargs):
+        if kwargs["filename"] == filename and left["n"] > 0:
+            left["n"] -= 1
+            hub.downloads.append((filename, kwargs.get("revision")))
+            request = httpx.Request("GET", f"https://huggingface.co/{filename}")
+            raise HfHubHTTPError(
+                "429 Too Many Requests", response=httpx.Response(429, request=request)
+            )
+        return hub.download(**kwargs)
+
+    monkeypatch.setattr(eee_src, "hf_hub_download", download)
+
+
+def test_rate_limited_fetch_waits_and_succeeds(hub, tmp_path, monkeypatch):
+    _seed_rev(hub, REV1, OBJECTS)
+    monkeypatch.setattr(eee_src, "_RATE_LIMIT_WAIT_SECONDS", 0)
+    _rate_limited(hub, monkeypatch, B, times=3)
+
+    target = _run(hub, tmp_path, REV1)
+
+    assert (target / B).read_bytes() == OBJECTS[B]
+    assert hub.objects_downloaded().count(B) == 4
+
+
+def test_rate_limit_that_never_clears_raises_naming_path(hub, tmp_path, monkeypatch):
+    _seed_rev(hub, REV1, OBJECTS)
+    monkeypatch.setattr(eee_src, "_RATE_LIMIT_WAIT_SECONDS", 0)
+    monkeypatch.setattr(eee_src, "_RATE_LIMIT_MAX_WAITS", 2)
+    _rate_limited(hub, monkeypatch, B, times=10)
+
+    with pytest.raises(RuntimeError, match=B):
+        _run(hub, tmp_path, REV1)
+    assert hub.objects_downloaded().count(B) == 3
+
+
+def test_other_download_errors_are_not_retried(hub, tmp_path, monkeypatch):
+    _seed_rev(hub, REV1, OBJECTS)
+    del hub.revs[REV1][B]  # listed in the index, missing from the repo
+    monkeypatch.setattr(eee_src, "_RATE_LIMIT_WAIT_SECONDS", 0)
+
+    with pytest.raises(RuntimeError, match=B):
+        _run(hub, tmp_path, REV1)
+    assert hub.objects_downloaded().count(B) == 1
