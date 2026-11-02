@@ -48,6 +48,10 @@ class _StubResolver:
         )
         return SimpleNamespace(canonical_id=canonical_id, strategy=strategy)
 
+    def fallback_benchmark_raw(self, raw_name, source_config=None):
+        from eval_entity_resolver.eee import clean_eval_name
+        return clean_eval_name(raw_name, source_config=source_config) if isinstance(raw_name, str) else None
+
 
 @pytest.fixture
 def con():
@@ -136,11 +140,15 @@ def test_variant_key_udf_null(con):
 
 
 def test_clean_eval_name_udf_smoke(con):
-    """The wrapper is from eval_entity_resolver.eee; we don't redefine its
-    behaviour here, just verify the wiring (str → str, NULL → NULL)."""
-    out = con.execute("SELECT clean_eval_name_udf('Some  Eval')").fetchone()[0]
+    """The wrapper is the resolver's `fallback_benchmark_raw`; we don't
+    redefine its behaviour here, just verify the wiring (str → str, NULL → NULL,
+    source_config threaded through)."""
+    out = con.execute("SELECT clean_eval_name_udf('Some  Eval', NULL)").fetchone()[0]
     assert isinstance(out, str)
-    assert con.execute("SELECT clean_eval_name_udf(NULL)").fetchone()[0] is None
+    assert con.execute(
+        "SELECT clean_eval_name_udf('llm_stats.cwe-bench', 'llm-stats')"
+    ).fetchone()[0] == "cwe-bench"
+    assert con.execute("SELECT clean_eval_name_udf(NULL, 'llm-stats')").fetchone()[0] is None
 
 
 def test_extract_metric_udf_smoke(con):

@@ -41,6 +41,9 @@ class _Stub:
         return SimpleNamespace(canonical_id=None, strategy="no_match",
                                confidence=0.0, resolved_leaf_id=None)
 
+    def fallback_benchmark_raw(self, raw_name, source_config=None):
+        return raw_name
+
 
 # ---------------------------------------------------------------------------
 # The qualifier joins the observation key

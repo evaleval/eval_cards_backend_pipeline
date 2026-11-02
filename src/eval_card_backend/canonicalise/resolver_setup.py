@@ -6,7 +6,7 @@ connection per pipeline run.
 """
 from __future__ import annotations
 
-from eval_entity_resolver.eee import clean_eval_name, extract_metric
+from eval_entity_resolver.eee import extract_metric
 
 from eval_card_backend import slugs
 from eval_card_backend.canonicalise import evalcard_tags, udfs
@@ -121,8 +121,8 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
     )
     con.create_function(
         "clean_eval_name_udf",
-        lambda v: clean_eval_name(v) if isinstance(v, str) else None,
-        ["VARCHAR"], "VARCHAR",
+        resolver.fallback_benchmark_raw,
+        ["VARCHAR", "VARCHAR"], "VARCHAR",
         null_handling="special",
     )
     con.create_function(

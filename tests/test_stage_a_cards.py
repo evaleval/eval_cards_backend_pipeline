@@ -38,6 +38,9 @@ class _FixedMappingResolver:
             strategy="exact" if canonical else "no_match",
         )
 
+    def fallback_benchmark_raw(self, raw_name, source_config=None):
+        return raw_name
+
 
 def _con_with_resolver(mapping):
     con = duckdb.connect()

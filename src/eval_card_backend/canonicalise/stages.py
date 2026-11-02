@@ -1462,11 +1462,12 @@ def stage_c_resolve_identities(con) -> None:
                 -- (bbq.bbq.overall → bbq; MMLU.MMLU-Pro.overall → MMLU-Pro;
                 -- vals_ai.mmlu_pro.biology → mmlu pro biology). NULL for every
                 -- name where no segment resolves, so those fall through to the
-                -- clean_eval_name concatenation unchanged.
+                -- clean_eval_name spelling (source and declared namespace
+                -- segments dropped, metric tail dropped).
                 resolve_structured_benchmark_id(evaluation_name, source_config)   AS _benchmark_id_structured,
                 COALESCE(
                     resolve_structured_benchmark_raw(evaluation_name, source_config),
-                    clean_eval_name_udf(evaluation_name))                         AS _benchmark_raw,
+                    clean_eval_name_udf(evaluation_name, source_config))          AS _benchmark_raw,
                 -- Structured-id pre-step: positionless registry-membership
                 -- resolution over the namespaced metric_config.metric_id
                 -- segments (lmarena.elo.overall → elo). A registry-flagged

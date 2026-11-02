@@ -1,10 +1,10 @@
 """Slice-promotion overrides for benchmark resolution.
 
-The default Stage C resolver derives `benchmark_id` per row from
-`clean_eval_name(evaluation_name)`. That over-collapses dot-notation
-aggregator records ("llm_stats.aime-2024" → "llm stats" → mismatched
-canonical) and drops 400+ benchmark canonicals that v2's reference
-pipeline surfaces.
+The default Stage C resolver derives `benchmark_id` per row from the
+`evaluation_name` alone (structured probe, then the resolver's fallback
+spelling). A row whose name never resolves but whose
+`source_data.dataset_name` does ("Terminal Bench 2.0" under a slug the
+registry has no alias for) is rescued here from the dataset name.
 
 This module replays v2's `pass1` (bucket by dataset_name) plus
 `maybe_promote_slices` (split a candidate when 2+ of its accumulated

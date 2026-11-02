@@ -160,10 +160,6 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
     call halves the work and lets repeated raws across rows (most rows share
     the same model_raw / benchmark_raw / etc.) hit cache.
     """
-    # The same cleaner Stage C feeds the plain benchmark lookup, so the
-    # observation-role UDF re-reads exactly the resolution the row got.
-    from eval_entity_resolver.eee import clean_eval_name
-
     # Cache the resolver result struct so both UDFs read from the same memo.
     # 16k entries comfortably covers our scale (a few hundred unique entities
     # × 5 entity types × ~50 source_configs); LRU evicts beyond that.
@@ -442,7 +438,9 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
             return "unknown"
         try:
             result = _resolve_cached(
-                clean_eval_name(raw_name), "benchmark", source_config
+                resolver.fallback_benchmark_raw(raw_name, source_config),
+                "benchmark",
+                source_config,
             )
         except Exception:
             return "unknown"
