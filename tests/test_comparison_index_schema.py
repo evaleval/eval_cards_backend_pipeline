@@ -67,6 +67,8 @@ def _materialise_views_and_sidecars(out_dir: Path):
             f"SELECT * FROM read_parquet('{out_dir}/{table}.parquet')"
         )
     stages.stage_j_eval_results_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_scoring_mode(con)
+    stages.stage_j_reproducibility(con)
     stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
 

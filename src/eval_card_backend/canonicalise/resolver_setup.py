@@ -151,11 +151,6 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
         null_handling="special",
     )
 
-    con.create_function(
-        "is_agentic_udf", udfs.is_agentic_py,
-        ["VARCHAR", "JSON", "JSON"], "BOOLEAN",
-        null_handling="special",
-    )
     # JSON-typed UDF params arrive from DuckDB as serialised strings; parse
     # before canonical_json json.dumps's the input, otherwise the result is
     # doubly encoded.
@@ -183,14 +178,9 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
         completeness_struct_type,
         null_handling="special",
     )
-    # Stage E variants: the card comes from the per-run registry
+    # Stage E variant: the card comes from the per-run registry
     # (`udfs.set_card_registry`) by benchmark_id instead of riding on every
     # fact row.
-    con.create_function(
-        "is_agentic_by_benchmark_udf", udfs.is_agentic_by_benchmark_py,
-        ["VARCHAR", "JSON"], "BOOLEAN",
-        null_handling="special",
-    )
     con.create_function(
         "compute_completeness_by_benchmark_udf",
         udfs.compute_completeness_by_benchmark_py,

@@ -8,6 +8,7 @@ import duckdb
 import pytest
 
 from eval_card_backend.canonicalise import comparison_tables
+from eval_card_backend.signals.reproducibility import SETUP_ITEMS
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -57,6 +58,8 @@ def _materialise_views_and_sidecars(out_dir: Path):
             f"SELECT * FROM read_parquet('{out_dir}/{table}.parquet')"
         )
     stages.stage_j_eval_results_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_scoring_mode(con)
+    stages.stage_j_reproducibility(con)
     stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
 
@@ -94,7 +97,7 @@ def test_manifest_required_keys(tmp_path, monkeypatch):
     assert manifest["schema_version"] == sidecars.SCHEMA_VERSION
     assert manifest["config_version"] == 2
     headline = json.loads((out / "headline.json").read_text())
-    assert headline["signal_version"] == "1.1"
+    assert headline["signal_version"] == "2.0"
 
 
 def test_manifest_skipped_configs_lists_alphaxiv(tmp_path, monkeypatch):
@@ -173,19 +176,17 @@ def test_headline_by_tag_keys_are_valid(tmp_path, monkeypatch):
 
 
 def test_reproducibility_per_field_missingness(tmp_path, monkeypatch):
-    """fixtures_clean has full reproducibility coverage → all fields
-    have missing_count=0 over the one triple."""
+    """Per-item missingness is keyed by setup item, over every tuple.
+    fixtures_clean states temperature and max_tokens on every result."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     _materialise_views_and_sidecars(out)
     h = json.loads((out / "headline.json").read_text())
     pfm = h["reproducibility"]["overall"]["per_field_missingness"]
-    # The active rule covers temperature + max_tokens (base) and eval_plan
-    # + eval_limits (agentic-only).
-    assert {"temperature", "max_tokens", "eval_plan", "eval_limits"} <= pfm.keys()
-    assert pfm["temperature"]["denominator"] == "all_triples"
-    assert pfm["eval_plan"]["denominator"] == "agentic_only"
-    assert pfm["temperature"]["missing_count"] == 0
+    assert list(pfm) == [item for item, _, _ in SETUP_ITEMS]
+    assert {entry["denominator"] for entry in pfm.values()} == {"all_triples"}
+    assert pfm["decoding"]["missing_count"] == 0
+    assert pfm["output_length"]["missing_count"] == 0
 
 
 def test_developers_list_route_id_set(tmp_path, monkeypatch):
@@ -841,6 +842,8 @@ def _connection_with_merged(out_dir: Path):
         f"FROM read_parquet('{FIXTURES}/entity_registry/canonical_benchmarks.parquet')"
     )
     stages.stage_j_eval_results_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_scoring_mode(con)
+    stages.stage_j_reproducibility(con)
     stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_merged_evals_view(con, "2026-04-30T00:00:00Z")
@@ -1175,6 +1178,8 @@ def _comparison_index_units(out_dir: Path, tmp_path: Path, scan_order: str) -> d
         "CREATE OR REPLACE TABLE eval_results_view AS SELECT * FROM "
         f"eval_results_view ORDER BY metric_id {scan_order}, model_key {scan_order}"
     )
+    stages.stage_j_scoring_mode(con)
+    stages.stage_j_reproducibility(con)
     stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_merged_evals_view(con, "2026-04-30T00:00:00Z")

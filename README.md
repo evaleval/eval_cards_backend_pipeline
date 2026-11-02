@@ -135,7 +135,6 @@ them.
 | `ENTITY_REGISTRY_REFRESH` | unset | Set to `1` to force-refetch the registry. |
 | `HF_OPENNESS_PROBE` | `1` | Set to `0` to skip the open-weights backfill (offline bakes, or to pin a snapshot to exactly what the registry states). |
 | `EEE_DATAFIX` | unset | Set to `1` to fill verified missing metadata from source evidence. Default off. |
-| `REPRO_EXEMPT_NON_GENERATIVE` | unset | Comma-separated declaration sources to exempt from temperature and max_tokens requirements: `lm_eval_output_type`, `rewardbench_model_type`. Empty means off. |
 | `EEE_INCLUDE_PRIVATE` | unset | Set to `1` to replace public collection-member rows with processed private extract rows (see below). |
 | `EEE_PRIVATE_ALLOW_ZERO_MEMBERS` | unset | Set to `1` to allow a private extract whose member records are not public yet. |
 | `EEE_PRIVATE_DATASET_REPO` | `evaleval/aisi-inference-scaling-data` | The private dataset. |
@@ -417,16 +416,3 @@ what it would post unless `write` is on.
 3. If `warehouse/latest` is bad in the meantime, point the frontend
    Space's `SNAPSHOT_URL` at the last good dated folder
    (`warehouse/<snapshot_id>`); dated folders are never overwritten.
-
-The non-generative exemption is independent of `EEE_DATAFIX`. It accepts only
-explicit source declarations from HF Open LLM v2 harness likelihood scoring or RewardBench
-classifier/DPO model types. Unknown source names fail configuration loading.
-Agentic plan and limit requirements remain active. Rows with no remaining
-requirements carry `repro_applicable=false`; model bands exclude them and become `not_applicable`
-when no applicable cells remain. Both settings are recorded in snapshot
-metadata and stage caches reject a change to either setting on resume.
-Cells containing exempt observations publish the union of their observations'
-requirements and missing fields, so an exempt representative cannot hide an
-applicable observation. The headline retains its all-triple gap rate and also
-publishes `applicable_triples` and `applicable_reproducibility_gap_rate`; the
-latter is null when no triple is applicable.

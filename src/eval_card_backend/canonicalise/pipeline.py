@@ -53,10 +53,6 @@ from eval_card_backend.metric_meta_hotfix import (
     log_metric_meta_summary,
     reset_provenance_counter,
 )
-from eval_card_backend.signals.reproducibility import (
-    log_purpose_shape_summary,
-    reset_purpose_shape_counter,
-)
 from eval_card_backend.signals.setup import (
     log_json_coerce_summary,
     reset_json_coerce_counter,
@@ -400,7 +396,6 @@ def run(
         "configs": selected,
         "datafix_enabled": settings.datafix_enabled,
         "datafix_fingerprint": datafix.fingerprint(),
-        "repro_exempt_declaration_sources": sorted(settings.repro_exempt_declaration_sources),
     }
 
     # 2. DuckDB + UDFs
@@ -408,11 +403,9 @@ def run(
     udfs.reset_resolver_counters()
     reset_json_coerce_counter()
     reset_provenance_counter()
-    reset_purpose_shape_counter()
     eee.reset_drop_counter()
     # One account of what the overlay does, belonging to this run.
     datafix_accounting = datafix.DatafixSummary()
-    datafix.reset_annotations()
 
     # Load aliases and canonical metadata as one bundle. Constructing
     # Resolver(alias_store) alone silently disables leaf/lineage enrichment.
@@ -517,8 +510,6 @@ def run(
                     eee_root, chosen, settings.hf_token,
                     datafix_enabled=settings.datafix_enabled,
                     datafix_summary=datafix_accounting,
-                    collect_declarations=bool(settings.repro_exempt_declaration_sources),
-                    eee_revision=cache.stage_a_inputs["eee_revision"],
                 )
             )
             cache.datafix_summary = datafix_accounting.as_dict(
@@ -526,7 +517,6 @@ def run(
             )
             log.info("  loaded %d EEE records (validated)", n_eee)
             _log_datafix_summary(cache.datafix_summary)
-            stages.stage_a_load_result_annotations(con, datafix.annotation_log().as_arrow())
             n_cards = stages.stage_a_load_cards(con, cards)
             log.info("  loaded %d cards", n_cards)
             dim_paths = registry_src.open_dim_paths(registry_root)
@@ -594,7 +584,6 @@ def run(
         elif letter == "E":
             stage_e_stats = stages.stage_e_per_row_signals(
                 con,
-                exempt_declaration_sources=settings.repro_exempt_declaration_sources,
                 strict_composites=(configs is None and config_limit is None),
                 exempt_composites=active.exempt_composites,
             )
@@ -630,10 +619,8 @@ def run(
             # Must precede the views that read from eval_results_view, and
             # the parquet emit at the end of this branch.
             stages.stage_j_scoring_mode(con)
-            stages.stage_j_models_view(
-                con, snapshot_id,
-                exemption_on=bool(settings.repro_exempt_declaration_sources),
-            )
+            stages.stage_j_reproducibility(con)
+            stages.stage_j_models_view(con, snapshot_id)
             stages.stage_j_evals_view(con, snapshot_id)
             stages.stage_j_merged_evals_view(con, snapshot_id)
             # Re-anchor out_dir when --from-stage J skips Stage I; the
@@ -675,7 +662,6 @@ def run(
         )
         udfs.log_resolver_summary()
         log_json_coerce_summary()
-        log_purpose_shape_summary()
         log_metric_meta_summary(log)
         eee.log_drop_summary()
         _close_duckdb(con, db_dir)
@@ -720,7 +706,6 @@ def run(
         stage_e_stats=stage_e_stats,
         n_unit_inconsistent=n_unit_inconsistent,
         datafix_summary=datafix_accounting.as_dict(enabled=settings.datafix_enabled),
-        repro_exemption=_repro_exemption_meta(con, settings),
         view_layer_emitted=j_in_slice,
         eee_root=eee_root,
         registry_root=registry_root,
@@ -812,7 +797,6 @@ def _build_snapshot_meta(
     stage_e_stats: stages.StageEStats,
     n_unit_inconsistent: int | None,
     datafix_summary: dict,
-    repro_exemption: dict,
     view_layer_emitted: bool,
     eee_root: Path | None,
     registry_root: Path | None,
@@ -927,7 +911,6 @@ def _build_snapshot_meta(
         # Not a row count: this is what the datafix overlay corrected in the
         # raw records before any of those counts were taken.
         "datafix": datafix_summary,
-        "repro_exemption": repro_exemption,
         "row_counts": row_counts,
         "dedup_by_config": stage_e_stats.dedup_by_config,
         "dedup_by_config_totals": dedup_totals,
@@ -1004,34 +987,6 @@ def _collection_row_count(con, table: str, collection_id: str) -> int | None:
         ).fetchone()[0]
     except duckdb.CatalogException:
         return None
-
-
-def _repro_exemption_meta(con, settings) -> dict:
-    """What the run honoured, and what the corpus declared.
-
-    The declaration counts are read back off `eee_result_annotations` so
-    a `--from-stage` resume reports the cached table rather than the
-    empty accumulator of a pass that never read a record.
-    """
-    declared: dict[str, dict] = {}
-    try:
-        rows = con.execute(
-            """
-            SELECT declaration_source, declared_value, COUNT(*) AS n
-            FROM eee_result_annotations
-            GROUP BY 1, 2 ORDER BY 1, 2
-            """
-        ).fetchall()
-    except duckdb.CatalogException:
-        rows = []
-    for source, value, n in rows:
-        block = declared.setdefault(source, {"results": 0, "by_value": {}})
-        block["results"] += int(n)
-        block["by_value"][value] = int(n)
-    return {
-        "declaration_sources": sorted(settings.repro_exempt_declaration_sources),
-        "declared": declared,
-    }
 
 
 def _log_datafix_summary(summary: dict) -> None:

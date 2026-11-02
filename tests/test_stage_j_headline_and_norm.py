@@ -76,6 +76,8 @@ def _materialise_views(out_dir: Path, mutate=None):
     if mutate is not None:
         mutate(con)
     stages.stage_j_eval_results_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_scoring_mode(con)
+    stages.stage_j_reproducibility(con)
     stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_merged_evals_view(con, "2026-04-30T00:00:00Z")

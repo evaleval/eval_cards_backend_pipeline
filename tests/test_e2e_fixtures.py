@@ -88,8 +88,6 @@ def test_fixture_01_clean_resolution(tmp_path, monkeypatch):
     assert row01["metric_resolution_strategy"] == "exact"
     # Card-present path
     assert row01["benchmark_card_id"] == "mmlu"
-    # Non-agentic
-    assert bool(row01["is_agentic"]) is False
 
 
 def test_pipeline_wires_canonical_store_through_leaf_and_models_view(
@@ -247,37 +245,17 @@ def test_fixture_02_unresolved_surfaces_in_models_parquet(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
-# Fixture 03 — agentic via card tasks
-# ---------------------------------------------------------------------------
-
-
-def test_fixture_03_agentic_via_card(tmp_path, monkeypatch):
-    """03's benchmark card has tasks=['agentic'] → is_agentic via Rule 1.
-    Repro then requires temperature + max_tokens + eval_plan + eval_limits;
-    fixture sets all four → has_reproducibility_gap=False."""
-    out = _run_pipeline_per_config(tmp_path, monkeypatch, "fixtures_agentic")
-    df = _facts(out)
-
-    row03 = df[df["evaluation_id"] == "ev_03"].iloc[0]
-    assert bool(row03["is_agentic"]) is True
-    assert bool(row03["has_reproducibility_gap"]) is False
-    assert row03["repro_required_count"] == 4
-
-
-# ---------------------------------------------------------------------------
 # Fixture 04 — agentic via generation_args.agentic_eval_config
 # ---------------------------------------------------------------------------
 
 
 def test_fixture_04_agentic_via_config_no_card(tmp_path, monkeypatch):
     """04's benchmark (appworld) has NO card → exercises card-missing path.
-    is_agentic fires via Rule 2 (agentic_eval_config presence) AND Rule 3
-    (regex on 'appworld'). card_present should be FALSE on benchmarks dim."""
+    card_present should be FALSE on benchmarks dim."""
     out = _run_pipeline_per_config(tmp_path, monkeypatch, "fixtures_agentic")
     df = _facts(out)
 
     row04 = df[df["evaluation_id"] == "ev_04"].iloc[0]
-    assert bool(row04["is_agentic"]) is True
     # benchmark_card_id NULL because no card matched appworld
     assert row04["benchmark_card_id"] is None or (
         row04["benchmark_card_id"] != row04["benchmark_card_id"]

@@ -14,7 +14,6 @@ from eval_card_backend.signals.comparability import (
     normalize_org_name,
 )
 from eval_card_backend.signals.completeness import compute_completeness_py
-from eval_card_backend.signals.reproducibility import is_agentic_py
 from eval_card_backend.signals.setup import (
     canonical_json,
     differing_setup_fields,
@@ -105,97 +104,6 @@ def test_differing_setup_fields_preserves_pre_normalisation_values():
 
 
 # ---------- reproducibility ----------
-
-def test_repro_missing_fields_sql_non_agentic():
-    """Verify the Stage E SQL list-construction produces the correct
-    missing-field list for the non-agentic two-field rule (temperature +
-    max_tokens). Same SQL pattern as in stage_e_per_row_signals."""
-    import duckdb
-    con = duckdb.connect()
-
-    def missing(has_temp, has_max, has_plan, has_limits, agentic=False):
-        return con.execute(
-            f"""
-            SELECT (CASE WHEN NOT {has_temp}      THEN ['temperature'] ELSE []::VARCHAR[] END)
-                || (CASE WHEN NOT {has_max}       THEN ['max_tokens']  ELSE []::VARCHAR[] END)
-                || (CASE WHEN {agentic} AND NOT {has_plan}   THEN ['eval_plan']   ELSE []::VARCHAR[] END)
-                || (CASE WHEN {agentic} AND NOT {has_limits} THEN ['eval_limits'] ELSE []::VARCHAR[] END)
-            """
-        ).fetchone()[0]
-
-    assert missing("TRUE",  "TRUE",  "FALSE", "FALSE") == []
-    assert missing("FALSE", "TRUE",  "FALSE", "FALSE") == ["temperature"]
-    assert missing("TRUE",  "FALSE", "FALSE", "FALSE") == ["max_tokens"]
-    assert missing("FALSE", "FALSE", "FALSE", "FALSE") == ["temperature", "max_tokens"]
-    # Agentic-required fields ignored when not agentic
-    assert missing("TRUE",  "TRUE",  "FALSE", "FALSE", agentic=False) == []
-
-
-def test_repro_missing_fields_sql_agentic():
-    """Agentic adds eval_plan + eval_limits to the active required set."""
-    import duckdb
-    con = duckdb.connect()
-
-    def missing(has_temp, has_max, has_plan, has_limits):
-        return con.execute(
-            f"""
-            SELECT (CASE WHEN NOT {has_temp}      THEN ['temperature'] ELSE []::VARCHAR[] END)
-                || (CASE WHEN NOT {has_max}       THEN ['max_tokens']  ELSE []::VARCHAR[] END)
-                || (CASE WHEN TRUE AND NOT {has_plan}   THEN ['eval_plan']   ELSE []::VARCHAR[] END)
-                || (CASE WHEN TRUE AND NOT {has_limits} THEN ['eval_limits'] ELSE []::VARCHAR[] END)
-            """
-        ).fetchone()[0]
-
-    assert missing("TRUE", "TRUE", "TRUE", "TRUE") == []
-    assert missing("TRUE", "TRUE", "FALSE", "FALSE") == ["eval_plan", "eval_limits"]
-    assert missing("FALSE", "TRUE", "TRUE", "FALSE") == ["temperature", "eval_limits"]
-    # Order matches required-fields ordering: base first, agentic after
-    assert missing("FALSE", "FALSE", "FALSE", "FALSE") == [
-        "temperature", "max_tokens", "eval_plan", "eval_limits"
-    ]
-
-
-def test_is_agentic_purpose_shape_counter_fires_on_non_dict():
-    """Cards in the wild have been seen with `purpose_and_intended_users` as a
-    list/string/scalar. Rule 1 has to skip them, but it must increment the
-    shape counter so silent agentic mis-classification surfaces in the run
-    summary instead of vanishing."""
-    from eval_card_backend.signals.reproducibility import (
-        _purpose_shape_counter,
-        reset_purpose_shape_counter,
-    )
-
-    reset_purpose_shape_counter()
-    is_agentic_py("mmlu", {"purpose_and_intended_users": ["a", "b"]}, None)
-    is_agentic_py("mmlu", {"purpose_and_intended_users": "free text"}, None)
-    is_agentic_py("mmlu", {"purpose_and_intended_users": 7}, None)
-    # Properly-shaped purpose dicts must not increment the counter.
-    is_agentic_py("mmlu", {"purpose_and_intended_users": {"tasks": []}}, None)
-    is_agentic_py("mmlu", {"purpose_and_intended_users": None}, None)
-    assert _purpose_shape_counter == {"list": 1, "str": 1, "int": 1}
-    reset_purpose_shape_counter()
-
-
-def test_is_agentic_three_rules():
-    # Rule 1: card.tasks
-    assert is_agentic_py(
-        "mmlu",
-        {"purpose_and_intended_users": {"tasks": ["agentic"]}},
-        None,
-    )
-    # Rule 2: agentic_eval_config presence
-    assert is_agentic_py(
-        "mmlu", None, {"agentic_eval_config": {"k": 1}}
-    )
-    # Rule 3: name regex against canonical id
-    assert is_agentic_py("swe-bench-verified", None, None)
-    # No rule fires
-    assert not is_agentic_py("mmlu", None, None)
-    # Robust to JSON-string inputs (DuckDB UDF call shape)
-    assert is_agentic_py(
-        "mmlu", '{"purpose_and_intended_users": {"tasks": ["agentic"]}}', None
-    )
-
 
 # ---------- completeness ----------
 #

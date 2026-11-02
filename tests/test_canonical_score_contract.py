@@ -130,6 +130,10 @@ def artifacts(tmp_path_factory):
     pct_model, frac_model = _plant_mixed_scale_cell(con)
 
     stages.stage_j_eval_results_view(con, "2026-04-30T00:00:00Z")
+
+    stages.stage_j_scoring_mode(con)
+
+    stages.stage_j_reproducibility(con)
     stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
     stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
     snap = json.loads((out_dir / "snapshot_meta.json").read_text())

@@ -295,14 +295,12 @@ def test_the_in_record_rule_fills_a_config_no_table_names(tmp_path, accounting):
     assert block["by_field"] == {"max_tokens": 1, "temperature": 1}
 
 
-def test_metadata_flags_default_off(monkeypatch):
+def test_datafix_flag_defaults_off(monkeypatch):
     from eval_card_backend.config import Settings
 
     monkeypatch.delenv("EEE_DATAFIX", raising=False)
-    monkeypatch.delenv("REPRO_EXEMPT_NON_GENERATIVE", raising=False)
     settings = Settings.from_env()
     assert settings.datafix_enabled is False
-    assert settings.repro_exempt_declaration_sources == frozenset()
 
 
 def test_default_loader_preserves_missing_source_fields(tmp_path):

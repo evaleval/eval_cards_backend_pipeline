@@ -24,7 +24,6 @@ from eval_card_backend.signals.comparability import (
 )
 from eval_card_backend.metric_meta_hotfix import derive_metric_meta
 from eval_card_backend.signals.completeness import compute_completeness_py
-from eval_card_backend.signals.reproducibility import is_agentic_py
 from eval_card_backend.signals.setup import (
     canonical_json,
     fact_id_py,
@@ -42,14 +41,12 @@ __all__ = [
     "canonical_json",
     "compute_completeness_by_benchmark_py",
     "compute_completeness_py",
-    "is_agentic_by_benchmark_py",
     "set_card_registry",
     "compute_cross_party_divergence_udf_body",
     "compute_variant_divergence_udf_body",
     "derive_metric_meta",
     "derive_metric_meta_udf_body",
     "fact_id_py",
-    "is_agentic_py",
     "log_resolver_summary",
     "make_resolver_udfs",
     "reset_resolver_counters",
@@ -85,14 +82,6 @@ def set_card_registry(con) -> int:
             json.loads(card_json) if card_json is not None else None
         )
     return len(_CARDS_BY_BENCHMARK)
-
-
-def is_agentic_by_benchmark_py(
-    benchmark_id: str | None, generation_args: object
-) -> bool:
-    return is_agentic_py(
-        benchmark_id, _CARDS_BY_BENCHMARK.get(benchmark_id), generation_args
-    )
 
 
 def compute_completeness_by_benchmark_py(

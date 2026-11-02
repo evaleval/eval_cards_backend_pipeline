@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 # whenever a stage's cached output gains, loses or re-types a column: a
 # `--from-stage` run against an older cache would otherwise restore the old
 # shape and fail deep inside a later stage's SQL with a binder error.
-CACHE_SCHEMA_VERSION = 20
+CACHE_SCHEMA_VERSION = 21
 
 _SCHEMA_MARKER = "_cache_schema.json"
 # Which EEE sources the cached tables were built from (private-source toggle
@@ -45,7 +45,7 @@ STAGE_ORDER: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G", "I", "J")
 # stage runs and what gets restored when --from-stage skips it.
 STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     "A": (
-        "eee_raw", "eee_result_annotations",
+        "eee_raw",
         "cards_raw",
         "canonical_orgs",
         "canonical_models",

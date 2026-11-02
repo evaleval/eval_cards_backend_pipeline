@@ -26,7 +26,6 @@ from eval_card_backend.metric_meta_hotfix import (
     reset_provenance_counter,
 )
 from eval_card_backend.signals.completeness import compute_completeness_py
-from eval_card_backend.signals.reproducibility import is_agentic_py
 from eval_card_backend.signals.setup import (
     canonical_json,
     fact_id_py,
@@ -155,38 +154,6 @@ def test_extract_metric_udf_smoke(con):
 # ---------------------------------------------------------------------------
 # Reproducibility / agentic
 # ---------------------------------------------------------------------------
-
-
-def test_is_agentic_udf_round_trip_card_tasks(con):
-    card_json = json.dumps({"purpose_and_intended_users": {"tasks": ["agentic"]}})
-    sql_value = con.execute(
-        f"SELECT is_agentic_udf('mmlu', '{card_json}'::JSON, NULL)"
-    ).fetchone()[0]
-    py_value = is_agentic_py("mmlu", json.loads(card_json), None)
-    assert sql_value == py_value is True
-
-
-def test_is_agentic_udf_round_trip_config_presence(con):
-    ga_json = json.dumps({"agentic_eval_config": {"k": 1}})
-    sql_value = con.execute(
-        f"SELECT is_agentic_udf('mmlu', NULL, '{ga_json}'::JSON)"
-    ).fetchone()[0]
-    py_value = is_agentic_py("mmlu", None, json.loads(ga_json))
-    assert sql_value == py_value is True
-
-
-def test_is_agentic_udf_round_trip_name_regex(con):
-    sql_value = con.execute(
-        "SELECT is_agentic_udf('swe-bench-verified', NULL, NULL)"
-    ).fetchone()[0]
-    assert sql_value is True
-
-
-def test_is_agentic_udf_round_trip_negative(con):
-    sql_value = con.execute(
-        "SELECT is_agentic_udf('mmlu', NULL, NULL)"
-    ).fetchone()[0]
-    assert sql_value is False
 
 
 # ---------------------------------------------------------------------------

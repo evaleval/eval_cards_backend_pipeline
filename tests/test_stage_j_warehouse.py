@@ -32,13 +32,17 @@ from tests.eee_layout import write_eee_datastore
 def _write_eee_fixture_two_models(eee_root: Path) -> None:
     """Two-model fixture on the same benchmark+metric.
 
-    - gpt-4o    : score=0.9, temperature + max_tokens set        → no repro gap
-    - claude-3  : score=0.5, neither temperature nor max_tokens   → repro gap
+    - gpt-4o    : score=0.9, temperature, max_tokens and the scored item
+                  count set; with the harness and its version every
+                  applicable setup item is disclosed      → no repro gap
+    - claude-3  : score=0.5, none of the three            → repro gap
     """
     def _record(eval_id: str, model_id: str, score: float, *, with_repro: bool) -> dict:
         gen_args: dict = {}
+        score_details: dict = {"score": score}
         if with_repro:
             gen_args = {"temperature": 0.0, "max_tokens": 1024}
+            score_details["uncertainty"] = {"num_samples": 500}
         return {
             "evaluation_id": eval_id,
             "schema_version": "0.2.2",
@@ -69,7 +73,7 @@ def _write_eee_fixture_two_models(eee_root: Path) -> None:
                         "evaluation_description": "Accuracy on minibench",
                         "lower_is_better": False,
                     },
-                    "score_details": {"score": score},
+                    "score_details": score_details,
                     "generation_config": {"generation_args": gen_args},
                 }
             ],
@@ -303,8 +307,9 @@ def test_evals_view_best_and_worst_model(tmp_path, monkeypatch):
 
 
 def test_reproducibility_band_rule_complete_and_missing(tmp_path, monkeypatch):
-    """gpt-4o has temperature + max_tokens set → 'complete'.
-    claude-3-opus has neither → 'missing'."""
+    """gpt-4o discloses every applicable setup item → 'complete'.
+    claude-3-opus leaves decoding, output length and test set
+    undisclosed → 'missing'."""
     pytest.importorskip("duckdb")
     out = _run_pipeline(tmp_path, monkeypatch)
     con = duckdb.connect()

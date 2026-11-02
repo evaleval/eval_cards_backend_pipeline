@@ -55,6 +55,8 @@ def _materialise_views(out_dir: Path):
             f"SELECT * FROM read_parquet('{out_dir}/{table}.parquet')"
         )
     stages.stage_j_eval_results_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_scoring_mode(con)
+    stages.stage_j_reproducibility(con)
     stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
     return con
 
@@ -152,16 +154,23 @@ def test_third_party_eval_count_xparty_fixture(tmp_path, monkeypatch):
     assert ratio == 0.5
 
 
-def test_reproducibility_status_band_complete(tmp_path, monkeypatch):
-    """fixtures_clean has full reproducibility coverage → band='complete'."""
+def test_reproducibility_status_band_reads_the_setup_items(tmp_path, monkeypatch):
+    """fixtures_clean states decoding, output length and the harness with its
+    version, but never the test set, so every gpt-4o cell has a gap and the
+    band is 'missing'."""
     pytest.importorskip("duckdb")
     out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
     con = _materialise_views(out)
+    missing = con.execute(
+        "SELECT DISTINCT evalcards_annotations.reproducibility_gap.missing_fields "
+        "FROM eval_results_view WHERE model_key = 'openai/gpt-4o'"
+    ).fetchall()
+    assert missing == [(["test_set"],)]
     status = con.execute(
         "SELECT reproducibility_status FROM models_view "
         "WHERE model_id = 'openai/gpt-4o'"
     ).fetchone()[0]
-    assert status == "complete"
+    assert status == "missing"
 
 
 def test_tag_stats_overlap_semantics(tmp_path, monkeypatch):

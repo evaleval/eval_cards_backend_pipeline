@@ -226,7 +226,7 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch, card_layout):
     assert fact_path.exists()
 
     rows = con.execute(
-        f"SELECT model_id, benchmark_id, metric_id, score, has_reproducibility_gap, "
+        f"SELECT model_id, benchmark_id, metric_id, score, "
         f"has_variant_divergence, distinct_reporting_orgs, "
         f"completeness_score, completeness_populated_count, "
         f"completeness_total_fields_evaluated, "
@@ -241,17 +241,17 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch, card_layout):
     assert all(r[2] == "accuracy" for r in rows)
     # Both rows are in the same comparability group with two distinct setups
     # → variant divergence is applicable; magnitude (0.85 - 0.50) > threshold (0.05)
-    assert all(r[5] is True for r in rows)
+    assert all(r[4] is True for r in rows)
     # Single org → cross-party not applicable
-    assert all(r[6] == 1 for r in rows)
+    assert all(r[5] == 1 for r in rows)
     # Per-row completeness: full card (22 + 1 partial-data full) + 3 EEE
     # source_metadata (set in fixture) + 0 reserved = 26 / 28. Both rows
     # share the same EEE record's source_metadata so both should match.
     populated_count = 3 if card_layout == "none" else 26
     for r in rows:
-        assert r[9] == 28              # total_fields_evaluated
-        assert r[8] == populated_count
-        assert abs(r[7] - populated_count / 28) < 1e-9
+        assert r[8] == 28              # total_fields_evaluated
+        assert r[7] == populated_count
+        assert abs(r[6] - populated_count / 28) < 1e-9
     # Metric-meta hotfix: registry has score_type='continuous',
     # min=0, max=1, lower=False but no metric_kind/metric_unit. EEE per-record
     # has metric_name='accuracy' but no metric_kind/metric_unit either.
@@ -261,10 +261,10 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch, card_layout):
     # → variant_threshold_basis short-circuits to proportion.
     # → score_scale_anomaly evaluates against [0,1]: scores 0.5, 0.85 are in range → False.
     for r in rows:
-        assert r[10] == "accuracy", f"metric_kind: {r[10]!r}"
-        assert r[11] == "proportion", f"metric_unit: {r[11]!r}"
-        assert r[12] is False, f"score_scale_anomaly: {r[12]!r}"
-        assert r[13] == "proportion", f"basis: {r[13]!r}"
+        assert r[9] == "accuracy", f"metric_kind: {r[9]!r}"
+        assert r[10] == "proportion", f"metric_unit: {r[10]!r}"
+        assert r[11] is False, f"score_scale_anomaly: {r[11]!r}"
+        assert r[12] == "proportion", f"basis: {r[12]!r}"
 
     bench = out_dir / "benchmarks.parquet"
     assert bench.exists()
@@ -943,7 +943,6 @@ def test_snapshot_meta_refuses_fact_rows_the_dedup_stats_do_not_account_for(
     )
     kwargs = dict(
         datafix_summary={"enabled": False, "fixes": {}},
-        repro_exemption={"declaration_sources": [], "declared": {}},
         snapshot_id="2026-05-01T00:00:00Z", chosen=["minibench"],
         settings=Settings.from_env(),
         n_eee=0, n_cards=0, n_exploded=0, n_synth_collisions=0,

@@ -344,7 +344,7 @@ def write_card_fixtures():
             "purpose_and_intended_users": {
                 "goal": "agentic SWE",
                 "audience": ["devs"],
-                "tasks": ["agentic"],   # → triggers is_agentic via card rule
+                "tasks": ["agentic"],
                 "limitations": "limited to GitHub issues",
                 "out_of_scope_uses": [],
             },

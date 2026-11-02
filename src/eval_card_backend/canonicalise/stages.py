@@ -28,12 +28,7 @@ from typing import Callable, Iterable, NamedTuple
 import duckdb
 import pyarrow as pa
 
-from eval_card_backend.signals.reproducibility import (
-    AGENTIC_REPRODUCIBILITY_FIELDS,
-    BASE_REPRODUCIBILITY_FIELDS,
-    DECLARATION_SOURCES,
-    NON_GENERATIVE_VALUES,
-)
+from eval_card_backend.signals import reproducibility
 from eval_card_backend.canonicalise import taxonomy, udfs
 from eval_card_backend.config import EEE_DATASET_REPO
 from eval_card_backend.sources import collections as collections_src
@@ -219,73 +214,6 @@ def json_array_guard_sql(expr: str) -> str:
     return f"json_type(CASE WHEN json_valid({expr}) THEN {expr} END) = 'ARRAY'"
 
 
-_REPRO_BASE_COUNT = len(BASE_REPRODUCIBILITY_FIELDS)
-_REPRO_AGENTIC_EXTRA = len(AGENTIC_REPRODUCIBILITY_FIELDS)
-
-
-def _build_repro_missing_fields_sql() -> str:
-    """Concatenated array-literal expression for `repro_missing_fields`.
-
-    Mirrors the active rule in `signals/reproducibility.py`. Base fields
-    fire on missing whenever the base rule applies to the row; agentic
-    fields fire only when `is_agentic`. Same field names are also used as
-    `has_<field>` flag columns in the upstream `base` CTE, so keep the two
-    in sync.
-    """
-    base_clauses = [
-        f"(CASE WHEN repro_base_applicable AND NOT has_{f} "
-        f"THEN ['{f}'] ELSE []::VARCHAR[] END)"
-        for f in BASE_REPRODUCIBILITY_FIELDS
-    ]
-    agentic_clauses = [
-        f"(CASE WHEN is_agentic AND NOT has_{f} THEN ['{f}'] ELSE []::VARCHAR[] END)"
-        for f in AGENTIC_REPRODUCIBILITY_FIELDS
-    ]
-    return "\n                 || ".join(base_clauses + agentic_clauses)
-
-
-def _build_repro_required_count_sql() -> str:
-    """How many fields the row owes: the base pair when the base rule
-    applies to it, plus the agentic pair when it is agentic. Zero means
-    the rule has nothing to ask of this row, which is not the same as
-    the row answering everything."""
-    return (
-        f"(CASE WHEN repro_base_applicable THEN {_REPRO_BASE_COUNT} ELSE 0 END)"
-        f" + (CASE WHEN is_agentic THEN {_REPRO_AGENTIC_EXTRA} ELSE 0 END)"
-    )
-
-
-def _build_non_generative_sql(honoured: frozenset[str]) -> str:
-    """Boolean expression for `is_non_generative` over the declaration
-    columns Stage D carries.
-
-    True only when the row's declaration comes from a source this run
-    honours and the declared value is on that source's list (the table in
-    `signals/reproducibility.py`). An undeclared row, or a declaration
-    from a source the run does not honour, is FALSE rather than NULL, so
-    the rule below it never goes three-valued.
-    """
-    clauses = []
-    for source in DECLARATION_SOURCES:
-        if source not in honoured:
-            continue
-        values = ", ".join(
-            "'" + value.replace("'", "''") + "'"
-            for value in sorted(NON_GENERATIVE_VALUES[source])
-        )
-        clauses.append(
-            f"WHEN declared_output_source = '{source}' "
-            f"THEN declared_output_value IN ({values})"
-        )
-    if not clauses:
-        return "FALSE"
-    return "COALESCE(CASE " + "\n                         ".join(clauses) + " END, FALSE)"
-
-
-_REPRO_MISSING_FIELDS_SQL = _build_repro_missing_fields_sql()
-_REPRO_REQUIRED_COUNT_SQL = _build_repro_required_count_sql()
-
-
 # Stage J view-layer signal-summary STRUCT shapes. Identical across
 # `models_view` and `evals_view`; declared here so a shape change is a
 # one-line edit.
@@ -294,6 +222,21 @@ _REPRODUCIBILITY_SUMMARY_STRUCT = (
     "results_total INTEGER, "
     "has_reproducibility_gap_count INTEGER, "
     "populated_ratio_avg DOUBLE"
+    ")"
+)
+# One result's reading under the setup-item rule. `has_reproducibility_gap`
+# is whether any applicable item is undisclosed, `missing_fields` those
+# items' ids, `populated_count` / `required_count` the disclosed and
+# applicable counts, and `item_states` one character per setup item in
+# `reproducibility.SETUP_ITEMS` order: d disclosed, m missing (applies,
+# undisclosed), n not applicable, u applicability unknown.
+_REPRODUCIBILITY_GAP_STRUCT = (
+    "STRUCT("
+    "has_reproducibility_gap BOOLEAN, "
+    "missing_fields VARCHAR[], "
+    "populated_count INTEGER, "
+    "required_count INTEGER, "
+    "item_states VARCHAR"
     ")"
 )
 _PROVENANCE_SUMMARY_STRUCT = (
@@ -778,64 +721,6 @@ def stage_a_load_eee(
         )
 
     return n_rows
-
-
-def _ensure_result_annotations(con) -> None:
-    """Create an empty `eee_result_annotations` when Stage A did not.
-
-    Keeps the Stage D join total: a harness that stages tables by hand,
-    and a cache written before the table existed, both get the same
-    "nothing was declared" answer rather than a binder error.
-    """
-    con.execute(
-        "CREATE TABLE IF NOT EXISTS eee_result_annotations ("
-        "source_record_path VARCHAR, result_idx BIGINT, "
-        "evaluation_id VARCHAR, evaluation_result_id VARCHAR, "
-        "evaluation_name VARCHAR, model_id VARCHAR, "
-        "declaration_source VARCHAR, declared_value VARCHAR, "
-        "source_fix_id VARCHAR, source_revision VARCHAR, "
-        "table_sha256 VARCHAR)"
-    )
-
-
-def stage_a_load_result_annotations(con, arrow_table: pa.Table) -> int:
-    """Register the per-result output-type declarations as
-    `eee_result_annotations`.
-
-    One row per physical result a source declared an output type for,
-    keyed by `(source_record_path, result_idx)`. Nothing was written into
-    the records themselves; Stage D joins this table back onto the facts
-    and checks the identity columns against them.
-
-    The key has to be unique or the Stage D join would fan the fact grain
-    out, so a duplicate fails here rather than inflating a row count
-    nobody is watching.
-    """
-    con.execute("DROP TABLE IF EXISTS eee_result_annotations")
-    con.register("eee_result_annotations_arrow", arrow_table)
-    con.execute(
-        "CREATE TABLE eee_result_annotations AS "
-        "SELECT * FROM eee_result_annotations_arrow"
-    )
-    con.unregister("eee_result_annotations_arrow")
-
-    dupes = con.execute(
-        """
-        SELECT source_record_path, result_idx, COUNT(*) AS n
-        FROM eee_result_annotations
-        GROUP BY 1, 2 HAVING COUNT(*) > 1
-        ORDER BY n DESC, 1, 2 LIMIT 3
-        """
-    ).fetchall()
-    if dupes:
-        raise RuntimeError(
-            f"Stage A: {len(dupes)}+ physical result(s) carry more than one "
-            f"output-type declaration, e.g. {dupes}. The Stage D join is "
-            f"keyed on (source_record_path, result_idx) and would fan the "
-            f"fact grain out. Two declaration sources claiming one result "
-            f"is a bug in `datafix/annotations.py`."
-        )
-    return arrow_table.num_rows
 
 
 def stage_a_load_cards(con, cards: dict[str, LoadedCard]) -> int:
@@ -1964,7 +1849,6 @@ def stage_d_join_dims_and_flatten(
     # Collection tables are Stage B outputs; create empty stand-ins when a
     # pre-collections cache (or a test harness) skipped that step.
     collections_src.create_collection_tables(con)
-    _ensure_result_annotations(con)
 
     validated_path = Path(__file__).resolve().parents[3] / "vendor" / "is_verified_evaluator.parquet"
     if validated_path.exists():
@@ -2117,12 +2001,7 @@ def stage_d_join_dims_and_flatten(
                 -- can't drift across registry pins. Guards: harness bleed
                 -- keys on source_config; missing parts fall back to
                 -- unknown/unlabeled.
-                {collection_raw_key} AS _collection_raw_key,
-                -- What the evaluation's own source declared about whether
-                -- this result sampled any text. Keyed on the physical
-                -- result, which `(evaluation_id, result_idx)` is not.
-                ann.declaration_source                                 AS _declared_output_source,
-                ann.declared_value                                     AS _declared_output_value
+                {collection_raw_key} AS _collection_raw_key
             FROM rr_tok rr
             LEFT JOIN canonical_benchmarks cb       ON cb.id = rr.benchmark_id
             LEFT JOIN canonical_models     cm_model ON cm_model.id = rr.model_id
@@ -2148,9 +2027,6 @@ def stage_d_join_dims_and_flatten(
                   AND ccm3.specificity = 3
                   AND ccm3.org_token = rr.org_token
                   AND ccm3.source_slug = rr._curated_source_slug
-            LEFT JOIN eee_result_annotations ann
-                   ON ann.source_record_path = rr.source_record_path
-                  AND ann.result_idx         = rr.result_idx
         ),
         judge_typed AS (
             -- Judge condition, source 1 (D9): the typed `llm_scoring` struct.
@@ -2506,12 +2382,6 @@ def stage_d_join_dims_and_flatten(
 
             CAST(to_json(j.generation_config.generation_args) AS VARCHAR)                AS generation_args_json,
 
-            -- The source's own statement about whether this result sampled
-            -- any text, and which source made it. NULL on every result no
-            -- source declared one for; Stage E reads them.
-            j._declared_output_source                                                    AS declared_output_source,
-            j._declared_output_value                                                     AS declared_output_value,
-
             CAST(to_json(j.source_metadata.additional_details)   AS VARCHAR) AS source_additional_details,
             CAST(to_json(j.generation_config.additional_details) AS VARCHAR) AS generation_additional_details,
             CAST(to_json(j.metric_config.additional_details)     AS VARCHAR) AS metric_additional_details,
@@ -2732,7 +2602,6 @@ def stage_d_join_dims_and_flatten(
             score_ci_upper * _scale_mult + _scale_off AS score_ci_upper_canonical
         FROM scale_applied
     )"""
-    n_in = con.execute("SELECT COUNT(*) FROM results_resolved").fetchone()[0]
     # Row-local flatten per source-config batch, then the one cross-record
     # input (the scale group max) on narrow keys, then the scale pass per
     # batch again. Each statement's working set is a batch of wide rows.
@@ -2764,9 +2633,6 @@ def stage_d_join_dims_and_flatten(
     con.execute("DROP TABLE _staging_pre")
     con.execute("DROP TABLE _scale_grp_max")
 
-    _assert_result_annotations(con)
-    _assert_flatten_kept_the_row_count(con, n_in)
-
     _log_malformed_metric_models(con)
     _log_split_inheritance(con)
     _log_flat_exact_wholes(con)
@@ -2778,145 +2644,6 @@ def stage_d_join_dims_and_flatten(
         include_private,
         allow_zero_private_members,
     )
-
-
-def _assert_flatten_kept_the_row_count(con, n_in: int) -> None:
-    """One staged row per resolved result, for a run that carries
-    declarations.
-
-    Every dim the flatten joins is meant to be unique on its join key, so
-    the staged table has the row count it started with. A dim with a
-    duplicated id breaks that quietly: the fact is emitted twice, and a
-    declaration keyed to the result it came from is then carried on both
-    copies, describing a row it was not made about. The annotation checks
-    cannot see it, because a 1:1 join off a unique key is exactly what
-    they prove.
-
-    Scoped to runs with declarations so a run without them keeps the
-    behaviour it has always had.
-    """
-    n_annotations = con.execute(
-        "SELECT COUNT(*) FROM eee_result_annotations"
-    ).fetchone()[0]
-    if not n_annotations:
-        return
-    n_out = con.execute("SELECT COUNT(*) FROM fact_results_staging").fetchone()[0]
-    if n_out != n_in:
-        raise RuntimeError(
-            f"Stage D: the flatten went in with {n_in} resolved result(s) and "
-            f"came out with {n_out} staged row(s). A dimension join has "
-            f"changed the fact grain, so a row no longer stands for one "
-            f"result."
-        )
-
-
-def _assert_result_annotations(con) -> None:
-    """Check the output-type declarations against the facts they landed on.
-
-    The declaration table is built while the records are read, outside
-    DuckDB, so nothing but these checks stands between a stale or
-    mis-keyed table and a silently wrong exemption:
-
-    - the key is unique, so the join is at most 1:1 and cannot have
-      changed the fact grain;
-    - every declared result must exist, and the identity fields carried
-      alongside the key must match the row the key found;
-    - every staged row must carry exactly the declaration its own key
-      names, and nothing where the key names none;
-    - a declaration must not land on an evaluation the collection
-      adapters rewrite, because those rows are re-issued at Stage B and
-      the result the declaration described is no longer there.
-
-    Each is a hard failure. A declaration that does not describe the row
-    it is attached to is worse than no declaration at all.
-    """
-    dupes = con.execute(
-        """
-        SELECT source_record_path, result_idx, COUNT(*) AS n
-        FROM eee_result_annotations
-        GROUP BY 1, 2 HAVING COUNT(*) > 1
-        ORDER BY n DESC, 1, 2 LIMIT 3
-        """
-    ).fetchall()
-    if dupes:
-        raise RuntimeError(
-            f"Stage D: the declaration key is not unique, e.g. {dupes}. The "
-            f"join would fan the fact grain out."
-        )
-
-    orphans = con.execute(
-        """
-        SELECT a.source_record_path, a.result_idx
-        FROM eee_result_annotations a
-        LEFT JOIN results_exploded r
-               ON r.source_record_path = a.source_record_path
-              AND r.result_idx         = a.result_idx
-        WHERE r.source_record_path IS NULL
-        ORDER BY 1, 2 LIMIT 3
-        """
-    ).fetchall()
-    if orphans:
-        raise RuntimeError(
-            f"Stage D: output-type declaration(s) address results that are "
-            f"not in the corpus, e.g. {orphans}. The declaration table was "
-            f"built from records this run did not load."
-        )
-
-    mismatched = con.execute(
-        """
-        SELECT a.source_record_path, a.result_idx,
-               a.evaluation_id, r.evaluation_id,
-               a.evaluation_name, r.evaluation_name,
-               a.model_id, r.model_info.id
-        FROM eee_result_annotations a
-        JOIN results_exploded r
-          ON r.source_record_path = a.source_record_path
-         AND r.result_idx         = a.result_idx
-        WHERE a.evaluation_id        IS DISTINCT FROM r.evaluation_id
-           OR a.evaluation_result_id IS DISTINCT FROM r.evaluation_result_id_raw
-           OR a.evaluation_name      IS DISTINCT FROM r.evaluation_name
-           OR a.model_id             IS DISTINCT FROM r.model_info.id
-        ORDER BY 1, 2 LIMIT 3
-        """
-    ).fetchall()
-    if mismatched:
-        raise RuntimeError(
-            f"Stage D: output-type declaration(s) disagree with the result "
-            f"they are keyed to, e.g. {mismatched}. The key found a "
-            f"different result than the one the declaration was made about."
-        )
-
-    mislanded = con.execute(
-        """
-        SELECT COUNT(*)
-        FROM fact_results_staging f
-        LEFT JOIN eee_result_annotations a
-               ON a.source_record_path = f.source_record_path
-              AND a.result_idx         = f.result_idx
-        WHERE f.declared_output_source IS DISTINCT FROM a.declaration_source
-           OR f.declared_output_value  IS DISTINCT FROM a.declared_value
-        """
-    ).fetchone()[0]
-    if mislanded:
-        raise RuntimeError(
-            f"Stage D: {mislanded} staged row(s) carry a declaration their "
-            f"own key does not name. The join columns and the emitted "
-            f"columns have come apart."
-        )
-
-    rewritten = con.execute(
-        """
-        SELECT COUNT(*) FROM eee_result_annotations
-        WHERE evaluation_id IN (SELECT evaluation_id FROM collection_member_ids)
-        """
-    ).fetchone()[0]
-    if rewritten:
-        raise RuntimeError(
-            f"Stage D: {rewritten} output-type declaration(s) address "
-            f"evaluations a collection adapter rewrites. Those rows are "
-            f"dropped and re-issued as synthetic results at Stage B, so the "
-            f"result the declaration described no longer exists."
-        )
 
 
 def _log_flat_exact_wholes(con, top_n: int = 20) -> None:
@@ -3265,7 +2992,6 @@ def stage_e_per_row_signals(
     *,
     strict_composites: bool = False,
     exempt_composites: frozenset[str] = frozenset(),
-    exempt_declaration_sources: frozenset[str] = frozenset(),
 ) -> StageEStats:
     """Compute per-row signals + apply drop policies, in this order:
 
@@ -3290,8 +3016,7 @@ def stage_e_per_row_signals(
        per row, and `stage_e_dedup_stats` aggregates those decisions per
        source_config (see `read_stage_e_dedup_stats`).
 
-    Per-row signals computed: reproducibility gap, provenance source-type
-    collapse, variant_key, score_scale_anomaly, reporting completeness.
+    Per-row signals computed: provenance source-type collapse, variant_key, score_scale_anomaly, reporting completeness.
     Completeness is per-row (3 of the 28 fields are EEE source_metadata
     that vary across reports); the UDF is invoked once per row in the
     `scored` CTE and destructured in the outer SELECT.
@@ -3302,13 +3027,7 @@ def stage_e_per_row_signals(
     collections strictness (hard curated-member guards only on full runs).
     `exempt_composites` skips that guard for composites whose only
     producer is a private source that is switched off this run.
-
-    `exempt_declaration_sources` names the sources whose "this result
-    sampled no text" statement the run honours. Empty (the default) leaves
-    the reproducibility rule exactly as it stands: every row owes the base
-    fields.
     """
-    non_generative_sql = _build_non_generative_sql(exempt_declaration_sources)
     staging_cols = {
         r[1] for r in con.execute(
             "PRAGMA table_info('fact_results_staging')"
@@ -3350,14 +3069,7 @@ def stage_e_per_row_signals(
                 -- defined here so completeness UDF and final fact_results column
                 -- read the same source)
                 CAST(NULL AS VARCHAR) AS lifecycle_status,
-                CAST(NULL AS VARCHAR) AS preregistration_url,
-                is_agentic_by_benchmark_udf(benchmark_id, generation_args_json) AS is_agentic,
-                -- Did this result sample any text? Only a declaration by
-                -- the evaluation's own source answers it; everything else
-                -- is FALSE. The base fields describe sampling, so a row
-                -- that sampled nothing has none to report.
-                ({non_generative_sql}) AS is_non_generative,
-                NOT ({non_generative_sql}) AS repro_base_applicable
+                CAST(NULL AS VARCHAR) AS preregistration_url
             FROM fact_results_staging
             WHERE score IS NOT NULL
               AND NOT ({_SENTINEL_DROP_PREDICATE})
@@ -3366,8 +3078,6 @@ def stage_e_per_row_signals(
         scored AS (
             -- One UDF call per row; destructured below. Without the CTE,
             -- DuckDB would invoke the UDF once per dereferenced field.
-            -- repro_missing_fields is built here from per-field has_* flags
-            -- so the rest of the SELECT can reference it without recomputing.
             SELECT base.*,
                 compute_completeness_by_benchmark_udf(
                     benchmark_id,
@@ -3376,22 +3086,12 @@ def stage_e_per_row_signals(
                     evaluator_relationship,
                     lifecycle_status,
                     preregistration_url
-                ) AS _completeness,
-                ({_REPRO_MISSING_FIELDS_SQL}
-                ) AS repro_missing_fields,
-                ({_REPRO_REQUIRED_COUNT_SQL}) AS repro_required_count
+                ) AS _completeness
             FROM base
         ),
         signaled AS (
             SELECT
                 *,
-                len(repro_missing_fields) > 0 AS has_reproducibility_gap,
-                (repro_required_count - len(repro_missing_fields)) AS repro_populated_count,
-                -- A row the rule asks nothing of is outside it, not
-                -- complete under it. Every rollup that reads a rate has to
-                -- be able to tell the two apart.
-                repro_required_count > 0 AS repro_applicable,
-
                 COALESCE(
                     CASE WHEN evaluator_relationship = 'other' THEN 'unspecified'
                          ELSE evaluator_relationship
@@ -5421,15 +5121,7 @@ def stage_j_eval_results_view(
 
     eval_annotation_struct_type = (
         "STRUCT("
-        "reproducibility_gap STRUCT("
-        "  missing_fields VARCHAR[],"
-        "  populated_count INTEGER,"
-        "  required_count INTEGER,"
-        # Whether the rule asks anything of this cell. A cell it asks
-        # nothing of reads populated 0 / required 0, which without this
-        # bit is indistinguishable from a cell that answered everything.
-        "  applicable BOOLEAN"
-        "),"
+        f"reproducibility_gap {_REPRODUCIBILITY_GAP_STRUCT},"
         "provenance STRUCT("
         "  source_type VARCHAR,"
         "  evaluator_relationship VARCHAR,"
@@ -5808,16 +5500,6 @@ def stage_j_eval_results_view(
                     FILTER (WHERE cross_party_differing_fields IS NOT NULL)
                                                          AS cross_party_differing_fields,
                 MAX(cross_party_org_count)                  AS cross_party_org_count,
-                BOOL_OR(has_reproducibility_gap)         AS triple_has_repro_gap,
-                -- Applicability covers every contributing observation.
-                BOOL_OR(repro_applicable)                AS triple_repro_applicable,
-                BOOL_AND(repro_applicable)               AS triple_all_repro_applicable,
-                BOOL_OR(is_non_generative)               AS triple_has_non_generative,
-                list_sort(list_distinct(flatten(list(repro_missing_fields))))
-                                                        AS triple_repro_missing_fields,
-                (CASE WHEN BOOL_OR(repro_base_applicable) THEN {_REPRO_BASE_COUNT} ELSE 0 END)
-                  + (CASE WHEN BOOL_OR(is_agentic) THEN {_REPRO_AGENTIC_EXTRA} ELSE 0 END)
-                                                        AS triple_repro_required_count,
                 ROUND(AVG(completeness_score), 12)       AS triple_avg_completeness
             FROM tris_levelled
             GROUP BY composite_slug, model_aggregation_key, benchmark_key,
@@ -5927,16 +5609,6 @@ def stage_j_eval_results_view(
                 tr.inference_platform         AS rep_inference_platform,
                 tr.resolution_source          AS rep_resolution_source,
                 tr.resolution_granularity     AS rep_resolution_granularity,
-                CASE WHEN ta.triple_has_non_generative
-                     THEN ta.triple_repro_missing_fields
-                     ELSE tr.repro_missing_fields END AS rep_repro_missing_fields,
-                CASE WHEN ta.triple_has_non_generative
-                     THEN ta.triple_repro_required_count - len(ta.triple_repro_missing_fields)
-                     ELSE tr.repro_populated_count END AS rep_repro_populated_count,
-                CASE WHEN ta.triple_has_non_generative
-                     THEN ta.triple_repro_required_count
-                     ELSE tr.repro_required_count END AS rep_repro_required_count,
-                ta.triple_repro_applicable     AS rep_repro_applicable,
                 tr.instance_file_path         AS rep_instance_file_path,
                 tr.instance_file_format       AS rep_instance_file_format,
                 tr.instance_rows              AS rep_instance_rows,
@@ -5968,7 +5640,6 @@ def stage_j_eval_results_view(
     )
 
     _log_cells_without_aggregate(con)
-    _log_mixed_repro_applicability(con)
 
     # Headline mapping: exactly one row per (composite, benchmark,
     # metric_key, model) is the page's summary reading, chosen across BOTH
@@ -6640,7 +6311,8 @@ def stage_j_eval_results_view(
                  ELSE CAST(_value_components AS {aggregate_components_type})
             END AS aggregate_components,
 
-            triple_has_repro_gap        AS has_reproducibility_gap,
+            -- Set by `stage_j_reproducibility`, which needs `scoring_mode`.
+            CAST(NULL AS BOOLEAN)       AS has_reproducibility_gap,
             triple_avg_completeness     AS completeness_score,
             is_multi_source,
             first_party_only,
@@ -6649,12 +6321,7 @@ def stage_j_eval_results_view(
             has_cross_party_divergence,
 
             CAST({{
-                'reproducibility_gap': {{
-                    'missing_fields':  rep_repro_missing_fields,
-                    'populated_count': rep_repro_populated_count,
-                    'required_count':  rep_repro_required_count,
-                    'applicable':      rep_repro_applicable
-                }},
+                'reproducibility_gap': NULL,
                 'provenance': {{
                     'source_type':            rep_provenance_source_type,
                     'evaluator_relationship': rep_evaluator_relationship,
@@ -7152,23 +6819,6 @@ def _log_partial_parent_coverage(con, top_n: int = 20) -> None:
         log.warning("  ... and %d more group(s)", len(rows) - top_n)
 
 
-def _log_mixed_repro_applicability(con) -> None:
-    """Report cells that combine applicable and exempt observations."""
-    n_mixed = con.execute(
-        """
-        SELECT COUNT(*) FROM _erv_tri
-        WHERE triple_repro_applicable IS DISTINCT FROM triple_all_repro_applicable
-        """
-    ).fetchone()[0]
-    if n_mixed:
-        log.warning(
-            "Stage J: %d cell(s) hold rows that disagree about whether the "
-            "reproducibility rule applies; the published annotation covers "
-            "the union of their requirements and missing fields.",
-            n_mixed,
-        )
-
-
 def _log_cells_without_aggregate(con, top_n: int = 20) -> None:
     """WARN for every cell that holds only PART observations — no row that
     measured the benchmark itself, and no complete registry task set.
@@ -7352,10 +7002,283 @@ def stage_j_scoring_mode(con) -> None:
     )
 
 
-# The reproducibility band, in its two forms. With no declaration
-# honoured every cell is one the rule asks the same thing of, and the band
-# is the gap rate over all of the model's headline cells.
-_REPRO_BAND_ALL_CELLS_SQL = """
+# The JSON object each evidence namespace of a setup-item path names on an
+# `eval_results_view` row; a path is `<namespace>.<key>`.
+_REPRO_NAMESPACES = (
+    "generation_args", "generation_config.additional_details", "protocol",
+    "limits", "score", "agent", "row",
+)
+# What JavaScript's String.prototype.trim strips: the paper's scorer
+# compared placeholders and output types after it.
+_REPRO_WHITESPACE = (
+    " \t\n\x0b\x0c\r\u00a0\u1680"
+    + "".join(chr(c) for c in range(0x2000, 0x200B))
+    + "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+
+def _sql_str(value: str | None) -> str:
+    return "NULL" if value is None else "'" + value.replace("'", "''") + "'"
+
+
+def _sql_list(values: Iterable[str]) -> str:
+    return ", ".join(_sql_str(v) for v in values)
+
+
+def _repro_paths_sql() -> str:
+    """Every evidence path the rule reads, as rows of (path, role, item,
+    pos): an item's accepted fields in order, the reasoning and agentic
+    markers, and the output-type paths in order."""
+    rows = []
+    for item, _, paths in reproducibility.SETUP_ITEMS:
+        rows += [(path, "item", item, pos) for pos, path in enumerate(paths, 1)]
+    for role, paths in (
+        ("reasoning_marker", reproducibility.REASONING_MARKERS),
+        ("agentic_marker", reproducibility.AGENTIC_MARKERS),
+        ("output_type", reproducibility.OUTPUT_TYPE_PATHS),
+    ):
+        rows += [(path, role, None, pos) for pos, path in enumerate(paths, 1)]
+    for path, *_ in rows:
+        # A path is one key of one namespace; the cells hold top-level keys.
+        if not any(
+            path.startswith(ns + ".") and "." not in path[len(ns) + 1:]
+            for ns in _REPRO_NAMESPACES
+        ):
+            raise ValueError(f"setup-item path {path!r} is not <namespace>.<key>")
+    values = ", ".join(
+        f"({_sql_str(path)}, {_sql_str(role)}, {_sql_str(item)}, {pos})"
+        for path, role, item, pos in rows
+    )
+    return f"SELECT * FROM (VALUES {values}) AS t(path, role, item, pos)"
+
+
+_REPRO_APPLICABILITY = (
+    "always", "sampling_controlled", "generative_run", "reasoning_run", "agentic_run",
+)
+
+
+def _repro_items_sql() -> str:
+    """The setup items as rows of (item, item_pos, applicability)."""
+    for item, rule, _ in reproducibility.SETUP_ITEMS:
+        if rule not in _REPRO_APPLICABILITY:
+            raise ValueError(f"setup item {item!r}: unknown applicability {rule!r}")
+    values = ", ".join(
+        f"({_sql_str(item)}, {pos}, {_sql_str(rule)})"
+        for pos, (item, rule, _) in enumerate(reproducibility.SETUP_ITEMS, 1)
+    )
+    return f"SELECT * FROM (VALUES {values}) AS t(item, item_pos, applicability)"
+
+
+def _repro_namespaces_sql() -> str:
+    """Each `eval_results_view` row's evidence namespaces as JSON objects.
+    Free-text JSON that does not parse to an object reads as absent; the
+    agentic blocks and limits are read from `additional_details`, the only
+    place the view carries them."""
+    details = "TRY(json(generation_config.additional_details))"
+    limits_text = "json_extract_string(_limits, '$')"
+    return f"""
+        SELECT _rid, scoring_mode, [
+            {{'ns': 'generation_args',
+              'obj': to_json(generation_config.generation_args)}},
+            {{'ns': 'generation_config.additional_details', 'obj': _details}},
+            {{'ns': 'protocol', 'obj': _protocol}},
+            {{'ns': 'limits',
+              'obj': CASE WHEN json_type(_limits) = 'OBJECT' THEN _limits
+                          WHEN json_type(_limits) = 'VARCHAR'
+                           AND json_type(TRY(json({limits_text}))) = 'OBJECT'
+                              THEN TRY(json({limits_text}))
+                     END}},
+            {{'ns': 'score', 'obj': to_json(score_details)}},
+            {{'ns': 'agent',
+              'obj': json_object(
+                  'eval_plan', json_extract(_details, '$.eval_plan'),
+                  'agentic_eval_config', json_extract(_details, '$.agentic_eval_config'))}},
+            {{'ns': 'row',
+              'obj': json_object(
+                  'eval_library', eval_library.name,
+                  'eval_library_version', eval_library.version,
+                  'split', split)}}
+        ] AS namespaces
+        FROM (
+            SELECT *, json_extract(_details, '$.eval_limits') AS _limits
+            FROM (
+                SELECT rowid AS _rid, scoring_mode, generation_config,
+                    score_details, eval_library, split,
+                    CASE WHEN json_type({details}) = 'OBJECT' THEN {details} END
+                        AS _details,
+                    CASE WHEN json_type(TRY(json(protocol_condition))) = 'OBJECT'
+                         THEN TRY(json(protocol_condition)) END AS _protocol
+                FROM eval_results_view
+            )
+        )
+    """
+
+
+def stage_j_reproducibility(con) -> None:
+    """Score every `eval_results_view` row against the setup items.
+
+    The rule is evaluated as data: each row's evidence is unpacked once
+    into (row, path, value) cells for the paths the rule reads, each value
+    is tested once (disclosed, affirmative), and the item and marker tables
+    are joined against the cells. Per item: not applicable when the row is
+    scored from log-probabilities and the item needs sampling or
+    generation; disclosed when any accepted field is (the first in order is
+    reported); unknown when the item needs a reasoning or agentic marker
+    that no field affirms; missing otherwise.
+
+    Sets `has_reproducibility_gap`, the `reproducibility_gap` annotation
+    (see `_REPRODUCIBILITY_GAP_STRUCT`; it is what page payloads carry),
+    `reproducibility_evidence`: the field and value (JSON text) behind each
+    disclosed item, read one row at a time. Every rollup of the gap reads these, so this runs after
+    `stage_j_scoring_mode` and before the models and evals views.
+    """
+    placeholders = _sql_list(reproducibility.PLACEHOLDER_VALUES)
+    negatives = _sql_list(reproducibility.NEGATIVE_VALUES)
+    log_prob = _sql_list(reproducibility.LOG_PROB_OUTPUT_TYPES)
+    generative = _sql_list(reproducibility.GENERATIVE_OUTPUT_TYPES)
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _repro_paths AS {_repro_paths_sql()}")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _repro_items AS {_repro_items_sql()}")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _repro_rows AS {_repro_namespaces_sql()}")
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _repro_cells AS
+        WITH cells AS (
+            SELECT r._rid, n.ns || '.' || k AS path,
+                json_extract(n.obj, '$."' || k || '"') AS v
+            FROM _repro_rows r,
+                 UNNEST(r.namespaces) AS t(n),
+                 UNNEST(json_keys(n.obj)) AS u(k)
+            WHERE n.ns || '.' || k IN (SELECT path FROM _repro_paths)
+        ),
+        typed AS (
+            SELECT *, json_type(v) AS t,
+                lower(trim(json_extract_string(v, '$'), '{_REPRO_WHITESPACE}')) AS text
+            FROM cells
+        )
+        SELECT _rid, path, text,
+            -- JSON text, so a string stays a string on display.
+            CAST(v AS VARCHAR) AS value_text,
+            -- Disclosed unless absent, empty or a placeholder string;
+            -- `false` and `0` are disclosures.
+            CASE t WHEN 'VARCHAR' THEN text NOT IN ({placeholders})
+                   WHEN 'ARRAY'   THEN json_array_length(v) > 0
+                   WHEN 'OBJECT'  THEN len(json_keys(v)) > 0
+                   WHEN 'NULL'    THEN FALSE
+                   ELSE v IS NOT NULL END AS disclosed,
+            -- Affirmative: disclosed, and saying the thing happened.
+            CASE t WHEN 'BOOLEAN' THEN json_extract_string(v, '$') = 'true'
+                   WHEN 'VARCHAR' THEN text NOT IN ({negatives})
+                   ELSE TRUE END AS _says_yes
+        FROM typed
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _repro_item_states AS
+        WITH marked AS (
+            SELECT c.*, p.role, p.item, p.pos
+            FROM _repro_cells c JOIN _repro_paths p USING (path)
+        ),
+        flags AS (
+            -- The first output-type path that classifies the row, and
+            -- whether a reasoning or agentic marker is affirmative.
+            SELECT _rid,
+                arg_min(CASE WHEN text IN ({log_prob}) THEN TRUE
+                             WHEN text IN ({generative}) THEN FALSE END, pos)
+                    FILTER (WHERE role = 'output_type'
+                              AND (text IN ({log_prob}) OR text IN ({generative})))
+                    AS output_type_log_prob,
+                bool_or(disclosed AND _says_yes) FILTER (WHERE role = 'reasoning_marker')
+                    AS reasoning_run,
+                bool_or(disclosed AND _says_yes) FILTER (WHERE role = 'agentic_marker')
+                    AS agentic_run
+            FROM marked
+            GROUP BY _rid
+        ),
+        rows AS (
+            SELECT r._rid,
+                CASE r.scoring_mode WHEN 'log_prob' THEN TRUE
+                                    WHEN 'generative' THEN FALSE
+                     ELSE COALESCE(f.output_type_log_prob, FALSE) END AS is_log_prob,
+                CASE WHEN f.reasoning_run THEN TRUE END AS reasoning_run,
+                CASE WHEN f.agentic_run THEN TRUE END AS agentic_run
+            FROM _repro_rows r LEFT JOIN flags f USING (_rid)
+        ),
+        disclosures AS (
+            SELECT _rid, item,
+                arg_min(path, pos) AS field,
+                arg_min(value_text, pos) AS value
+            FROM marked
+            WHERE role = 'item' AND disclosed
+            GROUP BY _rid, item
+        ),
+        applied AS (
+            SELECT r._rid, i.item, i.item_pos, d.field, d.value,
+                CASE i.applicability
+                    WHEN 'always'              THEN TRUE
+                    WHEN 'sampling_controlled' THEN NOT r.is_log_prob
+                    WHEN 'generative_run'      THEN NOT r.is_log_prob
+                    WHEN 'reasoning_run'       THEN r.reasoning_run
+                    WHEN 'agentic_run'         THEN r.agentic_run
+                END AS applies
+            FROM rows r CROSS JOIN _repro_items i
+            LEFT JOIN disclosures d USING (_rid, item)
+        )
+        SELECT _rid, item, item_pos, field, value,
+            CASE WHEN applies = FALSE    THEN 'n'
+                 WHEN field IS NOT NULL  THEN 'd'
+                 WHEN applies IS NULL    THEN 'u'
+                 ELSE 'm' END AS state
+        FROM applied
+        """
+    )
+    con.execute(
+        "ALTER TABLE eval_results_view ADD COLUMN reproducibility_evidence "
+        "STRUCT(item VARCHAR, field VARCHAR, value VARCHAR)[]"
+    )
+    con.execute(
+        f"""
+        UPDATE eval_results_view AS erv
+        SET has_reproducibility_gap = r.n_missing > 0,
+            reproducibility_evidence = r.evidence,
+            -- A derived row has no other annotation; this gives it one
+            -- whose other members stay NULL.
+            evalcards_annotations = struct_update(erv.evalcards_annotations,
+                reproducibility_gap := CAST({{
+                    'has_reproducibility_gap': r.n_missing > 0,
+                    'missing_fields':          r.missing,
+                    'populated_count':         r.n_disclosed,
+                    'required_count':          r.n_disclosed + r.n_missing,
+                    'item_states':             r.item_states
+                }} AS {_REPRODUCIBILITY_GAP_STRUCT}))
+        FROM (
+            SELECT _rid,
+                string_agg(state, '' ORDER BY item_pos) AS item_states,
+                COALESCE(list(item ORDER BY item_pos) FILTER (WHERE state = 'm'), [])
+                    AS missing,
+                count(*) FILTER (WHERE state = 'm') AS n_missing,
+                count(*) FILTER (WHERE state = 'd') AS n_disclosed,
+                COALESCE(list({{'item': item, 'field': field, 'value': value}}
+                              ORDER BY item_pos) FILTER (WHERE state = 'd'), [])
+                    AS evidence
+            FROM _repro_item_states
+            GROUP BY _rid
+        ) r
+        WHERE erv.rowid = r._rid
+        """
+    )
+    for table in ("_repro_paths", "_repro_items", "_repro_rows", "_repro_cells",
+                  "_repro_item_states"):
+        con.execute(f"DROP TABLE {table}")
+    n_rows, n_gap = con.execute(
+        "SELECT count(*), count(*) FILTER (WHERE has_reproducibility_gap) "
+        "FROM eval_results_view"
+    ).fetchone()
+    log.info("stage J: reproducibility — %d of %d result(s) with a gap", n_gap, n_rows)
+
+
+# The reproducibility band: the gap rate over all of the model's cells.
+_REPRO_BAND_SQL = """
             CASE
                 WHEN ta.gap_rate IS NULL THEN NULL
                 WHEN ta.gap_rate = 0     THEN 'complete'
@@ -7363,23 +7286,8 @@ _REPRO_BAND_ALL_CELLS_SQL = """
                 ELSE                          'partial'
             END"""
 
-# With a declaration honoured the band is read over the cells that carry
-# a reproducibility reading and that the rule applies to. A cell with no
-# reading says nothing about the model either way, so it is left out
-# rather than counted as a clean one; a model with no such cell is
-# outside the rule, which is not the same as having answered it.
-_REPRO_BAND_APPLICABLE_SQL = """
-            CASE
-                WHEN ta.gap_rate IS NULL                  THEN NULL
-                WHEN COALESCE(ta.applicable_count, 0) = 0 THEN 'not_applicable'
-                WHEN ta.applicable_gap_rate = 0           THEN 'complete'
-                WHEN ta.applicable_gap_rate = 1           THEN 'missing'
-                ELSE                                           'partial'
-            END"""
 
-
-def stage_j_models_view(con, snapshot_id: str, *,
-                        exemption_on: bool = False) -> None:
+def stage_j_models_view(con, snapshot_id: str) -> None:
     """Materialise `models_view` — one row per model.
 
     Aggregates the model's fact rows (evidence_count, variant_count,
@@ -7390,18 +7298,12 @@ def stage_j_models_view(con, snapshot_id: str, *,
     Depends on `eval_results_view` already being materialised on the
     connection by `stage_j_eval_results_view`.
 
-    `exemption_on` says whether any output-type declaration is honoured,
-    which is what decides the reproducibility band rule below.
-
     `variants[]` is single-self for v1 (one entry per row, the row's own
     model). Family-scoped variant rollup is a follow-up — today's
     registry doesn't carry the variant metadata (qualifier/version_date)
     that would let us populate other family members usefully.
     """
     sid = snapshot_id_to_sql(snapshot_id)
-    reproducibility_band_sql = (
-        _REPRO_BAND_APPLICABLE_SQL if exemption_on else _REPRO_BAND_ALL_CELLS_SQL
-    )
 
     con.execute(
         f"""
@@ -7480,20 +7382,6 @@ def stage_j_models_view(con, snapshot_id: str, *,
                                                                           AS gap_rate,
                 CAST(SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS gap_count,
-                -- The same rate over the cells the rule actually asks
-                -- something of. A cell it asks nothing of has no gap by
-                -- construction, and counting it as a clean one would read
-                -- as a model that answered a question nobody put to it.
-                -- A cell that carries no reading at all, as a derived
-                -- slice-parent row does, is left out too: it holds no
-                -- answer to count either way.
-                CAST(COUNT(*) FILTER (
-                    WHERE erv.evalcards_annotations.reproducibility_gap.applicable
-                ) AS BIGINT)                                              AS applicable_count,
-                ROUND(AVG(CASE WHEN has_reproducibility_gap THEN 1.0 ELSE 0.0 END)
-                      FILTER (
-                    WHERE erv.evalcards_annotations.reproducibility_gap.applicable
-                ), 12)                                                    AS applicable_gap_rate,
                 ROUND(AVG(completeness_score), 12)                        AS completeness_avg,
                 list_sort(list_distinct(flatten(
                     list(from_json(derived_tags, '["VARCHAR"]'))
@@ -7750,7 +7638,7 @@ def stage_j_models_view(con, snapshot_id: str, *,
             tsa.tag_stats,
 
             -- reproducibility band rule (legacy: 0/1/0<x<1 → complete/missing/partial)
-            {reproducibility_band_sql}                                          AS reproducibility_status,
+            {_REPRO_BAND_SQL}                                          AS reproducibility_status,
             CAST({{
                 'results_total':                CAST(COALESCE(ta.evaluations_count, 0) AS INTEGER),
                 'has_reproducibility_gap_count': COALESCE(ta.gap_count, 0),

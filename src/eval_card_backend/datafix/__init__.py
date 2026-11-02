@@ -23,19 +23,6 @@ from eval_card_backend.datafix.core import (
     apply_fixes,
     fingerprint,
 )
-def annotation_log():
-    from eval_card_backend.datafix.annotations import annotations as impl
-    return impl()
-
-
-def annotating_configs():
-    from eval_card_backend.datafix.annotations import annotating_configs as impl
-    return impl()
-
-
-def reset_annotations():
-    from eval_card_backend.datafix.annotations import reset_annotations as impl
-    return impl()
 
 
 def all_fixes():
@@ -64,9 +51,6 @@ def named_configs():
 
 
 __all__ = [
-    "annotation_log",
-    "annotating_configs",
-    "reset_annotations",
     "OVERLAY_REVISION",
     "DatafixSummary",
     "PatchEvent",

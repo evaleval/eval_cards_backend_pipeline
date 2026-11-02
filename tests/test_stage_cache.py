@@ -357,7 +357,7 @@ def test_from_stage_E_matches_full_run_output(tmp_path, monkeypatch):
         # Score + scale
         "score", "metric_unit", "score_scale_anomaly",
         # Per-row signals (Stage E)
-        "completeness_score", "has_reproducibility_gap", "is_agentic",
+        "completeness_score",
         # Group signals (Stage F)
         "comparability_group_id", "is_multi_source",
         "has_variant_divergence", "has_cross_party_divergence",

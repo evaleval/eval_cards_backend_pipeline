@@ -53,10 +53,10 @@ MOVER_LIMIT = 25
 # Fixed caveat: this counter is not the reproducibility rule.
 MISSING_GEN_CONFIG_NOTE = (
     "`models_view.missing_generation_config_count` counts fact rows missing any of "
-    "temperature, top_p or max_tokens, a three-field rule that is wider than the "
-    "reproducibility rule (temperature + max_tokens). An overlay that fills only "
-    "temperature and max_tokens leaves every hfopenllm_v2 row short of top_p, so "
-    "this counter is expected not to improve for that source."
+    "temperature, top_p or max_tokens, a three-field rule that is not the "
+    "reproducibility rule. An overlay that fills only temperature and max_tokens "
+    "leaves every hfopenllm_v2 row short of top_p, so this counter is expected "
+    "not to improve for that source."
 )
 
 # Comparability groups span sources, so filling setup fields on a target fact can
@@ -98,11 +98,9 @@ DIRECT_INPUT_COLUMNS = (
     "temperature", "max_tokens", "has_temperature", "has_max_tokens",
 )
 
-# Read off the setup payload of one fact, so they move with it and only with it.
-DERIVED_REPRO_COLUMNS = (
-    "repro_missing_fields", "repro_required_count",
-    "has_reproducibility_gap", "repro_populated_count",
-)
+# The setup items those two fields disclose, as `headline.json` names them in
+# `per_field_missingness`.
+DIRECT_INPUT_ITEMS = ("decoding", "output_length")
 
 # Compare one fact's setup against the rest of its comparability group, so
 # they can move on a fact the overlay never touched, inside a group it did.
@@ -121,9 +119,9 @@ MEMBERWISE_COLUMNS: dict[str, tuple[str, ...]] = {
 # A table absent from this mapping may not move at all, and neither may a
 # column absent from its entry or from `MEMBERWISE_COLUMNS`.
 MOVABLE_COLUMNS: dict[str, tuple[str, ...]] = {
-    "fact_results": DIRECT_INPUT_COLUMNS + DERIVED_REPRO_COLUMNS + VARIANT_COLUMNS,
+    "fact_results": DIRECT_INPUT_COLUMNS + VARIANT_COLUMNS,
     "eval_results_view": (
-        "has_reproducibility_gap",
+        "has_reproducibility_gap", "reproducibility_evidence",
     ) + SPILL_COLUMNS["eval_results_view"],
     "evals_view": (
         "missing_generation_config_count", "reproducibility_summary",
@@ -600,14 +598,14 @@ def _section_reproducibility(con, before_headline, after_headline) -> list[str]:
         b_tag, a_tag = b_tags.get(tag, {}), a_tags.get(tag, {})
         b_gap = b_tag.get("triples_with_reproducibility_gap")
         a_gap = a_tag.get("triples_with_reproducibility_gap")
-        b_temp = (b_tag.get("per_field_missingness", {}).get("temperature", {})
-                  .get("missing_count"))
-        a_temp = (a_tag.get("per_field_missingness", {}).get("temperature", {})
-                  .get("missing_count"))
-        b_mt = (b_tag.get("per_field_missingness", {}).get("max_tokens", {})
-                .get("missing_count"))
-        a_mt = (a_tag.get("per_field_missingness", {}).get("max_tokens", {})
-                .get("missing_count"))
+        b_temp, b_mt = (
+            b_tag.get("per_field_missingness", {}).get(item, {}).get("missing_count")
+            for item in DIRECT_INPUT_ITEMS
+        )
+        a_temp, a_mt = (
+            a_tag.get("per_field_missingness", {}).get(item, {}).get("missing_count")
+            for item in DIRECT_INPUT_ITEMS
+        )
         if (b_gap, b_temp, b_mt) == (a_gap, a_temp, a_mt):
             continue
         rows.append([tag, b_tag.get("total_triples"), b_gap, a_gap, _delta(b_gap, a_gap),
@@ -617,17 +615,16 @@ def _section_reproducibility(con, before_headline, after_headline) -> list[str]:
     else:
         out += _md_table(
             ["tag", "triples", "gap before", "gap after", "gap delta",
-             "missing temperature delta", "missing max_tokens delta"],
+             "missing decoding delta", "missing output_length delta"],
             rows,
         )
 
-    out += ["### 1.3 fact-level gaps by source_config", ""]
+    out += ["### 1.3 fact-level missing generation inputs by source_config", ""]
     rows = con.execute(
         """
         WITH b AS (
             SELECT source_config,
                    COUNT(*)                                            AS rows_n,
-                   SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS gap_n,
                    SUM(CASE WHEN has_temperature THEN 0 ELSE 1 END)     AS miss_temp,
                    SUM(CASE WHEN has_max_tokens  THEN 0 ELSE 1 END)     AS miss_mt
             FROM b_fact_results GROUP BY 1
@@ -635,17 +632,15 @@ def _section_reproducibility(con, before_headline, after_headline) -> list[str]:
         a AS (
             SELECT source_config,
                    COUNT(*)                                            AS rows_n,
-                   SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS gap_n,
                    SUM(CASE WHEN has_temperature THEN 0 ELSE 1 END)     AS miss_temp,
                    SUM(CASE WHEN has_max_tokens  THEN 0 ELSE 1 END)     AS miss_mt
             FROM a_fact_results GROUP BY 1
         )
         SELECT COALESCE(b.source_config, a.source_config) AS source_config,
-               b.rows_n, a.rows_n, b.gap_n, a.gap_n,
+               b.rows_n, a.rows_n,
                b.miss_temp, a.miss_temp, b.miss_mt, a.miss_mt
         FROM b FULL OUTER JOIN a ON b.source_config IS NOT DISTINCT FROM a.source_config
         WHERE b.rows_n IS DISTINCT FROM a.rows_n
-           OR b.gap_n IS DISTINCT FROM a.gap_n
            OR b.miss_temp IS DISTINCT FROM a.miss_temp
            OR b.miss_mt IS DISTINCT FROM a.miss_mt
            OR COALESCE(b.source_config, a.source_config)
@@ -654,61 +649,61 @@ def _section_reproducibility(con, before_headline, after_headline) -> list[str]:
         """
     ).fetchall()
     out += _md_table(
-        ["source_config", "rows before", "rows after", "gap before", "gap after",
+        ["source_config", "rows before", "rows after",
          "missing temperature before", "after", "missing max_tokens before", "after"],
         [list(r) for r in rows],
     )
 
-    out += ["### 1.4 fact-level gaps by benchmark, top movers", ""]
+    out += ["### 1.4 result-level gaps by benchmark, top movers", ""]
     rows = con.execute(
         f"""
         WITH b AS (
-            SELECT source_config, benchmark_key,
+            SELECT composite_slug, benchmark_id,
                    SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS gap_n,
                    COUNT(*) AS rows_n
-            FROM b_fact_results GROUP BY 1, 2
+            FROM b_eval_results_view GROUP BY 1, 2
         ),
         a AS (
-            SELECT source_config, benchmark_key,
+            SELECT composite_slug, benchmark_id,
                    SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS gap_n,
                    COUNT(*) AS rows_n
-            FROM a_fact_results GROUP BY 1, 2
+            FROM a_eval_results_view GROUP BY 1, 2
         ),
         j AS (
-            SELECT COALESCE(b.source_config, a.source_config)   AS source_config,
-                   COALESCE(b.benchmark_key, a.benchmark_key)   AS benchmark_key,
+            SELECT COALESCE(b.composite_slug, a.composite_slug) AS composite_slug,
+                   COALESCE(b.benchmark_id, a.benchmark_id)     AS benchmark_id,
                    COALESCE(b.rows_n, 0) AS rows_before, COALESCE(a.rows_n, 0) AS rows_after,
                    COALESCE(b.gap_n, 0)  AS gap_before,  COALESCE(a.gap_n, 0)  AS gap_after
             FROM b FULL OUTER JOIN a
-              ON b.source_config IS NOT DISTINCT FROM a.source_config
-             AND b.benchmark_key IS NOT DISTINCT FROM a.benchmark_key
+              ON b.composite_slug IS NOT DISTINCT FROM a.composite_slug
+             AND b.benchmark_id IS NOT DISTINCT FROM a.benchmark_id
         )
-        SELECT source_config, benchmark_key, rows_before, rows_after,
+        SELECT composite_slug, benchmark_id, rows_before, rows_after,
                gap_before, gap_after, gap_after - gap_before AS delta
         FROM j
         WHERE gap_before <> gap_after OR rows_before <> rows_after
-        ORDER BY abs(gap_after - gap_before) DESC, source_config, benchmark_key
+        ORDER BY abs(gap_after - gap_before) DESC, composite_slug, benchmark_id
         LIMIT {MOVER_LIMIT}
         """
     ).fetchall()
     moved_total = con.execute(
         """
-        WITH b AS (SELECT source_config, benchmark_key,
+        WITH b AS (SELECT composite_slug, benchmark_id,
                           SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS g
-                   FROM b_fact_results GROUP BY 1, 2),
-             a AS (SELECT source_config, benchmark_key,
+                   FROM b_eval_results_view GROUP BY 1, 2),
+             a AS (SELECT composite_slug, benchmark_id,
                           SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS g
-                   FROM a_fact_results GROUP BY 1, 2)
+                   FROM a_eval_results_view GROUP BY 1, 2)
         SELECT COUNT(*) FROM b FULL OUTER JOIN a
-          ON b.source_config IS NOT DISTINCT FROM a.source_config
-         AND b.benchmark_key IS NOT DISTINCT FROM a.benchmark_key
+          ON b.composite_slug IS NOT DISTINCT FROM a.composite_slug
+         AND b.benchmark_id IS NOT DISTINCT FROM a.benchmark_id
         WHERE COALESCE(b.g, 0) IS DISTINCT FROM COALESCE(a.g, 0)
         """
     ).fetchone()[0]
-    out += [f"{moved_total} (source_config, benchmark) pairs moved on gap count; "
+    out += [f"{moved_total} (composite_slug, benchmark) pairs moved on gap count; "
             f"top {MOVER_LIMIT} by absolute delta:", ""]
     out += _md_table(
-        ["source_config", "benchmark_key", "rows before", "rows after",
+        ["composite_slug", "benchmark_id", "rows before", "rows after",
          "gap before", "gap after", "delta"],
         [list(r) for r in rows],
     )
@@ -1311,8 +1306,7 @@ def _invariant_inputs_only_filled(con) -> Invariant:
 def _invariant_fact_scope(con) -> list[Invariant]:
     """Inside the target sources too, a fact moves only where a fill reached.
 
-    The direct inputs and everything read off one fact's own payload move
-    only on the facts that were filled. The variant key and the comparability
+    The direct inputs move only on the facts that were filled. The variant key and the comparability
     verdicts compare a fact against its group, so they also move on facts
     that were not filled themselves but share a group with one.
     """
@@ -1320,8 +1314,6 @@ def _invariant_fact_scope(con) -> list[Invariant]:
     unreached = "b.fact_id NOT IN (SELECT fact_id FROM reached_facts)"
     checks = (
         ("direct generation inputs", DIRECT_INPUT_COLUMNS, unfilled,
-         "facts the overlay filled"),
-        ("reproducibility columns", DERIVED_REPRO_COLUMNS, unfilled,
          "facts the overlay filled"),
         ("variant and comparability columns", VARIANT_COLUMNS, unreached,
          "facts in a comparability group the overlay filled into"),

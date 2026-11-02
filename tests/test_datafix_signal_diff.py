@@ -178,7 +178,6 @@ _TYPES: dict[str, pa.DataType] = {
     "evalcards_annotations": _ANNOTATIONS,
     "variant_differing_fields": _DIFFERING_FIELDS,
     "cross_party_differing_fields": _DIFFERING_FIELDS,
-    "repro_missing_fields": pa.list_(pa.string()),
     "temperature": pa.float64(),
     "top_p": pa.float64(),
     "top_k": pa.int32(),
@@ -190,8 +189,6 @@ _TYPES: dict[str, pa.DataType] = {
     "cross_party_divergence_magnitude": pa.float64(),
     "cross_party_divergence_threshold": pa.float64(),
     "cross_party_org_count": pa.int32(),
-    "repro_required_count": pa.int32(),
-    "repro_populated_count": pa.int32(),
     "variant_count": pa.int32(),
     "missing_generation_config_count": pa.int32(),
     "num_few_shot": pa.int32(),
@@ -277,9 +274,6 @@ def _fact(fact_id: str, source_config: str, model: str, **overrides) -> dict:
         "metric_key_effective": "acc", "comparability_group_id": "grp",
         "evaluator_relationship": "third_party", "score": 0.5,
         "is_part": False, "is_headline": True, "score_scale_anomaly": False,
-        "repro_missing_fields": ["temperature", "max_tokens"],
-        "repro_required_count": 2, "repro_populated_count": 0,
-        "has_reproducibility_gap": True,
         "has_temperature": False, "has_max_tokens": False,
         "has_top_p": False, "has_top_k": False, "has_prompt_template": False,
         "variant_key": "unset", "comparability_status": "single_variant",
@@ -293,8 +287,7 @@ def _fact(fact_id: str, source_config: str, model: str, **overrides) -> dict:
 _FILLED = {
     "temperature": 0.0, "max_tokens": 1280,
     "has_temperature": True, "has_max_tokens": True,
-    "repro_missing_fields": [], "repro_populated_count": 2,
-    "has_reproducibility_gap": False, "variant_key": "t0-mt1280",
+    "variant_key": "t0-mt1280",
 }
 
 
