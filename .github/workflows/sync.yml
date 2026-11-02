@@ -180,6 +180,10 @@ jobs:
           # 2026-10-08 on 85k records: 5.4 GB max RSS at 4GB/50000.
           CANONICALISE_MEMORY_LIMIT: 6GB
           CANONICALISE_BATCH_ROWS: "50000"
+          # Hotfix: the datafix overlay (src/eval_card_backend/datafix) fills
+          # verified missing metadata in upstream records from source evidence.
+          # Remove when the upstream records carry it.
+          EEE_DATAFIX: "1"
         run: uv run eval-card-backend canonicalise --warehouse warehouse
 
       - name: Summarise collection adapter accounting
