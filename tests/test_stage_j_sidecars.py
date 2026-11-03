@@ -548,6 +548,114 @@ def test_hierarchy_gpqa_diamond_emits_as_benchmark_not_slice(tmp_path):
     )
 
 
+@pytest.mark.parametrize("pwc_has_slice", [False, True],
+                         ids=["aggregator-dedup", "poorer-duplicate"])
+def test_hierarchy_index_keeps_appearance_of_deduped_echo(tmp_path, pwc_has_slice):
+    """llm-stats republishes paperswithcode's TextVQA scores. The dedup
+    passes hide the llm-stats copy from the tree (the aggregator pass, or
+    the poorer-duplicate pass when the paperswithcode copy carries a
+    slice), but llm-stats still claims the eval and benchmark_index.json
+    lists it, so the cross-suite index must too: a reader folds the copy
+    into the TextVQA row only if the index names it."""
+    from eval_card_backend.canonicalise import sidecars
+
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE canonical_families (id VARCHAR, display_name VARCHAR, "
+        "category VARCHAR, tags VARCHAR, benchmark_ids VARCHAR, "
+        "composite_keys VARCHAR, folder_aliases VARCHAR, "
+        "primary_benchmark_key VARCHAR)"
+    )
+    pairs = [("llm-stats", "textvqa"), ("llm-stats", "docvqa"),
+             ("paperswithcode", "textvqa")]
+    con.execute(
+        "CREATE TABLE composites AS SELECT * FROM (VALUES "
+        "('llm-stats', 2::BIGINT), ('paperswithcode', 1::BIGINT)"
+        ") t(composite_slug, evals_count)"
+    )
+    con.execute(
+        "CREATE TABLE benchmarks (composite_slug VARCHAR, "
+        "composite_display_name VARCHAR, benchmark_id VARCHAR, "
+        "display_name VARCHAR, family_id VARCHAR, is_slice BOOLEAN, "
+        "parent_benchmark_id VARCHAR, card_present BOOLEAN, "
+        "domains VARCHAR[], languages VARCHAR[], tasks VARCHAR[])"
+    )
+    con.execute(
+        "CREATE TABLE evals_view (evaluation_id VARCHAR, composite_slug VARCHAR, "
+        "benchmark_id VARCHAR, parent_benchmark_id VARCHAR, "
+        "evaluation_name VARCHAR, derived_tags VARCHAR, models_count BIGINT, "
+        "reproducibility_summary JSON, provenance_summary JSON, "
+        "comparability_summary JSON)"
+    )
+    for slug, bid in pairs:
+        con.execute(
+            "INSERT INTO benchmarks VALUES (?, ?, ?, ?, ?, FALSE, NULL, FALSE, "
+            "[], [], [])", [slug, slug, bid, bid, bid],
+        )
+        con.execute(
+            "INSERT INTO evals_view VALUES (?, ?, ?, NULL, ?, '[]', 3, NULL, "
+            "NULL, NULL)", [f"{slug}%2F{bid}", slug, bid, bid],
+        )
+    # The paperswithcode copy reports under its own metric name; the two
+    # copies agree on every shared model.
+    con.execute(
+        "CREATE TABLE eval_results_view AS "
+        "SELECT ev.evaluation_id, ev.composite_slug, ev.benchmark_id, "
+        "       m.metric_id, m.metric_id AS metric_base_id, "
+        "       m.metric_id AS metric_display_name, s.model_key, s.score, "
+        "       struct_pack(source_organization_name := ev.composite_slug) "
+        "           AS source_metadata, TRUE AS is_headline "
+        "FROM evals_view ev "
+        "JOIN (VALUES ('llm-stats', 'score'), ('paperswithcode', 'accuracy')) "
+        "     m(composite_slug, metric_id) USING (composite_slug) "
+        "CROSS JOIN (VALUES ('m1', 0.81), ('m2', 0.74), ('m3', 0.69)) "
+        "     s(model_key, score)"
+    )
+    con.execute(
+        "CREATE TABLE fact_results (composite_slug VARCHAR, benchmark_key VARCHAR, "
+        "slice_key VARCHAR, slice_name VARCHAR, metric_key VARCHAR, "
+        "metric_base_key VARCHAR, aggregate_level VARCHAR, org_raw VARCHAR, "
+        "fact_id VARCHAR)"
+    )
+    if pwc_has_slice:
+        con.execute(
+            "INSERT INTO fact_results VALUES ('paperswithcode', 'textvqa', "
+            "'textvqa val', 'textvqa val', 'accuracy', 'accuracy', 'leaf', "
+            "'paperswithcode', 'f1')"
+        )
+    con.execute(
+        "CREATE VIEW fact_headline AS "
+        "SELECT fact_id, TRUE AS is_headline FROM fact_results"
+    )
+    con.execute(
+        "CREATE TABLE canonical_benchmarks AS "
+        "SELECT 'textvqa' AS id, NULL::VARCHAR AS preferred_metric_id"
+    )
+    con.execute(
+        "CREATE TABLE canonical_metrics (id VARCHAR, display_name VARCHAR, "
+        "metadata JSON)"
+    )
+
+    sidecars.write_hierarchy(con, tmp_path, {"snapshot_id": "2026-04-30T00:00:00Z"})
+    hierarchy = json.loads((tmp_path / "hierarchy.json").read_text())
+
+    llm_stats = next(f for f in hierarchy["families"] if f["key"] == "llm-stats")
+    assert [b["key"] for b in sidecars._walk_family_benchmarks(llm_stats)] == ["docvqa"]
+    assert "llm-stats%2Ftextvqa" in llm_stats["constituent_evaluation_ids"]
+
+    entry = next(
+        (e for e in hierarchy["benchmark_index"] if e["key"] == "textvqa"), None,
+    )
+    assert entry is not None, "textvqa lost its cross-suite entry"
+    assert {
+        (a["family_key"], tuple(a["constituent_evaluation_ids"]))
+        for a in entry["appearances"]
+    } == {
+        ("llm-stats", ("llm-stats%2Ftextvqa",)),
+        ("paperswithcode", ("paperswithcode%2Ftextvqa",)),
+    }
+
+
 def test_metric_count_matches_distinct_composite_benchmark_metric_triples(
     tmp_path, monkeypatch,
 ):

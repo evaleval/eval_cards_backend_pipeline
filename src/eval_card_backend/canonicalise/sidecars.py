@@ -1507,6 +1507,15 @@ def write_hierarchy(con, out_dir: Path, snapshot_meta: dict) -> Path:
     hierarchy_hotfixes.dedup_vals_ai_aliases(family_records)
     hierarchy_hotfixes.group_same_bench_across_sources(family_records, curated_ids)
 
+    # The dedup passes below hide an echoed copy from the tree, but its family
+    # still claims the eval and benchmark_index.json lists it, so the
+    # cross-suite index keeps its appearance: readers fold the copy into the
+    # benchmark's row only when the index names it. A family the passes drop
+    # entirely takes its appearances with it.
+    benchmarks_before_dedup = [
+        (fam, list(_walk_family_benchmarks(fam))) for fam in family_records
+    ]
+
     # Systematic dedup (permanent pipeline logic). Both passes collapse a pair only
     # when scores agree within 1e-9 on at least 3 shared models; the first also when
     # the two share an evaluation_id. Independent evaluations are preserved.
@@ -1516,8 +1525,13 @@ def write_hierarchy(con, out_dir: Path, snapshot_meta: dict) -> Path:
     # Tag decoration runs after structural changes, before stats
     evalcard_tags.decorate_hierarchy_tags(family_records)
 
-    # Stats and index computed after dedup so they reflect the cleaned tree
-    benchmark_index = _hierarchy_benchmark_index(con, family_records)
+    surviving_families = {id(fam) for fam in family_records}
+    benchmark_index = _hierarchy_benchmark_index(con, [
+        {"key": fam["key"], "benchmarks": benches}
+        for fam, benches in benchmarks_before_dedup
+        if id(fam) in surviving_families
+    ])
+    # Stats count the cleaned tree.
     stats = _hierarchy_tree_stats(con, family_records)
 
     payload = {
