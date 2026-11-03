@@ -313,17 +313,16 @@ def _load_registry_maps(
 
 def _iter_exploded_rows(con) -> Iterable[tuple[str, int, str, str, str, str]]:
     """Yield (evaluation_id, result_idx, source_config, ds_name, eval_name,
-    evaluation_result_id) for every row in `results_exploded`.
+    source_record_path) for every row in `results_exploded`.
 
     The `ORDER BY` is load-bearing for determinism: `compute_overrides`
     consumes this stream with first-seen-wins accumulation (`setdefault`
     for the bucket's `ds_canonical`), so an unordered scan — whose row
     order varies run-to-run under DuckDB's multi-threaded execution —
-    would let the bucket's resolved canonical flip between runs. A total
-    order on (evaluation_id, result_idx, evaluation_result_id) pins it.
-    `evaluation_result_id` is the per-physical-record disambiguator:
-    distinct EEE source records can collide on (evaluation_id,
-    result_idx) but never on evaluation_result_id.
+    would let the bucket's resolved canonical flip between runs. The
+    trailing (source_record_path, result_idx) pair makes the order total:
+    it names one entry of one source JSON file, while evaluation_id,
+    result_idx and evaluation_result_id can each repeat across records.
     """
     # `source_data` materialises as VARCHAR (JSON-serialised) on
     # `results_exploded`, not a STRUCT, so dataset_name is extracted via
@@ -340,9 +339,10 @@ def _iter_exploded_rows(con) -> Iterable[tuple[str, int, str, str, str, str]]:
                 source_config
             ) AS ds_name,
             evaluation_name,
-            evaluation_result_id
+            source_record_path
         FROM results_exploded
-        ORDER BY evaluation_id, result_idx, evaluation_result_id
+        ORDER BY evaluation_id, result_idx, evaluation_result_id,
+                 source_record_path
         """
     ).fetchall()
     for r in rows:
@@ -351,22 +351,22 @@ def _iter_exploded_rows(con) -> Iterable[tuple[str, int, str, str, str, str]]:
 
 def compute_overrides(con) -> int:
     """Replay v2's pass1+pass2 logic over the rows in `results_exploded`,
-    write `slice_promotion_overrides(evaluation_result_id, canonical_id)`
-    into the connection. Returns row count.
+    write `slice_promotion_overrides(source_record_path, result_idx,
+    canonical_id)` into the connection. Returns row count.
 
     The override is non-None only for rows where v2's logic produced an
     answer that v3's row-level resolver would not (the "promoted slice"
     case). All other rows are no-ops at apply time.
 
-    Overrides are keyed by `evaluation_result_id`, NOT (evaluation_id,
-    result_idx): distinct EEE source records can collide on the latter
-    (e.g. two LiveBench records that share one evaluation_id, each with
-    its own evaluation_results[] array, land on the same result_idx).
-    Keying by (evaluation_id, result_idx) would emit two override rows
-    for the same key with different canonicals and let the apply-time
-    UPDATE pick whichever the scan reached last — a run-to-run flip.
-    `evaluation_result_id` is unique per physical row, so each record
-    keeps its own correct slice canonical and the UPDATE join is 1:1.
+    Overrides are keyed by (source_record_path, result_idx), the one key
+    that names a single physical row. Every other row id repeats:
+    LiveBench records share an evaluation_id and land on the same
+    result_idx, and evaluation_result_id is a source-side id that recurs
+    across scrapes (paperswithcode reuses one result id on every dated
+    record, even after relabelling which dataset that result is for) or
+    is the evaluation name repeated on every model's record
+    (artificial-analysis). A repeated key carries one row's override onto
+    every row that shares it.
     """
     canonical_set, alias_to_canonical, scoped_alias_to_canonical, parent = (
         _load_registry_maps(con)
@@ -378,7 +378,8 @@ def compute_overrides(con) -> int:
         )
         con.execute(
             "CREATE OR REPLACE TEMP TABLE slice_promotion_overrides "
-            "(evaluation_result_id VARCHAR, canonical_id VARCHAR)"
+            "(source_record_path VARCHAR, result_idx BIGINT, "
+            "canonical_id VARCHAR)"
         )
         return 0
 
@@ -387,10 +388,10 @@ def compute_overrides(con) -> int:
     #         bucket also records its candidate canonical (resolved from
     #         dataset_name) for the non-promoted path.
     candidates: dict[tuple, dict] = {}
-    # (evaluation_result_id, bucket_key, slice_candidate)
+    # ((source_record_path, result_idx), bucket_key, slice_candidate)
     row_records: list[tuple] = []
     for (
-        evaluation_id, result_idx, folder, ds_name, eval_name, evaluation_result_id
+        evaluation_id, result_idx, folder, ds_name, eval_name, source_record_path
     ) in _iter_exploded_rows(con):
         if folder in EXCLUDED_FOLDERS:
             continue
@@ -422,7 +423,9 @@ def compute_overrides(con) -> int:
             if sc:
                 cand["slice_canonicals"].add(sc)
 
-        row_records.append((evaluation_result_id, bucket_key, slice_candidate))
+        row_records.append(
+            ((source_record_path, result_idx), bucket_key, slice_candidate)
+        )
 
     # Pass 2: per bucket, decide promotion (≥2 distinct slice canonicals).
     promoted_buckets: set[tuple] = {
@@ -436,8 +439,8 @@ def compute_overrides(con) -> int:
     #       → use that canonical (the llm-stats / per-record-distinct-ds_name
     #       case where v3's clean_eval_name path mishandles the source-prefixed
     #       evaluation_name).
-    overrides: list[tuple[str, str]] = []
-    for evaluation_result_id, bucket_key, slice_candidate in row_records:
+    overrides: list[tuple[str, int, str]] = []
+    for row_key, bucket_key, slice_candidate in row_records:
         cand = candidates[bucket_key]
         folder = bucket_key[0]
         override: str | None = None
@@ -453,16 +456,17 @@ def compute_overrides(con) -> int:
             )
         if override is None and cand["ds_canonical"]:
             override = cand["ds_canonical"]
-        if override and evaluation_result_id is not None:
-            overrides.append((evaluation_result_id, override))
+        if override:
+            overrides.append((*row_key, override))
 
     con.execute(
         "CREATE OR REPLACE TEMP TABLE slice_promotion_overrides "
-        "(evaluation_result_id VARCHAR, canonical_id VARCHAR)"
+        "(source_record_path VARCHAR, result_idx BIGINT, "
+        "canonical_id VARCHAR)"
     )
     if overrides:
         con.executemany(
-            "INSERT INTO slice_promotion_overrides VALUES (?, ?)",
+            "INSERT INTO slice_promotion_overrides VALUES (?, ?, ?)",
             overrides,
         )
     log.info(
@@ -494,7 +498,8 @@ def apply_overrides(con) -> int:
         SET benchmark_id = ovr.canonical_id,
             benchmark_resolution_strategy = 'slice_promotion'
         FROM slice_promotion_overrides AS ovr
-        WHERE rr.evaluation_result_id = ovr.evaluation_result_id
+        WHERE rr.source_record_path = ovr.source_record_path
+          AND rr.result_idx = ovr.result_idx
           AND ovr.canonical_id IS NOT NULL
           AND rr.benchmark_id IS DISTINCT FROM ovr.canonical_id
         RETURNING 1
