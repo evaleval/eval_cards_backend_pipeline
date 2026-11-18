@@ -77,6 +77,12 @@ def _write_registry(reg_root: Path) -> None:
                 reg_root / table / "part-0.parquet"
             )
 
+    (reg_root / "canonical_inference_platforms").mkdir(parents=True)
+    pd.DataFrame(
+        [{"id": "togetherai", "display_name": "Together AI",
+          "kind": "inference_platform", "aliases": '["together/"]'}]
+    ).to_parquet(reg_root / "canonical_inference_platforms" / "part-0.parquet")
+
 
 def test_alphaxiv_excluded_from_pipeline_even_when_explicitly_requested(
     tmp_path, monkeypatch, caplog

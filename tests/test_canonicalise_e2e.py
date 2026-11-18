@@ -131,6 +131,12 @@ def _write_registry_fixture(reg_root: Path) -> None:
           "created_at": "", "updated_at": ""}]
     ).to_parquet(reg_root / "eval_harnesses" / "part-0.parquet")
 
+    (reg_root / "canonical_inference_platforms").mkdir(parents=True)
+    pd.DataFrame(
+        [{"id": "togetherai", "display_name": "Together AI",
+          "kind": "inference_platform", "aliases": '["together/"]'}]
+    ).to_parquet(reg_root / "canonical_inference_platforms" / "part-0.parquet")
+
 
 def _write_minimal_seed_fixture(seed_root: Path) -> None:
     """Lay down a stub composites.yaml so taxonomy.load_and_materialise gets

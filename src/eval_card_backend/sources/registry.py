@@ -106,6 +106,7 @@ _CANONICAL_STORE_KWARGS: dict[str, str] = {
     "canonical_metrics": "metrics_df",
     "eval_harnesses": "harnesses_df",
     "canonical_orgs": "orgs_df",
+    "canonical_inference_platforms": "inference_platforms_df",
 }
 
 
@@ -359,7 +360,8 @@ def load_resolver(root: Path):
     """
     from eval_entity_resolver import Resolver
 
-    return Resolver(
-        load_alias_store(root),
-        canonical_store=load_canonical_store(root),
-    )
+    canonical_store = load_canonical_store(root)
+    # Raises when the snapshot has no host-token map; without one every
+    # fact row's inference_platform would be NULL.
+    canonical_store.require_host_token_platforms(str(root))
+    return Resolver(load_alias_store(root), canonical_store=canonical_store)
