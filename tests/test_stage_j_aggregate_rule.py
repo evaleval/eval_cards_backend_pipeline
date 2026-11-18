@@ -74,7 +74,8 @@ def _materialise_view(out_dir: Path, mutate=None):
     con.execute(
         "CREATE TABLE benchmark_catalog AS "
         "SELECT id, CAST(parent_benchmark_id AS VARCHAR) AS parent_benchmark_id, "
-        "       CAST(metadata AS VARCHAR) AS metadata "
+        "       CAST(metadata AS VARCHAR) AS metadata, "
+        "       CAST(NULL AS VARCHAR) AS preferred_metric_id "
         f"FROM read_parquet('{FIXTURES}/entity_registry/canonical_benchmarks.parquet')"
     )
     if mutate is not None:
@@ -465,7 +466,7 @@ def _make_suite(con):
     )
     # and the registry edges behind them — the expected task set
     con.execute(
-        "INSERT INTO benchmark_catalog VALUES "
+        "INSERT INTO benchmark_catalog (id, parent_benchmark_id, metadata) VALUES "
         "('mmlu-suite', NULL, NULL), ('mmlu-b', 'mmlu-suite', NULL)"
     )
     con.execute(
@@ -478,7 +479,7 @@ def _add_suite_child(con, child: str, display: str, role: str | None = None):
     """One more registry child of `mmlu-suite`, in both the dim and the
     registry tree.
 
-    `role` stamps `canonical_benchmarks.metadata` — `"aggregate"` marks a
+    `role` stamps `benchmark_catalog.metadata` — `"aggregate"` marks a
     child that is the source's own rollup OVER its siblings, which the parent
     rollup must not count as a part of itself."""
     role_sql = "NULL" if role is None else f"'{{\"role\": \"{role}\"}}'"
@@ -490,7 +491,7 @@ def _add_suite_child(con, child: str, display: str, role: str | None = None):
         ") FROM benchmarks WHERE benchmark_id = 'mmlu-b'"
     )
     con.execute(
-        f"INSERT INTO benchmark_catalog VALUES "
+        f"INSERT INTO benchmark_catalog (id, parent_benchmark_id, metadata) VALUES "
         f"('{child}', 'mmlu-suite', {role_sql})"
     )
 
@@ -935,6 +936,551 @@ def test_parent_total_on_another_split_keeps_the_derived_row_unheadlined(
     assert [(r[0], round(r[1], 2), r[2], r[3]) for r in rows] == [
         ("test", 0.99, "whole", True),
         ("val", 0.50, "derived", False),
+    ]
+
+
+_LOW = '{"reasoning_effort":"low"}'
+_XHIGH = '{"reasoning_effort":"xhigh"}'
+
+
+def _derived_suite_rows(tmp_path, monkeypatch, children):
+    """Build `mmlu-suite` from `(benchmark, protocol, score)` children and
+    return its rows as `(protocol_condition, score, is_headline)`."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    lower = children and len(children[0]) == 4
+
+    def mutate(con):
+        _wipe_mmlu(con)
+        _make_suite(con)
+        for child in children:
+            bench, protocol, s_ = child[:3]
+            _clone_fact(con, level="root", is_part=False, score=s_,
+                        slice_key=None, model="m1", benchmark=bench,
+                        protocol=protocol,
+                        lower_is_better=True if lower else None)
+
+    rows = _materialise_view(out, mutate=mutate).execute(
+        "SELECT protocol_condition, score, value_level, is_headline "
+        "FROM eval_results_view WHERE benchmark_id = 'mmlu-suite' "
+        "ORDER BY protocol_condition"
+    ).fetchall()
+    assert {r[2] for r in rows} == {"derived"}
+    return [(r[0], round(r[1], 2), r[3]) for r in rows]
+
+
+def test_equally_wide_derived_rows_headline_the_best_scoring_arm(
+        tmp_path, monkeypatch):
+    """Two protocol arms, each over both children. The better one heads the
+    page, as it would for a cell the source reported itself; the name of the
+    condition does not decide it."""
+    rows = _derived_suite_rows(tmp_path, monkeypatch, [
+        (None, _LOW, 0.40), ("mmlu-b", _LOW, 0.60),
+        (None, _XHIGH, 0.80), ("mmlu-b", _XHIGH, 0.90),
+    ])
+    assert rows == [(_LOW, 0.50, False), (_XHIGH, 0.85, True)]
+
+
+def test_equally_wide_derived_rows_on_a_lower_is_better_metric(
+        tmp_path, monkeypatch):
+    """Direction flipped: the cheaper arm heads the page."""
+    rows = _derived_suite_rows(tmp_path, monkeypatch, [
+        (None, _LOW, 0.40, True), ("mmlu-b", _LOW, 0.60, True),
+        (None, _XHIGH, 0.80, True), ("mmlu-b", _XHIGH, 0.90, True),
+    ])
+    assert rows == [(_LOW, 0.50, True), (_XHIGH, 0.85, False)]
+
+
+def test_a_better_scoring_arm_over_part_of_the_suite_is_not_a_candidate(
+        tmp_path, monkeypatch):
+    """Score only chooses among arms that cover the suite. An arm over one of
+    the two children gets no derived row, so it cannot head the page however
+    it scored."""
+    rows = _derived_suite_rows(tmp_path, monkeypatch, [
+        (None, _LOW, 0.40), ("mmlu-b", _LOW, 0.60),
+        (None, _XHIGH, 0.95),
+    ])
+    assert rows == [(_LOW, 0.50, True)]
+
+
+# ---------------------------------------------------------------------------
+# A headline is one run: every metric of a model reads one protocol condition
+# ---------------------------------------------------------------------------
+
+
+def _headlines(tmp_path, monkeypatch, facts, *, benchmark_id="mmlu",
+               suite=False):
+    """Build cells from `(benchmark, metric, protocol, score, lower)` facts
+    and return the headline rows as `{metric_id: (protocol, score)}`."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+
+    def mutate(con):
+        _wipe_mmlu(con)
+        if suite:
+            _make_suite(con)
+        for bench, metric, protocol, s_, lower in facts:
+            _clone_fact(con, level="root", is_part=False, score=s_,
+                        slice_key=None, model="m1", benchmark=bench,
+                        metric=metric, protocol=protocol,
+                        lower_is_better=lower)
+
+    rows = _materialise_view(out, mutate=mutate).execute(
+        "SELECT metric_id, protocol_condition, score FROM eval_results_view "
+        f"WHERE benchmark_id = '{benchmark_id}' AND is_headline "
+        "ORDER BY metric_id"
+    ).fetchall()
+    assert len({r[0] for r in rows}) == len(rows), "one headline per metric"
+    return {r[0]: (r[1], round(r[2], 2)) for r in rows}
+
+
+def test_a_models_metrics_headline_one_run_condition(tmp_path, monkeypatch):
+    """The high-effort run scores best and costs most. Its cost is the one
+    shown beside its score: the cheapest cost belongs to another run, and a
+    row pairing the two describes a run nobody made."""
+    got = _headlines(tmp_path, monkeypatch, [
+        (None, "accuracy", _LOW, 0.50, False),
+        (None, "accuracy", _XHIGH, 0.90, False),
+        (None, "cost-per-task", _LOW, 0.10, True),
+        (None, "cost-per-task", _XHIGH, 0.80, True),
+    ])
+    assert got == {"accuracy": (_XHIGH, 0.90), "cost-per-task": (_XHIGH, 0.80)}
+
+
+def test_a_metric_missing_from_the_run_condition_keeps_its_own_best_arm(
+        tmp_path, monkeypatch):
+    """The model never reported cost under its headline condition. The cost
+    it did report still heads its cell rather than the cell going blank."""
+    got = _headlines(tmp_path, monkeypatch, [
+        (None, "accuracy", _LOW, 0.50, False),
+        (None, "accuracy", _XHIGH, 0.90, False),
+        (None, "cost-per-task", _LOW, 0.10, True),
+    ])
+    assert got == {"accuracy": (_XHIGH, 0.90), "cost-per-task": (_LOW, 0.10)}
+
+
+def test_a_single_metric_cell_still_headlines_its_best_arm(tmp_path,
+                                                          monkeypatch):
+    got = _headlines(tmp_path, monkeypatch, [
+        (None, "accuracy", _LOW, 0.50, False),
+        (None, "accuracy", _XHIGH, 0.90, False),
+    ])
+    assert got == {"accuracy": (_XHIGH, 0.90)}
+
+
+def test_derived_parent_metrics_headline_one_run_condition(tmp_path,
+                                                           monkeypatch):
+    """Same rule one level up: the suite's derived score and derived cost
+    come from the same condition."""
+    facts = []
+    for bench in (None, "mmlu-b"):
+        facts += [
+            (bench, "accuracy", _LOW, 0.50, False),
+            (bench, "accuracy", _XHIGH, 0.90, False),
+            (bench, "cost-per-task", _LOW, 0.10, True),
+            (bench, "cost-per-task", _XHIGH, 0.80, True),
+        ]
+    got = _headlines(tmp_path, monkeypatch, facts,
+                     benchmark_id="mmlu-suite", suite=True)
+    assert got == {"accuracy": (_XHIGH, 0.90), "cost-per-task": (_XHIGH, 0.80)}
+
+
+_UNKNOWN = '{"feedback":"unknown"}'
+
+
+def test_an_unread_run_condition_never_outranks_a_clean_arm(tmp_path,
+                                                            monkeypatch):
+    """The model's only arm on the page's first metric is one we could not
+    read, so it heads that cell. On the next metric the model also has a
+    clean arm, and the clean arm heads that cell: an unread arm is never
+    promoted over a known-clean one, and never becomes the run condition
+    while a clean arm exists."""
+    got = _headlines(tmp_path, monkeypatch, [
+        (None, "accuracy", _UNKNOWN, 0.50, False),
+        (None, "cost-per-task", _UNKNOWN, 0.10, True),
+        (None, "cost-per-task", _LOW, 0.80, True),
+    ])
+    assert got == {"accuracy": (_UNKNOWN, 0.50), "cost-per-task": (_LOW, 0.80)}
+
+
+def test_a_metric_with_no_derived_row_does_not_choose_the_run_condition(
+        tmp_path, monkeypatch):
+    """Accuracy covers one of the suite's two children, so the suite gets no
+    accuracy row and cost is the only metric on its page. The run condition
+    is chosen on cost, the page's default metric, not on the accuracy arms
+    nobody will see."""
+    facts = [
+        (None, "accuracy", _LOW, 0.90, False),
+        (None, "accuracy", _XHIGH, 0.50, False),
+    ]
+    for bench in (None, "mmlu-b"):
+        facts += [
+            (bench, "cost-per-task", _LOW, 0.80, True),
+            (bench, "cost-per-task", _XHIGH, 0.10, True),
+        ]
+    got = _headlines(tmp_path, monkeypatch, facts,
+                     benchmark_id="mmlu-suite", suite=True)
+    assert got == {"cost-per-task": (_XHIGH, 0.10)}
+
+
+def test_a_derived_row_follows_the_run_condition_of_the_parents_own_rows(
+        tmp_path, monkeypatch):
+    """The suite reports accuracy itself, under the low-effort run, and its
+    cost is derived from the children. The derived cost that heads the page
+    is the low-effort one: the model has one run condition on the page, and
+    its own row already states it."""
+    facts = [("mmlu-suite", "accuracy", _LOW, 0.70, False)]
+    for bench in (None, "mmlu-b"):
+        facts += [
+            (bench, "cost-per-task", _LOW, 0.80, True),
+            (bench, "cost-per-task", _XHIGH, 0.10, True),
+        ]
+    got = _headlines(tmp_path, monkeypatch, facts,
+                     benchmark_id="mmlu-suite", suite=True)
+    assert got == {"accuracy": (_LOW, 0.70), "cost-per-task": (_LOW, 0.80)}
+
+
+_ANSWER_FEEDBACK = '{"feedback":"answer_feedback"}'
+
+
+@pytest.mark.parametrize("clean", [None, '{"feedback":"none"}'])
+def test_a_derived_answer_feedback_arm_is_never_the_headline(
+        tmp_path, monkeypatch, clean):
+    """Both children carry a clean arm and a better-scoring answer-feedback
+    arm. The suite's derived answer-feedback row stays readable and never
+    heads the page, exactly as on a page the source reported itself."""
+    facts = []
+    for bench in (None, "mmlu-b"):
+        facts += [
+            (bench, "accuracy", clean, 0.50, False),
+            (bench, "accuracy", _ANSWER_FEEDBACK, 0.90, False),
+        ]
+    got = _headlines(tmp_path, monkeypatch, facts,
+                     benchmark_id="mmlu-suite", suite=True)
+    assert got == {"accuracy": (clean, 0.50)}
+
+
+def test_a_derived_unread_arm_sorts_after_a_clean_one(tmp_path, monkeypatch):
+    """An arm whose feedback could not be read scores better on both
+    children. The clean arm still heads the suite."""
+    facts = []
+    for bench in (None, "mmlu-b"):
+        facts += [
+            (bench, "accuracy", _LOW, 0.50, False),
+            (bench, "accuracy", _UNKNOWN, 0.90, False),
+        ]
+    got = _headlines(tmp_path, monkeypatch, facts,
+                     benchmark_id="mmlu-suite", suite=True)
+    assert got == {"accuracy": (_LOW, 0.50)}
+
+
+def test_the_run_condition_comes_from_the_default_metric_not_from_own_rows(
+        tmp_path, monkeypatch):
+    """The suite reports only cost itself; its accuracy is derived. Accuracy
+    is the page's default metric, so the run condition is accuracy's best
+    arm, and the suite's own cost row under that arm is the one shown."""
+    facts = [
+        ("mmlu-suite", "cost-per-task", _LOW, 0.80, True),
+        ("mmlu-suite", "cost-per-task", _XHIGH, 0.10, True),
+    ]
+    for bench in (None, "mmlu-b"):
+        facts += [
+            (bench, "accuracy", _LOW, 0.90, False),
+            (bench, "accuracy", _XHIGH, 0.50, False),
+        ]
+    got = _headlines(tmp_path, monkeypatch, facts,
+                     benchmark_id="mmlu-suite", suite=True)
+    assert got == {"accuracy": (_LOW, 0.90), "cost-per-task": (_LOW, 0.80)}
+
+
+def test_the_run_condition_is_chosen_among_clean_arms_first(tmp_path,
+                                                            monkeypatch):
+    """The model's only arm on the page's first metric is one we could not
+    read. The run condition is the best clean arm on the next metric that
+    has one, so the remaining metrics all show that one run."""
+    got = _headlines(tmp_path, monkeypatch, [
+        (None, "accuracy", _UNKNOWN, 0.50, False),
+        (None, "cost-per-task", _LOW, 0.10, True),
+        (None, "cost-per-task", _XHIGH, 0.80, True),
+        (None, "exact-match", _LOW, 0.50, False),
+        (None, "exact-match", _XHIGH, 0.90, False),
+    ])
+    assert got == {"accuracy": (_UNKNOWN, 0.50),
+                   "cost-per-task": (_LOW, 0.10),
+                   "exact-match": (_LOW, 0.50)}
+
+
+def test_an_unread_own_row_does_not_set_the_run_condition_of_derived_rows(
+        tmp_path, monkeypatch):
+    """The suite reports accuracy itself under an arm we could not read; its
+    derived cost has that arm and a clean one. The clean one heads cost."""
+    facts = [("mmlu-suite", "accuracy", _UNKNOWN, 0.70, False)]
+    for bench in (None, "mmlu-b"):
+        facts += [
+            (bench, "cost-per-task", _UNKNOWN, 0.10, True),
+            (bench, "cost-per-task", _LOW, 0.80, True),
+        ]
+    got = _headlines(tmp_path, monkeypatch, facts,
+                     benchmark_id="mmlu-suite", suite=True)
+    assert got == {"accuracy": (_UNKNOWN, 0.70), "cost-per-task": (_LOW, 0.80)}
+
+
+def test_a_reported_row_heads_its_cell_whatever_the_run_condition(
+        tmp_path, monkeypatch):
+    """The suite reports accuracy for m1 itself, under xhigh. The page's
+    default metric is the derived exact-match, where m1 ran low, and the
+    children also give a derived low accuracy. The cell the suite reported
+    keeps its reported row as headline: it stays ranked, and the fact-grain
+    map still has a headline fact for it."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+
+    def mutate(con):
+        _wipe_mmlu(con)
+        _make_suite(con)
+
+        def fact(bench, metric, protocol, s_, model):
+            _clone_fact(con, level="root", is_part=False, score=s_,
+                        slice_key=None, model=model, benchmark=bench,
+                        metric=metric, protocol=protocol)
+
+        fact("mmlu-suite", "accuracy", _XHIGH, 0.80, "m1")
+        for model in ("m2", "m3"):
+            fact("mmlu-suite", "accuracy", None, 0.30, model)
+        for bench in (None, "mmlu-b"):
+            fact(bench, "exact-match", _LOW, 0.60, "m1")
+            for model in ("m2", "m3", "m4"):
+                fact(bench, "exact-match", None, 0.60, model)
+            fact(bench, "accuracy", _LOW, 0.20, "m1")
+
+    con = _materialise_view(out, mutate=mutate)
+    rows = con.execute(
+        "SELECT protocol_condition, round(score, 2), value_level, is_headline, "
+        "       position, total FROM eval_results_view "
+        "WHERE benchmark_id = 'mmlu-suite' AND metric_id = 'accuracy' "
+        "AND model_key = 'm1' ORDER BY 1"
+    ).fetchall()
+    assert rows == [
+        (_LOW, 0.20, "derived", False, None, None),
+        (_XHIGH, 0.80, "whole", True, 1, 3),
+    ]
+    assert con.execute(
+        "SELECT count(*) FROM fact_results f JOIN fact_headline h USING (fact_id) "
+        "WHERE h.is_headline AND f.benchmark_key = 'mmlu-suite' "
+        "AND f.metric_key = 'accuracy' AND f.model_aggregation_key = 'm1'"
+    ).fetchone()[0] == 1
+
+
+_JUDGE_A = '{"judges":["judge-a"]}'
+_JUDGE_B = '{"judges":["judge-b"]}'
+
+
+def test_judge_coverage_counts_the_rows_the_sources_reported(tmp_path,
+                                                             monkeypatch):
+    """m1 is reported under two judges. Judge A also reads m4 in a reported
+    row; judge B reads m2 and m3 only in rows derived from the children.
+    Coverage is a count of reported readings, so judge A heads m1's cell."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+
+    def mutate(con):
+        _wipe_mmlu(con)
+        _make_suite(con)
+
+        def fact(bench, judge, s_, model):
+            _clone_fact(con, level="root", is_part=False, score=s_,
+                        slice_key=None, model=model, benchmark=bench,
+                        judge=judge)
+
+        fact("mmlu-suite", _JUDGE_A, 0.50, "m1")
+        fact("mmlu-suite", _JUDGE_B, 0.70, "m1")
+        fact("mmlu-suite", _JUDGE_A, 0.60, "m4")
+        for model in ("m2", "m3"):
+            for bench in (None, "mmlu-b"):
+                fact(bench, _JUDGE_B, 0.40, model)
+
+    rows = _materialise_view(out, mutate=mutate).execute(
+        "SELECT model_key, judge_condition FROM eval_results_view "
+        "WHERE benchmark_id = 'mmlu-suite' AND is_headline ORDER BY 1"
+    ).fetchall()
+    assert rows == [("m1", _JUDGE_A), ("m2", _JUDGE_B), ("m3", _JUDGE_B),
+                    ("m4", _JUDGE_A)]
+
+
+def test_derived_rows_under_two_judges_headline_the_first_by_name(
+        tmp_path, monkeypatch):
+    """A derived row's scale label is its first child's, so it says nothing
+    about the judge. Between two derived judge rows the first by name heads
+    the cell, whichever children happened to publish on the registry scale."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+
+    def mutate(con):
+        _wipe_mmlu(con)
+        _make_suite(con)
+        for bench in (None, "mmlu-b"):
+            _clone_fact(con, level="root", is_part=False, score=40.0,
+                        score_canonical=0.40, scale_conversion="div100",
+                        slice_key=None, model="m1", benchmark=bench,
+                        judge=_JUDGE_A)
+            _clone_fact(con, level="root", is_part=False, score=0.60,
+                        slice_key=None, model="m1", benchmark=bench,
+                        judge=_JUDGE_B)
+
+    rows = _materialise_view(out, mutate=mutate).execute(
+        "SELECT judge_condition, scale_conversion, is_headline "
+        "FROM eval_results_view WHERE benchmark_id = 'mmlu-suite' ORDER BY 1"
+    ).fetchall()
+    assert rows == [(_JUDGE_A, "div100", True), (_JUDGE_B, "none", False)]
+
+
+def test_the_view_build_leaves_no_working_table_behind(tmp_path, monkeypatch):
+    """Every working table of the view build is dropped once read."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+
+    def mutate(con):
+        # a derived suite row, so the parent-row tables are exercised too
+        _wipe_mmlu(con)
+        _make_suite(con)
+        for bench in (None, "mmlu-b"):
+            _clone_fact(con, level="root", is_part=False, score=0.5,
+                        slice_key=None, model="m1", benchmark=bench)
+
+    con = _materialise_view(out, mutate=mutate)
+    assert con.execute(
+        "SELECT count(*) FROM eval_results_view WHERE value_level = 'derived'"
+    ).fetchone()[0] == 1
+    left = [r[0] for r in con.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_name LIKE '\\_erv\\_%' ESCAPE '\\' ORDER BY 1"
+    ).fetchall()]
+    assert left == []
+
+
+def test_a_derived_row_is_summed_in_value_order(tmp_path, monkeypatch):
+    """Three children whose scores do not add to the same double in every
+    order, in each of the six ways to hand them out. The suite's published,
+    canonical and normalised values are summed smallest value first,
+    whichever child holds which score and whatever order the rows reach the
+    rollup in, so a rebuild publishes the same bytes."""
+    import itertools
+
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    children = (None, "mmlu-b", "mmlu-c")
+    perms = list(itertools.permutations((0.1, 0.2, 0.3)))
+
+    def mutate(con):
+        _wipe_mmlu(con)
+        _make_suite(con)
+        _add_suite_child(con, "mmlu-c", "MMLU C")
+        for i, scores in enumerate(perms):
+            # facts inserted last child first
+            for bench, s_ in list(zip(children, scores))[::-1]:
+                _clone_fact(con, level="root", is_part=False, score=s_,
+                            slice_key=None, model=f"m{i}", benchmark=bench)
+
+    rows = _materialise_view(out, mutate=mutate).execute(
+        "SELECT model_key, score, score_canonical, score_normalized "
+        "FROM eval_results_view WHERE benchmark_id = 'mmlu-suite' ORDER BY 1"
+    ).fetchall()
+    assert rows == [
+        (f"m{i}",) + (sum(sorted((a, b, c))) / 3,) * 3
+        for i, (a, b, c) in enumerate(perms)
+    ]
+
+
+def _mixed_suite_page(tmp_path, monkeypatch):
+    """`mmlu-suite` with own and derived rows on one page. The suite reports
+    `accuracy` itself for m1, m2 and m3, and `exact-match` itself for m1
+    only; m2, m3 and m4 get a derived `exact-match`. Counting the suite's
+    own facts alone puts `accuracy` first (3 models to 1); the page holds
+    `exact-match` for four models and `accuracy` for three."""
+    pytest.importorskip("duckdb")
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+
+    def mutate(con):
+        _wipe_mmlu(con)
+        _make_suite(con)
+
+        def fact(bench, metric, protocol, s_, model):
+            _clone_fact(con, level="root", is_part=False, score=s_,
+                        slice_key=None, model=model, benchmark=bench,
+                        metric=metric, protocol=protocol)
+
+        fact("mmlu-suite", "exact-match", _LOW, 0.90, "m1")
+        fact("mmlu-suite", "exact-match", _XHIGH, 0.50, "m1")
+        fact("mmlu-suite", "accuracy", _LOW, 0.20, "m1")
+        fact("mmlu-suite", "accuracy", _XHIGH, 0.80, "m1")
+        for model in ("m2", "m3"):
+            fact("mmlu-suite", "accuracy", None, 0.30, model)
+        for model in ("m2", "m3", "m4"):
+            for bench in (None, "mmlu-b"):
+                fact(bench, "exact-match", None, 0.60, model)
+
+    return _materialise_view(out, mutate=mutate)
+
+
+def test_own_cells_take_the_run_condition_of_the_pages_default_metric(
+        tmp_path, monkeypatch):
+    """The page's default metric counts the derived rows the page publishes,
+    so it is `exact-match`, and m1's run condition is its best `exact-match`
+    arm. m1's `accuracy` shows that same run, not its own best arm."""
+    con = _mixed_suite_page(tmp_path, monkeypatch)
+    rows = con.execute(
+        "SELECT metric_id, protocol_condition, round(score, 2) "
+        "FROM eval_results_view WHERE benchmark_id = 'mmlu-suite' "
+        "AND model_key = 'm1' AND is_headline ORDER BY 1"
+    ).fetchall()
+    assert rows == [("accuracy", _LOW, 0.20), ("exact-match", _LOW, 0.90)]
+
+
+def test_the_run_condition_metric_is_the_pages_primary_metric(tmp_path,
+                                                              monkeypatch):
+    """The metric a run condition is chosen on and the metric `evals_view`
+    shows by default are one metric on every page, including one that mixes
+    rows the suite reported with rows derived from its children."""
+    from eval_card_backend.canonicalise import stages
+
+    # the metric order lives only while the headline is being picked, so it
+    # is read at the moment the pick returns
+    first = {}
+    real_pick = stages._materialise_headline_pick
+
+    def recording_pick(con):
+        real_pick(con)
+        first.update(con.execute(
+            "SELECT composite_slug || '/' || benchmark_key, metric_key "
+            "FROM _erv_page_metric_rank WHERE _metric_rank = 1"
+        ).fetchall())
+
+    monkeypatch.setattr(stages, "_materialise_headline_pick", recording_pick)
+    con = _mixed_suite_page(tmp_path, monkeypatch)
+    stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
+    stages.stage_j_evals_view(con, "2026-04-30T00:00:00Z")
+    primary = dict(con.execute(
+        "SELECT composite_slug || '/' || benchmark_id, primary_metric_id "
+        "FROM evals_view WHERE primary_metric_id IS NOT NULL"
+    ).fetchall())
+    assert first == primary
+    suite = [m for page, m in primary.items() if page.endswith("/mmlu-suite")]
+    assert suite == ["exact-match"]
+
+
+def test_every_page_cell_has_exactly_one_headline_row(tmp_path, monkeypatch):
+    """Own and derived rows on one page still give each (metric, model) one
+    headline row."""
+    con = _mixed_suite_page(tmp_path, monkeypatch)
+    counts = con.execute(
+        "SELECT metric_id, model_key, count(*) FILTER (WHERE is_headline) "
+        "FROM eval_results_view WHERE benchmark_id = 'mmlu-suite' "
+        "GROUP BY 1, 2 ORDER BY 1, 2"
+    ).fetchall()
+    assert counts == [
+        ("accuracy", "m1", 1), ("accuracy", "m2", 1), ("accuracy", "m3", 1),
+        ("exact-match", "m1", 1), ("exact-match", "m2", 1),
+        ("exact-match", "m3", 1), ("exact-match", "m4", 1),
     ]
 
 

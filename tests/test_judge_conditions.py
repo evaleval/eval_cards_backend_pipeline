@@ -1034,13 +1034,28 @@ def test_the_old_omni_math_cohort_headlines_its_three_judge_aggregate(facts):
     assert json.loads(judges) == sorted([CLAUDE, GPT4O, LLAMA])
 
 
-def test_the_condition_grain_table_projects_each_column_once(snapshot):
+def test_the_condition_grain_table_projects_each_column_once(
+        snapshot, monkeypatch):
     """A repeated `alias.*` binds without complaint and DuckDB auto-renames
     the copy (`a` → `a_1`), doubling the materialised wide aggregate. The
-    final view masks it, so the check has to be on the intermediate."""
+    final view masks it, so the check has to be on the intermediate, which
+    is read while the stage still holds it."""
+    from eval_card_backend.canonicalise import stages
+
+    columns = {}
+    real_log = stages._log_cells_without_aggregate
+
+    def recording_log(con, *args, **kwargs):
+        columns["_erv_tri"] = [
+            r[0] for r in con.execute("DESCRIBE _erv_tri").fetchall()]
+        return real_log(con, *args, **kwargs)
+
+    monkeypatch.setattr(stages, "_log_cells_without_aggregate", recording_log)
     con = _restage_j(snapshot)
-    for table in ("_erv_tri", "eval_results_view"):
-        cols = [r[0] for r in con.execute(f"DESCRIBE {table}").fetchall()]
+    columns["eval_results_view"] = [
+        r[0] for r in con.execute("DESCRIBE eval_results_view").fetchall()]
+    assert set(columns) == {"_erv_tri", "eval_results_view"}
+    for table, cols in columns.items():
         auto_renamed = [
             c for c in cols
             if c.rsplit("_", 1)[-1].isdigit() and c.rsplit("_", 1)[0] in cols
