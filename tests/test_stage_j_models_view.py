@@ -262,3 +262,44 @@ def test_top_scores_one_per_tag(tmp_path, monkeypatch):
     assert len(top_scores) >= 1
     for entry in top_scores:
         assert set(entry.keys()) == {"benchmark", "benchmarkKey", "score", "metric", "tag"}
+
+
+def test_score_average_does_not_depend_on_row_order(tmp_path, monkeypatch):
+    """One model, the same 383 headline scores, stored in ascending and in
+    descending order. The published average is the same number.
+
+    Adding doubles in another order moves the sum by a few units in the last
+    place, and these values put the mean close enough to a 12-decimal
+    rounding boundary for that to show after rounding. DuckDB adds in the
+    order the storage layout and the worker threads hand it rows, which a
+    resumed build does not share with a full one."""
+    import random
+
+    from eval_card_backend.canonicalise import stages
+
+    rng = random.Random(27)
+    scores = [round(rng.uniform(0, 100), 4) for _ in range(383)]
+
+    out = _run_through_stage_i(tmp_path, monkeypatch, "fixtures_clean")
+    con = _materialise_views(out)
+    con.execute("SET threads = 1")
+    con.execute(
+        "CREATE TABLE one_cell AS SELECT * FROM eval_results_view "
+        "WHERE is_headline AND score_canonical IS NOT NULL LIMIT 1"
+    )
+    con.execute("CREATE TABLE scores AS SELECT unnest(?::DOUBLE[]) AS v", [scores])
+
+    averages = {}
+    for order in ("ASC", "DESC"):
+        con.execute(
+            f"CREATE OR REPLACE TABLE eval_results_view AS "
+            f"SELECT one_cell.* REPLACE (scores.v AS score_canonical) "
+            f"FROM one_cell, scores ORDER BY scores.v {order}"
+        )
+        con.execute("DROP TABLE models_view")
+        stages.stage_j_models_view(con, "2026-04-30T00:00:00Z")
+        summary = con.execute("SELECT score_summary FROM models_view").fetchone()[0]
+        assert summary["count"] == len(scores)
+        averages[order] = summary["average"]
+
+    assert averages["ASC"] == averages["DESC"]

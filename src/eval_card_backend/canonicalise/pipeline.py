@@ -1165,7 +1165,7 @@ def _log_canonicalisation_summary(con, fact_count: int) -> None:
         log.warning("  fact_results is EMPTY — investigate before downstream use")
         return
     row = con.execute(
-        """
+        f"""
         SELECT
             COUNT(*) FILTER (WHERE model_id IS NULL)        AS unresolved_model,
             COUNT(*) FILTER (WHERE benchmark_id IS NULL)    AS unresolved_benchmark,
@@ -1196,7 +1196,7 @@ def _log_canonicalisation_summary(con, fact_count: int) -> None:
             COUNT(DISTINCT comparability_group_id)
                 FILTER (WHERE has_cross_party_divergence)   AS cross_pos,
             COUNT(*)            FILTER (WHERE completeness_score IS NOT NULL) AS bc_n,
-            AVG(completeness_score) FILTER (WHERE completeness_score IS NOT NULL) AS bc_mean,
+            {stages.order_free_avg_sql("completeness_score")} AS bc_mean,
             MIN(completeness_score) FILTER (WHERE completeness_score IS NOT NULL) AS bc_min,
             MAX(completeness_score) FILTER (WHERE completeness_score IS NOT NULL) AS bc_max
         FROM fact_results

@@ -204,6 +204,34 @@ def protocol_exclusion_sql(col: str = "protocol_condition") -> str:
     )
 
 
+def _sorted_values_sql(expr: str, where: str | None) -> str:
+    keep = f"({expr}) IS NOT NULL"
+    if where:
+        keep += f" AND ({where})"
+    return f"list_sort(list({expr}) FILTER (WHERE {keep}))"
+
+
+def order_free_avg_sql(expr: str, where: str | None = None) -> str:
+    """Mean of a DOUBLE expression that depends on the values alone.
+
+    `AVG` adds doubles in the order rows reach it, within each worker thread
+    and then across threads, and double addition is not associative. The
+    same values under another storage layout or thread count sum to a
+    neighbouring double, which can round to a different 12th decimal.
+    Collecting the values and sorting them fixes the order of the additions.
+
+    NULL for no values, like `AVG`. An `AVG` or `SUM` over a DECIMAL or an
+    integer expression is exact in any order and does not need this.
+    """
+    return f"list_avg({_sorted_values_sql(expr, where)})"
+
+
+def order_free_sum_sql(expr: str, where: str | None = None) -> str:
+    """Sum of a DOUBLE expression that depends on the values alone; see
+    `order_free_avg_sql`. NULL for no values, like `SUM`."""
+    return f"list_sum({_sorted_values_sql(expr, where)})"
+
+
 def json_array_guard_sql(expr: str) -> str:
     """Predicate: `expr` holds a JSON array.
 
@@ -4943,8 +4971,8 @@ def _pooled_value_aggregates_sql(col: str, prefix: str) -> str:
     ):
         parts += [
             f"MEDIAN({col}) FILTER (WHERE {flt}) AS {prefix}_median_{tag}",
-            f"AVG({col}) FILTER (WHERE {flt}) AS {prefix}_mean_{tag}",
-            f"(SUM({col} * n_samples) FILTER (WHERE {flt} AND n_samples IS NOT NULL)"
+            f"{order_free_avg_sql(col, flt)} AS {prefix}_mean_{tag}",
+            f"({order_free_sum_sql(f'{col} * n_samples', flt)}"
             f" / NULLIF(SUM(n_samples) FILTER (WHERE {flt} AND n_samples IS NOT NULL), 0))"
             f" AS {prefix}_wmean_{tag}",
             f"(COUNT(*) FILTER (WHERE {flt}) > 0"
@@ -5567,7 +5595,8 @@ def stage_j_eval_results_view(
                     FILTER (WHERE cross_party_differing_fields IS NOT NULL)
                                                          AS cross_party_differing_fields,
                 MAX(cross_party_org_count)                  AS cross_party_org_count,
-                ROUND(AVG(completeness_score), 12)       AS triple_avg_completeness
+                ROUND({order_free_avg_sql("completeness_score")}, 12)
+                                                         AS triple_avg_completeness
             FROM tris_levelled
             GROUP BY composite_slug, model_aggregation_key, benchmark_key,
                      metric_key, protocol_condition, judge_condition, split,
@@ -6595,14 +6624,17 @@ def _materialise_slice_parent_rows(
                 -- when every part says how many samples it covers.
                 (COUNT(*) = COUNT(n_samples) AND COALESCE(SUM(n_samples), 0) > 0)
                                           AS _weighted,
-                AVG(score)                AS _score_published_mean,
-                SUM(score * n_samples) / NULLIF(SUM(n_samples), 0)
+                {order_free_avg_sql("score")}
+                                          AS _score_published_mean,
+                {order_free_sum_sql("score * n_samples")} / NULLIF(SUM(n_samples), 0)
                                           AS _score_published_wmean,
-                AVG(score_canonical)      AS _score_canonical_mean,
-                SUM(score_canonical * n_samples) / NULLIF(SUM(n_samples), 0)
+                {order_free_avg_sql("score_canonical")}
+                                          AS _score_canonical_mean,
+                {order_free_sum_sql("score_canonical * n_samples")} / NULLIF(SUM(n_samples), 0)
                                           AS _score_canonical_wmean,
-                AVG(score_normalized)     AS _score_normalized_mean,
-                SUM(score_normalized * n_samples) / NULLIF(SUM(n_samples), 0)
+                {order_free_avg_sql("score_normalized")}
+                                          AS _score_normalized_mean,
+                {order_free_sum_sql("score_normalized * n_samples")} / NULLIF(SUM(n_samples), 0)
                                           AS _score_normalized_wmean,
                 CAST(COUNT(DISTINCT benchmark_id) AS INTEGER) AS children_present,
                 CAST(COUNT(*) AS INTEGER) AS fact_row_count,
@@ -7449,7 +7481,8 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                                                                           AS gap_rate,
                 CAST(SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS gap_count,
-                ROUND(AVG(completeness_score), 12)                        AS completeness_avg,
+                ROUND({order_free_avg_sql("completeness_score")}, 12)
+                                                                          AS completeness_avg,
                 list_sort(list_distinct(flatten(
                     list(from_json(derived_tags, '["VARCHAR"]'))
                     FILTER (WHERE derived_tags IS NOT NULL)
@@ -7475,9 +7508,10 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 MAX(score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("erv.protocol_condition")}
                 )                                                         AS score_max,
-                ROUND(AVG(score_canonical) FILTER (
-                    WHERE {protocol_exclusion_sql("erv.protocol_condition")}
-                ), 12)                                                    AS score_avg,
+                ROUND({order_free_avg_sql(
+                    "score_canonical",
+                    protocol_exclusion_sql("erv.protocol_condition"),
+                )}, 12)                                                   AS score_avg,
                 CAST(SUM(CASE WHEN is_multi_source THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS multi_source_groups,
                 CAST(SUM(CASE WHEN first_party_only THEN 1 ELSE 0 END) AS INTEGER)
@@ -8008,9 +8042,10 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 -- exclusion predicate as FILTER on the score
                 -- aggregates only — NOT a pool-level WHERE, which would
                 -- also change models_count / evaluator_names / gap rates.
-                ROUND(AVG(pt.score_canonical) FILTER (
-                    WHERE {protocol_exclusion_sql("pt.protocol_condition")}
-                ), 12)                                                 AS avg_score,
+                ROUND({order_free_avg_sql(
+                    "pt.score_canonical",
+                    protocol_exclusion_sql("pt.protocol_condition"),
+                )}, 12)                                                AS avg_score,
                 -- The denominator behind that average. `models_count` is
                 -- every model with a headline cell on the primary metric,
                 -- scored or not; AVG silently skips the unscored ones, so a
@@ -8027,9 +8062,10 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 -- conversion and the lower-is-better inversion, so the list
                 -- card and the result rows disagreed: SQuAD read 22.22 on the
                 -- card and 0.33 on the rows, HarmBench 0.26 against 0.74.
-                ROUND(AVG(pt.score_normalized) FILTER (
-                    WHERE {protocol_exclusion_sql("pt.protocol_condition")}
-                ), 12)                                                 AS avg_score_normalized,
+                ROUND({order_free_avg_sql(
+                    "pt.score_normalized",
+                    protocol_exclusion_sql("pt.protocol_condition"),
+                )}, 12)                                                AS avg_score_normalized,
                 MIN(pt.score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("pt.protocol_condition")}
                 )                                                      AS min_score_seen,
@@ -8055,7 +8091,8 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                                                                        AS gap_rate,
                 CAST(SUM(CASE WHEN pt.has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
                                                                        AS gap_count,
-                ROUND(AVG(pt.completeness_score), 12)                  AS completeness_avg,
+                ROUND({order_free_avg_sql("pt.completeness_score")}, 12)
+                                                                       AS completeness_avg,
                 CAST(COUNT(*) AS INTEGER)                              AS gprov_total_groups,
                 CAST(SUM(CASE WHEN pt.is_multi_source THEN 1 ELSE 0 END) AS INTEGER)
                                                                        AS multi_source_groups,
