@@ -18,7 +18,7 @@ import pytest
 from tests.eee_layout import write_eee_datastore
 
 
-def _write_eee_fixture(eee_root: Path) -> None:
+def _write_eee_fixture(eee_root: Path, **record_overrides) -> None:
     record = {
         "evaluation_id": "ev_001",
         "schema_version": "0.2.2",
@@ -65,6 +65,7 @@ def _write_eee_fixture(eee_root: Path) -> None:
             },
         ],
     }
+    record.update(record_overrides)
     write_eee_datastore(eee_root, [("minibench", "rec.json", json.dumps(record))])
 
 
@@ -1445,6 +1446,105 @@ def test_retrieved_instant_sql_is_utc_bounded_and_session_zone_independent(time_
         f"ORDER BY {stages.retrieved_instant_sql('retrieved_timestamp')}"
     ).fetchall()
     assert [r[0] for r in ordered] == ["2026-05-01T00:00:00+02:00", "1777766400"]
+
+
+# 1751328000 is 2025-07-01T00:00:00Z, 1736899200 is 2025-01-15T00:00:00Z:
+# one instant inside and one outside the daylight-saving half of the year.
+_TS_CAST_CASES = [
+    ("1751328000", datetime.datetime(2025, 7, 1, 0, 0)),
+    ("1751328000.5", datetime.datetime(2025, 7, 1, 0, 0, 0, 500000)),
+    ("1736899200", datetime.datetime(2025, 1, 15, 0, 0)),
+    ("2025-07-01T00:00:00Z", datetime.datetime(2025, 7, 1, 0, 0)),
+    ("2025-07-01T00:00:00", datetime.datetime(2025, 7, 1, 0, 0)),
+    ("2025-07-01", datetime.datetime(2025, 7, 1, 0, 0)),
+    ("", None),
+    (None, None),
+]
+
+_NON_UTC_ZONES = ["Europe/London", "Asia/Kolkata", "America/Los_Angeles"]
+
+
+@pytest.mark.parametrize("time_zone", _NON_UTC_ZONES)
+def test_ts_cast_sql_reads_epoch_seconds_as_utc_in_any_session_zone(time_zone):
+    """Epoch seconds and ISO text both come out as naive UTC, whatever the
+    session time zone is."""
+    import duckdb
+
+    from eval_card_backend.canonicalise import stages
+
+    con = duckdb.connect()
+    con.execute(f"SET TimeZone = '{time_zone}'")
+    con.execute("CREATE TABLE t (i INTEGER, raw VARCHAR)")
+    con.executemany(
+        "INSERT INTO t VALUES (?, ?)",
+        [(i, raw) for i, (raw, _) in enumerate(_TS_CAST_CASES)],
+    )
+    rows = con.execute(
+        f"SELECT raw, {stages.ts_cast_sql('raw')} FROM t ORDER BY i"
+    ).fetchall()
+    assert rows == _TS_CAST_CASES
+
+
+@pytest.mark.parametrize("time_zone", _NON_UTC_ZONES)
+def test_pipeline_timestamps_do_not_move_with_the_machine_zone(
+    tmp_path, monkeypatch, time_zone,
+):
+    """A bake on a machine outside UTC publishes the same timestamps as one
+    in UTC. DuckDB takes the machine zone as the session default when a
+    database opens, so every connection opened during the run starts in
+    `time_zone` here."""
+    import duckdb
+
+    eee_root = tmp_path / "eee"
+    reg_root = tmp_path / "reg"
+    cards_root = tmp_path / "cards"
+    seed_root = tmp_path / "seed"
+    _write_eee_fixture(
+        eee_root,
+        retrieved_timestamp="1751328000.5",
+        evaluation_timestamp="1751241600",
+    )
+    _write_registry_fixture(reg_root)
+    _write_minimal_seed_fixture(seed_root)
+    _write_cards_fixture(cards_root)
+
+    monkeypatch.setenv("EEE_LOCAL_DATASET_DIR", str(eee_root))
+    monkeypatch.setenv("BENCHMARK_METADATA_LOCAL_DIR", str(cards_root))
+    monkeypatch.delenv("EEE_REFRESH_SNAPSHOT", raising=False)
+    monkeypatch.delenv("BENCHMARK_METADATA_REFRESH", raising=False)
+
+    real_connect = duckdb.connect
+
+    def connect_in_machine_zone(*args, **kwargs):
+        con = real_connect(*args, **kwargs)
+        con.execute(f"SET TimeZone = '{time_zone}'")
+        return con
+
+    from eval_card_backend.canonicalise import pipeline
+    from eval_card_backend.config import Settings
+
+    with monkeypatch.context() as mp:
+        mp.setattr(duckdb, "connect", connect_in_machine_zone)
+        out_dir = pipeline.run(
+            Settings.from_env(),
+            snapshot_id="2026-05-05T00:00:00Z",
+            warehouse_dir=str(tmp_path / "warehouse"),
+            registry_local_dir=str(reg_root),
+            taxonomy_seed_dir=str(seed_root),
+            cache_root=str(tmp_path / "cache"),
+        )
+
+    retrieved = datetime.datetime(2025, 7, 1, 0, 0, 0, 500000)
+    evaluated = datetime.datetime(2025, 6, 30, 0, 0)
+    con = real_connect()
+    assert con.execute(
+        f"SELECT DISTINCT retrieved_timestamp, evaluation_timestamp "
+        f"FROM read_parquet('{out_dir / 'eval_results_view.parquet'}')"
+    ).fetchall() == [(retrieved, evaluated)]
+    assert con.execute(
+        f"SELECT DISTINCT latest_timestamp "
+        f"FROM read_parquet('{out_dir / 'models_view.parquet'}')"
+    ).fetchall() == [(evaluated,)]
 
 
 def test_pipeline_dedup_orders_mixed_retrieved_timestamp_formats(

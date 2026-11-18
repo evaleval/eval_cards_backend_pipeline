@@ -1033,11 +1033,16 @@ def _connect_duckdb() -> tuple[duckdb.DuckDBPyConnection, Path]:
     can page tables out under `memory_limit` instead of growing until the
     host kills the process. `CANONICALISE_MEMORY_LIMIT` (e.g. `10GB`) sets
     the limit and `CANONICALISE_DUCKDB_THREADS` the worker count; unset
-    leaves DuckDB's defaults. The dir is removed by `_close_duckdb`."""
+    leaves DuckDB's defaults. The dir is removed by `_close_duckdb`.
+
+    The session time zone is UTC. DuckDB otherwise starts in the zone of
+    the machine, and any TIMESTAMPTZ cast or date part would then differ
+    between a laptop and CI."""
     import tempfile
 
     db_dir = Path(tempfile.mkdtemp(prefix="canonicalise-duckdb-"))
     con = duckdb.connect(str(db_dir / "canonicalise.duckdb"))
+    con.execute("SET TimeZone = 'UTC'")
     con.execute(f"SET temp_directory = '{db_dir / 'tmp'}'")
     limit = os.environ.get("CANONICALISE_MEMORY_LIMIT")
     if limit:

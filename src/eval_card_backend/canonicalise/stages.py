@@ -4078,11 +4078,15 @@ def ts_cast_sql(column_expr: str) -> str:
     The COALESCE chain tries ISO first, then falls back to interpreting
     the value as a Unix-epoch double via `to_timestamp(...)`. NULL in
     both branches preserves NULL.
+
+    `to_timestamp` returns a TIMESTAMPTZ, and casting that to TIMESTAMP
+    renders it in the session time zone. `epoch_us` reads the instant
+    instead, so the result is naive UTC on every machine.
     """
     return (
         f"COALESCE("
         f"TRY_CAST({column_expr} AS TIMESTAMP), "
-        f"TRY_CAST(to_timestamp(TRY_CAST({column_expr} AS DOUBLE)) AS TIMESTAMP)"
+        f"make_timestamp(epoch_us(to_timestamp(TRY_CAST({column_expr} AS DOUBLE))))"
         f")"
     )
 
