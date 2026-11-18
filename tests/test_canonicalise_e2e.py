@@ -953,7 +953,7 @@ def test_snapshot_meta_refuses_fact_rows_the_dedup_stats_do_not_account_for(
         snapshot_id="2026-05-01T00:00:00Z", chosen=["minibench"],
         settings=Settings.from_env(),
         n_eee=0, n_cards=0, n_exploded=0, n_synth_collisions=0,
-        n_unit_inconsistent=0, view_layer_emitted=False,
+        n_unit_inconsistent=0, stage_a_drops=[], view_layer_emitted=False,
         eee_root=None, registry_root=None, cards_root=None,
     )
     meta = pipeline._build_snapshot_meta(stage_e_stats=stats, n_fact_results=1, **kwargs)

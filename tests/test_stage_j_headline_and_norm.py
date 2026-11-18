@@ -65,7 +65,7 @@ def _materialise_views(out_dir: Path, mutate=None):
         )
     # the fixture parquet predates preferred_metric_id; pad it like _load_dim
     con.execute(
-        "CREATE TABLE canonical_benchmarks AS "
+        "CREATE TABLE benchmark_catalog AS "
         "SELECT id, display_name, "
         "       CAST(parent_benchmark_id AS VARCHAR) AS parent_benchmark_id, "
         "       CAST(NULL AS VARCHAR) AS preferred_metric_id, "
@@ -160,7 +160,7 @@ def test_registry_preference_still_outranks_an_outcome_metric(tmp_path, monkeypa
         _add_metric(con, "aaa-word-count", [100, 200, 300], role="diagnostic")
         _add_metric(con, "zzz-win-rate", [0.4, 0.5])
         _add_metric(con, "mmm-elo", [1200, 1300])
-        con.execute("UPDATE canonical_benchmarks SET preferred_metric_id = 'mmm-elo'"
+        con.execute("UPDATE benchmark_catalog SET preferred_metric_id = 'mmm-elo'"
                     " WHERE id = 'mmlu'")
 
     assert _headline(_materialise_views(out, mutate=mutate)) == "mmm-elo"
@@ -380,7 +380,7 @@ def test_hierarchy_honours_a_registry_preference_on_the_base_id(
             "WHERE benchmark_key = 'mmlu' AND metric_base_key = 'task-success'"
         )
         con.execute(
-            "UPDATE canonical_benchmarks SET preferred_metric_id = "
+            "UPDATE benchmark_catalog SET preferred_metric_id = "
             "'task-success' WHERE id = 'mmlu'"
         )
 

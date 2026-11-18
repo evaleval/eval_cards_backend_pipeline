@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 # whenever a stage's cached output gains, loses or re-types a column: a
 # `--from-stage` run against an older cache would otherwise restore the old
 # shape and fail deep inside a later stage's SQL with a binder error.
-CACHE_SCHEMA_VERSION = 21
+CACHE_SCHEMA_VERSION = 23
 
 _SCHEMA_MARKER = "_cache_schema.json"
 # Which EEE sources the cached tables were built from (private-source toggle
@@ -46,6 +46,8 @@ STAGE_ORDER: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G", "I", "J")
 STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     "A": (
         "eee_raw",
+        # What the loader rejected; snapshot_meta.json reports it.
+        "stage_a_drops",
         "cards_raw",
         "canonical_orgs",
         "canonical_models",
@@ -75,7 +77,12 @@ STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     "D": ("fact_results_staging", "collection_keys"),
     "E": ("fact_results_signaled", "stage_e_dedup_stats"),
     "F": ("fact_results",),
-    "G": ("benchmarks", "composites", "families", "models"),
+    "G": (
+        # canonical_benchmarks plus the parents Stage G synthesises; what
+        # Stage J and the sidecars read in its place.
+        "benchmark_catalog",
+        "benchmarks", "composites", "families", "models",
+    ),
     "I": (),  # Stage I writes the warehouse parquets; nothing in-memory to cache.
     "J": ("eval_results_view", "models_view", "evals_view", "merged_evals_view",
           # fact-grain headline map; the sidecars read it after Stage J

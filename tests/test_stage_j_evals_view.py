@@ -86,7 +86,7 @@ def _reparent_mmlu_under_suite(con) -> None:
 
     stages._ensure_merged_view_inputs(con)
     con.execute(
-        "INSERT INTO canonical_benchmarks (id, parent_benchmark_id) "
+        "INSERT INTO benchmark_catalog (id, parent_benchmark_id) "
         "VALUES ('mmlu-suite', NULL), ('mmlu', 'mmlu-suite')"
     )
 

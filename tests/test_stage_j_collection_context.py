@@ -257,7 +257,7 @@ def _build_con(
         [BENCHMARK, COLLECTION, registry_metadata],
     )
     con.execute(
-        "CREATE TABLE canonical_benchmarks AS "
+        "CREATE TABLE benchmark_catalog AS "
         "SELECT ? AS id, ? AS preferred_metric_id", [BENCHMARK, METRIC]
     )
     con.execute(

@@ -1,5 +1,5 @@
 {
-  "cache_schema_version": 21,
+  "cache_schema_version": 23,
   "tables": {
     "aliases": [
       ["raw_value", "VARCHAR"],
@@ -8,6 +8,18 @@
       ["status", "VARCHAR"],
       ["source_config", "VARCHAR"],
       ["inference_platform", "VARCHAR"]
+    ],
+    "benchmark_catalog": [
+      ["id", "VARCHAR"],
+      ["display_name", "VARCHAR"],
+      ["description", "VARCHAR"],
+      ["dataset_repo", "VARCHAR"],
+      ["parent_benchmark_id", "VARCHAR"],
+      ["preferred_metric_id", "VARCHAR"],
+      ["preferred_metric_llm_judged", "BOOLEAN"],
+      ["tags", "VARCHAR"],
+      ["metadata", "VARCHAR"],
+      ["review_status", "VARCHAR"]
     ],
     "benchmark_metric_folds": [
       ["benchmark_id", "VARCHAR"],
@@ -965,6 +977,12 @@
     ],
     "slice_promotions": [
       ["benchmark_id", "VARCHAR"]
+    ],
+    "stage_a_drops": [
+      ["config", "VARCHAR"],
+      ["reason", "VARCHAR"],
+      ["count", "BIGINT"],
+      ["first_path", "VARCHAR"]
     ],
     "stage_e_dedup_stats": [
       ["source_config", "VARCHAR"],

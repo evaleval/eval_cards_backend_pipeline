@@ -204,6 +204,34 @@ def protocol_exclusion_sql(col: str = "protocol_condition") -> str:
     )
 
 
+def _sorted_values_sql(expr: str, where: str | None) -> str:
+    keep = f"({expr}) IS NOT NULL"
+    if where:
+        keep += f" AND ({where})"
+    return f"list_sort(list({expr}) FILTER (WHERE {keep}))"
+
+
+def order_free_avg_sql(expr: str, where: str | None = None) -> str:
+    """Mean of a DOUBLE expression that depends on the values alone.
+
+    `AVG` adds doubles in the order rows reach it, within each worker thread
+    and then across threads, and double addition is not associative. The
+    same values under another storage layout or thread count sum to a
+    neighbouring double, which can round to a different 12th decimal.
+    Collecting the values and sorting them fixes the order of the additions.
+
+    NULL for no values, like `AVG`. An `AVG` or `SUM` over a DECIMAL or an
+    integer expression is exact in any order and does not need this.
+    """
+    return f"list_avg({_sorted_values_sql(expr, where)})"
+
+
+def order_free_sum_sql(expr: str, where: str | None = None) -> str:
+    """Sum of a DOUBLE expression that depends on the values alone; see
+    `order_free_avg_sql`. NULL for no values, like `SUM`."""
+    return f"list_sum({_sorted_values_sql(expr, where)})"
+
+
 def json_array_guard_sql(expr: str) -> str:
     """Predicate: `expr` holds a JSON array.
 
@@ -721,6 +749,37 @@ def stage_a_load_eee(
         )
 
     return n_rows
+
+
+def stage_a_record_drops(con, drops: list[dict]) -> None:
+    """Write the records the loader rejected to `stage_a_drops`, one row per
+    (config, reason) as `sources.eee.drop_breakdown` reports them.
+
+    The loader counts in a module global that only the run which read the
+    records fills. `snapshot_meta.json` reads this table instead, so a
+    resumed run reports the drops of the records it restored.
+    """
+    con.execute(
+        "CREATE OR REPLACE TABLE stage_a_drops "
+        "(config VARCHAR, reason VARCHAR, count BIGINT, first_path VARCHAR)"
+    )
+    if drops:
+        con.executemany(
+            "INSERT INTO stage_a_drops VALUES (?, ?, ?, ?)",
+            [(d["config"], d["reason"], d["count"], d["first_path"]) for d in drops],
+        )
+
+
+def read_stage_a_drops(con) -> list[dict]:
+    """`stage_a_drops` as `snapshot_meta.json` publishes it, sorted."""
+    rows = con.execute(
+        "SELECT config, reason, count, first_path FROM stage_a_drops "
+        "ORDER BY config, reason"
+    ).fetchall()
+    return [
+        {"config": cfg, "reason": reason, "count": int(count), "first_path": path}
+        for cfg, reason, count, path in rows
+    ]
 
 
 def stage_a_load_cards(con, cards: dict[str, LoadedCard]) -> int:
@@ -3622,7 +3681,31 @@ def _divergence_rollup_sql(column: str) -> str:
     )
 
 
-def stage_f_group_signals(con, snapshot_id: str) -> int:
+def count_unit_inconsistent_groups(con) -> int:
+    """Comparability groups whose rows disagree about metric_unit.
+
+    Read off `fact_results`, the table Stage F caches, so the count is the
+    same whether Stage F ran in this process or was restored. Only rows
+    with all three keys were ever grouped; the rest have no group.
+    """
+    return con.execute(
+        """
+        SELECT COUNT(*) FROM (
+            SELECT model_aggregation_key, benchmark_key, slice_key, metric_key,
+                   protocol_condition, judge_condition, split
+            FROM fact_results
+            WHERE model_aggregation_key IS NOT NULL
+              AND benchmark_key         IS NOT NULL
+              AND metric_key            IS NOT NULL
+            GROUP BY 1, 2, 3, 4, 5, 6, 7
+            HAVING COUNT(DISTINCT metric_unit)
+                   FILTER (WHERE metric_unit IS NOT NULL) > 1
+        )
+        """
+    ).fetchone()[0]
+
+
+def stage_f_group_signals(con, snapshot_id: str) -> None:
     """Group-level signal pass. Two distinct groupings:
 
       - **Provenance** (F.1) — `(model_aggregation_key, benchmark_key)`.
@@ -3987,18 +4070,7 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
     # rows disagree about metric_unit. The label no longer feeds the
     # threshold (that comes from the group's chosen bounds), but a group that
     # cannot agree on its own unit is a registry-backfill signal.
-    n_unit_inconsistent = con.execute(
-        """
-        SELECT COUNT(*) FROM (
-            SELECT model_aggregation_key, benchmark_key, slice_key, metric_key,
-                   protocol_condition, judge_condition, split
-            FROM fact_results_grouped
-            GROUP BY 1, 2, 3, 4, 5, 6, 7
-            HAVING COUNT(DISTINCT metric_unit)
-                   FILTER (WHERE metric_unit IS NOT NULL) > 1
-        )
-        """
-    ).fetchone()[0]
+    n_unit_inconsistent = count_unit_inconsistent_groups(con)
     if n_unit_inconsistent:
         log.warning(
             "Stage F: %d comparability group(s) had >1 distinct metric_unit "
@@ -4006,7 +4078,6 @@ def stage_f_group_signals(con, snapshot_id: str) -> int:
             "offending canonical metric to silence.",
             n_unit_inconsistent,
         )
-    return n_unit_inconsistent
 
 
 def _log_comparability_status(con) -> None:
@@ -4128,9 +4199,9 @@ def retrieved_instant_sql(column_expr: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _synthesise_phantom_benchmarks(con) -> int:
-    """Add canonical_benchmarks rows for stems referenced as
-    parent_benchmark_id but missing as id.
+def _build_benchmark_catalog(con) -> int:
+    """Create `benchmark_catalog`: every `canonical_benchmarks` row, plus a
+    row for each stem referenced as parent_benchmark_id but missing as id.
 
     When ≥2 siblings share a stem and no bare-stem canonical exists
     (e.g. `caparena-*` with no bare `caparena`), the slice-grouping
@@ -4138,11 +4209,20 @@ def _synthesise_phantom_benchmarks(con) -> int:
     helper materialises a synthetic row with that key, display name
     derived from the longest common prefix of slice display names
     (falling back to a title-cased stem), and tags as the union of
-    slice tags. Inserted into canonical_benchmarks so the rest of
-    Stage G doesn't need a UNION-with-phantoms code path.
+    slice tags.
 
-    Returns the number of synthetic rows inserted.
+    The catalog is a Stage G output with the columns of
+    `canonical_benchmarks`, and it is what Stage G, Stage J and the
+    sidecars read. `canonical_benchmarks` belongs to Stage A's cache and
+    stays as Stage A wrote it: a row added to it here would be missing
+    from every run resumed after this stage.
+
+    Returns the number of synthetic rows added.
     """
+    con.execute(
+        "CREATE OR REPLACE TABLE benchmark_catalog AS "
+        "SELECT * FROM canonical_benchmarks"
+    )
     rows = con.execute(
         """
         WITH phantom_stems AS (
@@ -4201,7 +4281,7 @@ def _synthesise_phantom_benchmarks(con) -> int:
         insert_rows.append((stem, display, tags_json))
 
     con.executemany(
-        "INSERT INTO canonical_benchmarks (id, display_name, tags) "
+        "INSERT INTO benchmark_catalog (id, display_name, tags) "
         "VALUES (?, ?, ?)",
         insert_rows,
     )
@@ -4212,8 +4292,9 @@ def _synthesise_phantom_benchmarks(con) -> int:
     return len(insert_rows)
 
 
-def _synthesise_singleton_families(con) -> None:
-    """Ensure family_membership has a row for every *root* benchmark.
+def _build_family_membership_all(con) -> None:
+    """Create `family_membership_all`: the curated `family_membership` plus
+    a singleton family for every other *root* benchmark in the catalog.
 
     A singleton family is `{family_id == benchmark_id, display_name ==
     benchmark.display_name}`. The curated YAML only carries multi-
@@ -4223,12 +4304,18 @@ def _synthesise_singleton_families(con) -> None:
     comes from the root benchmark, looked up at dim materialisation
     time. Without the filter, slice ids like `gaia-level-1` would land
     as their own singleton families and clutter the families[] index.
+
+    Only Stage G reads the table and it drops it when done.
+    `family_membership` belongs to Stage A's cache and is not written to.
     """
     con.execute(
         """
-        INSERT INTO family_membership (family_id, family_display_name, benchmark_id)
+        CREATE OR REPLACE TABLE family_membership_all AS
+        SELECT family_id, family_display_name, benchmark_id
+        FROM family_membership
+        UNION ALL
         SELECT cb.id, COALESCE(cb.display_name, cb.id), cb.id
-        FROM canonical_benchmarks cb
+        FROM benchmark_catalog cb
         WHERE cb.id IS NOT NULL
           AND (cb.parent_benchmark_id IS NULL OR cb.parent_benchmark_id = cb.id)
           AND cb.id NOT IN (SELECT benchmark_id FROM family_membership)
@@ -4249,8 +4336,8 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
     """
     sid = snapshot_id_to_sql(snapshot_id)
 
-    _synthesise_phantom_benchmarks(con)
-    _synthesise_singleton_families(con)
+    _build_benchmark_catalog(con)
+    _build_family_membership_all(con)
 
     # ---- benchmarks dim ---------------------------------------------------
     # Per-(composite_slug, benchmark_id). Card columns and registry meta
@@ -4281,7 +4368,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             -- Distinct (composite, benchmark_key) pairs from fact_results.
             -- Keying on `benchmark_key` (canonical-or-raw) keeps
             -- unresolved benchmarks from being silently dropped at the
-            -- dim layer; the LEFT JOIN to canonical_benchmarks below
+            -- dim layer; the LEFT JOIN to benchmark_catalog below
             -- harmlessly produces NULLs for raw-only entries and the
             -- SELECT falls back to the raw string for display.
             SELECT DISTINCT composite_slug, benchmark_key AS benchmark_id
@@ -4310,14 +4397,14 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
         phantom_root_pairs AS (
             -- Phantom stems (e.g. arc-agi, caparena) referenced as
             -- parent_benchmark_id by ≥2 children but with no own fact
-            -- rows. Stage G has already inserted them into
-            -- canonical_benchmarks via _synthesise_phantom_benchmarks,
+            -- rows. They have a row in benchmark_catalog
+            -- (see _build_benchmark_catalog),
             -- but they don't appear in `base_pairs` because they have
             -- no fact rows themselves. Without this UNION the children
             -- would be orphan slices in the hierarchy (no root).
             SELECT DISTINCT bp.composite_slug, cb.parent_benchmark_id AS benchmark_id
             FROM base_pairs bp
-            JOIN canonical_benchmarks cb ON cb.id = bp.benchmark_id
+            JOIN benchmark_catalog cb ON cb.id = bp.benchmark_id
             WHERE cb.parent_benchmark_id IS NOT NULL
               AND cb.parent_benchmark_id != cb.id
               AND NOT EXISTS (
@@ -4347,22 +4434,22 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
                 cb.id AS benchmark_id,
                 (cb.parent_benchmark_id IS NOT NULL
                  AND cb.parent_benchmark_id != cb.id) AS is_slice
-            FROM canonical_benchmarks cb
+            FROM benchmark_catalog cb
         ),
         family_lookup AS (
             -- For non-slice rows, look up family directly. For slice
             -- rows (parent != self), inherit the root's family so
             -- gaia-level-1 lands in the same family as gaia. The
             -- COALESCE picks the slice's parent if set; otherwise the
-            -- benchmark's own id (which family_membership has a
-            -- singleton entry for after _synthesise_singleton_families).
+            -- benchmark's own id (which family_membership_all has a
+            -- singleton entry for).
             SELECT
                 cb.id AS benchmark_id,
                 COALESCE(fm.family_id,         cb.id)                AS family_id,
                 COALESCE(fm.family_display_name,
                          cb.display_name, cb.id)                     AS family_display_name
-            FROM canonical_benchmarks cb
-            LEFT JOIN family_membership fm
+            FROM benchmark_catalog cb
+            LEFT JOIN family_membership_all fm
               ON fm.benchmark_id = CASE
                   WHEN cb.parent_benchmark_id IS NOT NULL
                        AND cb.parent_benchmark_id != cb.id
@@ -4436,7 +4523,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
             cmpb.card_missing_count
 
         FROM composite_benchmark_pairs cbp
-        LEFT JOIN canonical_benchmarks cb         ON cb.id = cbp.benchmark_id
+        LEFT JOIN benchmark_catalog cb         ON cb.id = cbp.benchmark_id
         LEFT JOIN cards_json c                    ON c.benchmark_id = cbp.benchmark_id
         LEFT JOIN card_missing_per_benchmark cmpb ON cmpb.benchmark_id = cbp.benchmark_id
         LEFT JOIN family_lookup fl                ON fl.benchmark_id = cbp.benchmark_id
@@ -4520,7 +4607,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
                 ANY_VALUE(fm.family_display_name) AS family_display_name,
                 ARRAY_AGG(DISTINCT fm.benchmark_id ORDER BY fm.benchmark_id)
                     AS member_benchmark_keys
-            FROM family_membership fm
+            FROM family_membership_all fm
             JOIN used_benchmarks ub ON ub.benchmark_id = fm.benchmark_id
             GROUP BY fm.family_id
         )
@@ -4533,6 +4620,7 @@ def stage_g_materialise_dim_tables(con, snapshot_id: str) -> None:
         ORDER BY family_id
         """
     )
+    con.execute("DROP TABLE family_membership_all")
 
     # Stage G models-dim: precompute the MODEL DEVELOPER name-pattern CASE
     # so the SQL stays readable. See module-scope MODEL_DEVELOPER_NAME_PATTERNS.
@@ -4883,8 +4971,8 @@ def _pooled_value_aggregates_sql(col: str, prefix: str) -> str:
     ):
         parts += [
             f"MEDIAN({col}) FILTER (WHERE {flt}) AS {prefix}_median_{tag}",
-            f"AVG({col}) FILTER (WHERE {flt}) AS {prefix}_mean_{tag}",
-            f"(SUM({col} * n_samples) FILTER (WHERE {flt} AND n_samples IS NOT NULL)"
+            f"{order_free_avg_sql(col, flt)} AS {prefix}_mean_{tag}",
+            f"({order_free_sum_sql(f'{col} * n_samples', flt)}"
             f" / NULLIF(SUM(n_samples) FILTER (WHERE {flt} AND n_samples IS NOT NULL), 0))"
             f" AS {prefix}_wmean_{tag}",
             f"(COUNT(*) FILTER (WHERE {flt}) > 0"
@@ -5055,11 +5143,15 @@ def _ensure_merged_view_inputs(con) -> None:
     """Stage J can run on a connection rebuilt from emitted parquets
     (tests' view-materialise helpers, `--from-stage J` over a pre-fold
     cache) that lacks the Stage A registry tables the fold/merged logic
-    reads. Create empty stand-ins: folds simply don't apply and the
-    merged view degrades to empty rather than raising CatalogException.
+    reads, or the Stage G catalog built from them. Create empty stand-ins:
+    folds simply don't apply and the merged view degrades to empty rather
+    than raising CatalogException.
     """
-    for table in ("benchmark_metric_folds", "canonical_benchmarks"):
-        ddl = ", ".join(f"{c} {t}" for c, t in _DIM_SCHEMAS[table])
+    for table, shape in (
+        ("benchmark_metric_folds", "benchmark_metric_folds"),
+        ("benchmark_catalog", "canonical_benchmarks"),
+    ):
+        ddl = ", ".join(f"{c} {t}" for c, t in _DIM_SCHEMAS[shape])
         con.execute(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
 
 
@@ -5503,7 +5595,8 @@ def stage_j_eval_results_view(
                     FILTER (WHERE cross_party_differing_fields IS NOT NULL)
                                                          AS cross_party_differing_fields,
                 MAX(cross_party_org_count)                  AS cross_party_org_count,
-                ROUND(AVG(completeness_score), 12)       AS triple_avg_completeness
+                ROUND({order_free_avg_sql("completeness_score")}, 12)
+                                                         AS triple_avg_completeness
             FROM tris_levelled
             GROUP BY composite_slug, model_aggregation_key, benchmark_key,
                      metric_key, protocol_condition, judge_condition, split,
@@ -6472,7 +6565,7 @@ def _materialise_slice_parent_rows(
             -- would mix units.
             SELECT id            AS child_benchmark_id,
                    parent_benchmark_id
-            FROM canonical_benchmarks
+            FROM benchmark_catalog
             WHERE parent_benchmark_id IS NOT NULL
               AND parent_benchmark_id <> id
               AND COALESCE(json_extract_string(metadata, '$.role'), '')
@@ -6531,14 +6624,17 @@ def _materialise_slice_parent_rows(
                 -- when every part says how many samples it covers.
                 (COUNT(*) = COUNT(n_samples) AND COALESCE(SUM(n_samples), 0) > 0)
                                           AS _weighted,
-                AVG(score)                AS _score_published_mean,
-                SUM(score * n_samples) / NULLIF(SUM(n_samples), 0)
+                {order_free_avg_sql("score")}
+                                          AS _score_published_mean,
+                {order_free_sum_sql("score * n_samples")} / NULLIF(SUM(n_samples), 0)
                                           AS _score_published_wmean,
-                AVG(score_canonical)      AS _score_canonical_mean,
-                SUM(score_canonical * n_samples) / NULLIF(SUM(n_samples), 0)
+                {order_free_avg_sql("score_canonical")}
+                                          AS _score_canonical_mean,
+                {order_free_sum_sql("score_canonical * n_samples")} / NULLIF(SUM(n_samples), 0)
                                           AS _score_canonical_wmean,
-                AVG(score_normalized)     AS _score_normalized_mean,
-                SUM(score_normalized * n_samples) / NULLIF(SUM(n_samples), 0)
+                {order_free_avg_sql("score_normalized")}
+                                          AS _score_normalized_mean,
+                {order_free_sum_sql("score_normalized * n_samples")} / NULLIF(SUM(n_samples), 0)
                                           AS _score_normalized_wmean,
                 CAST(COUNT(DISTINCT benchmark_id) AS INTEGER) AS children_present,
                 CAST(COUNT(*) AS INTEGER) AS fact_row_count,
@@ -7385,7 +7481,8 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                                                                           AS gap_rate,
                 CAST(SUM(CASE WHEN has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS gap_count,
-                ROUND(AVG(completeness_score), 12)                        AS completeness_avg,
+                ROUND({order_free_avg_sql("completeness_score")}, 12)
+                                                                          AS completeness_avg,
                 list_sort(list_distinct(flatten(
                     list(from_json(derived_tags, '["VARCHAR"]'))
                     FILTER (WHERE derived_tags IS NOT NULL)
@@ -7411,9 +7508,10 @@ def stage_j_models_view(con, snapshot_id: str) -> None:
                 MAX(score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("erv.protocol_condition")}
                 )                                                         AS score_max,
-                ROUND(AVG(score_canonical) FILTER (
-                    WHERE {protocol_exclusion_sql("erv.protocol_condition")}
-                ), 12)                                                    AS score_avg,
+                ROUND({order_free_avg_sql(
+                    "score_canonical",
+                    protocol_exclusion_sql("erv.protocol_condition"),
+                )}, 12)                                                   AS score_avg,
                 CAST(SUM(CASE WHEN is_multi_source THEN 1 ELSE 0 END) AS INTEGER)
                                                                           AS multi_source_groups,
                 CAST(SUM(CASE WHEN first_party_only THEN 1 ELSE 0 END) AS INTEGER)
@@ -7870,7 +7968,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                                pm.metric_id ASC
                        ) AS _rk
                 FROM per_metric pm
-                LEFT JOIN canonical_benchmarks cb ON cb.id = pm.benchmark_id
+                LEFT JOIN benchmark_catalog cb ON cb.id = pm.benchmark_id
                 LEFT JOIN canonical_metrics cmet  ON cmet.id = pm.metric_base_id
             )
             WHERE _rk = 1
@@ -7944,9 +8042,10 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 -- exclusion predicate as FILTER on the score
                 -- aggregates only — NOT a pool-level WHERE, which would
                 -- also change models_count / evaluator_names / gap rates.
-                ROUND(AVG(pt.score_canonical) FILTER (
-                    WHERE {protocol_exclusion_sql("pt.protocol_condition")}
-                ), 12)                                                 AS avg_score,
+                ROUND({order_free_avg_sql(
+                    "pt.score_canonical",
+                    protocol_exclusion_sql("pt.protocol_condition"),
+                )}, 12)                                                AS avg_score,
                 -- The denominator behind that average. `models_count` is
                 -- every model with a headline cell on the primary metric,
                 -- scored or not; AVG silently skips the unscored ones, so a
@@ -7963,9 +8062,10 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 -- conversion and the lower-is-better inversion, so the list
                 -- card and the result rows disagreed: SQuAD read 22.22 on the
                 -- card and 0.33 on the rows, HarmBench 0.26 against 0.74.
-                ROUND(AVG(pt.score_normalized) FILTER (
-                    WHERE {protocol_exclusion_sql("pt.protocol_condition")}
-                ), 12)                                                 AS avg_score_normalized,
+                ROUND({order_free_avg_sql(
+                    "pt.score_normalized",
+                    protocol_exclusion_sql("pt.protocol_condition"),
+                )}, 12)                                                AS avg_score_normalized,
                 MIN(pt.score_canonical) FILTER (
                     WHERE {protocol_exclusion_sql("pt.protocol_condition")}
                 )                                                      AS min_score_seen,
@@ -7991,7 +8091,8 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                                                                        AS gap_rate,
                 CAST(SUM(CASE WHEN pt.has_reproducibility_gap THEN 1 ELSE 0 END) AS INTEGER)
                                                                        AS gap_count,
-                ROUND(AVG(pt.completeness_score), 12)                  AS completeness_avg,
+                ROUND({order_free_avg_sql("pt.completeness_score")}, 12)
+                                                                       AS completeness_avg,
                 CAST(COUNT(*) AS INTEGER)                              AS gprov_total_groups,
                 CAST(SUM(CASE WHEN pt.is_multi_source THEN 1 ELSE 0 END) AS INTEGER)
                                                                        AS multi_source_groups,
@@ -8497,7 +8598,7 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                                               AND sub.benchmark_id  = b.benchmark_id
         -- Drop fact-less parent shells. The benchmarks dim deliberately
         -- includes parent benchmarks that have no own fact rows (so the
-        -- hierarchy graph is complete — see _synthesise_singleton_families
+        -- hierarchy graph is complete — see _build_family_membership_all
         -- and the parent-only DISTINCT branch). But evals_view is the
         -- user-facing eval list: a row that no model has reported on
         -- isn't an eval. Aligning with comparison-index, which is built
@@ -8594,7 +8695,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
                    CAST(NULL AS VARCHAR) AS slice_id,
                    CAST(NULL AS VARCHAR) AS slice_display_name
             FROM eval_results_view r
-            JOIN canonical_benchmarks cb ON cb.id = r.benchmark_id
+            JOIN benchmark_catalog cb ON cb.id = r.benchmark_id
             -- Headline rows only: one observation per (source, model) cell.
             WHERE NOT r.is_slice AND r.score IS NOT NULL AND r.is_headline
         ),
@@ -8611,8 +8712,8 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
                    COALESCE(cbs.display_name, r.benchmark_id)
                        AS slice_display_name
             FROM eval_results_view r
-            JOIN canonical_benchmarks cb ON cb.id = r.parent_benchmark_id
-            LEFT JOIN canonical_benchmarks cbs ON cbs.id = r.benchmark_id
+            JOIN benchmark_catalog cb ON cb.id = r.parent_benchmark_id
+            LEFT JOIN benchmark_catalog cbs ON cbs.id = r.benchmark_id
             WHERE r.is_slice AND r.score IS NOT NULL AND r.is_headline
         ),
         universe AS (
@@ -8661,7 +8762,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
                            ms.metric_id_effective ASC
                    ) AS rk
             FROM metric_stats ms
-            LEFT JOIN canonical_benchmarks cb ON cb.id = ms.benchmark_id
+            LEFT JOIN benchmark_catalog cb ON cb.id = ms.benchmark_id
             LEFT JOIN canonical_metrics cmet  ON cmet.id = ms.metric_base_id
         ),
         default_metric AS (
@@ -8821,7 +8922,7 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
             ml.metrics,
             sll.slices
         FROM universe u
-        LEFT JOIN canonical_benchmarks cb ON cb.id = u.benchmark_id
+        LEFT JOIN benchmark_catalog cb ON cb.id = u.benchmark_id
         LEFT JOIN default_metric dm       ON dm.benchmark_id = u.benchmark_id
         LEFT JOIN canonical_metrics cm    ON cm.id = dm.default_metric_base_id
         LEFT JOIN best b                  ON b.benchmark_id = u.benchmark_id AND b.rk = 1

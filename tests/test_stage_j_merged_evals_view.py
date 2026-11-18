@@ -170,7 +170,7 @@ def _materialise_views(out_dir: Path, mutate=None):
     # fixture parquet predates preferred_metric_id /
     # preferred_metric_llm_judged; pad it like _load_dim does.
     con.execute(
-        "CREATE TABLE canonical_benchmarks AS "
+        "CREATE TABLE benchmark_catalog AS "
         "SELECT id, display_name, "
         "       CAST(parent_benchmark_id AS VARCHAR) AS parent_benchmark_id, "
         "       CAST(NULL AS VARCHAR) AS preferred_metric_id, "
@@ -249,7 +249,7 @@ def test_unresolved_benchmarks_get_no_merged_row(clean_out_dir):
     con = _materialise_views(clean_out_dir)
     stray = con.execute(
         "SELECT count(*) FROM merged_evals_view m "
-        "LEFT JOIN canonical_benchmarks cb ON cb.id = m.benchmark_id "
+        "LEFT JOIN benchmark_catalog cb ON cb.id = m.benchmark_id "
         "WHERE cb.id IS NULL"
     ).fetchone()[0]
     assert stray == 0
@@ -292,7 +292,7 @@ def test_fold_produces_metric_id_effective(tmp_path, monkeypatch):
 def test_registry_preferred_metric_wins(clean_out_dir):
     def mutate(con):
         con.execute(
-            "UPDATE canonical_benchmarks SET preferred_metric_id = 'accuracy' "
+            "UPDATE benchmark_catalog SET preferred_metric_id = 'accuracy' "
             "WHERE id = 'mmlu'"
         )
     con = _materialise_views(clean_out_dir, mutate=mutate)
@@ -365,7 +365,7 @@ def test_default_metric_prefers_distinct_model_coverage(clean_out_dir):
     def mutate_preferred(con):
         mutate(con)
         con.execute(
-            "UPDATE canonical_benchmarks SET preferred_metric_id = 'metric-b' "
+            "UPDATE benchmark_catalog SET preferred_metric_id = 'metric-b' "
             "WHERE id = 'mmlu'"
         )
     con2 = _materialise_views(clean_out_dir, mutate=mutate_preferred)
@@ -411,7 +411,7 @@ def test_a_preferred_metric_with_no_headline_rows_does_not_win(clean_out_dir):
             "('metric-c', 'Metric C', 0, 1, FALSE)"
         )
         con.execute(
-            "UPDATE canonical_benchmarks SET preferred_metric_id = 'metric-c' "
+            "UPDATE benchmark_catalog SET preferred_metric_id = 'metric-c' "
             "WHERE id = 'mmlu'"
         )
 
@@ -611,7 +611,7 @@ def _reparent_mmlu_under_shell(con):
     """Turn mmlu into a slice of a new fact-less shell parent, so the
     shell qualifies as a slice-grain merged page (no top-level data)."""
     con.execute(
-        "INSERT INTO canonical_benchmarks (id, display_name, "
+        "INSERT INTO benchmark_catalog (id, display_name, "
         "preferred_metric_id, preferred_metric_llm_judged) "
         "VALUES ('mmlu-suite', 'MMLU Suite', NULL, NULL)"
     )
@@ -631,7 +631,7 @@ def _reparent_mmlu_under_shell(con):
     # the registry edge behind it — the parent's expected task set, which the
     # rollup requires to be complete before it states a suite number
     con.execute(
-        "UPDATE canonical_benchmarks SET parent_benchmark_id = 'mmlu-suite' "
+        "UPDATE benchmark_catalog SET parent_benchmark_id = 'mmlu-suite' "
         "WHERE id = 'mmlu'"
     )
 
