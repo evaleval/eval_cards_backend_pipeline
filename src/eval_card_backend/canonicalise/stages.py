@@ -422,6 +422,10 @@ _GENERATION_ARGS_ONLY_EXCLUDES: frozenset[str] = frozenset({"generation_args"})
 _TIMESTAMP_AND_GENERATION_ARGS_EXCLUDES: frozenset[str] = (
     _TIMESTAMP_ONLY_EXCLUDES | _GENERATION_ARGS_ONLY_EXCLUDES
 )
+# Rows that share a fact_id share an evaluation_id, so they are copies of
+# one source's record wherever they were ingested: the source_config they
+# sit under does not tell two of them apart.
+_SOURCE_CONFIG_ONLY_EXCLUDES: frozenset[str] = frozenset({"source_config"})
 
 
 def _observation_key_sql(*, exclude: frozenset[str] = frozenset()) -> str:
@@ -1788,6 +1792,37 @@ _INHERITED_FOLD_PREDICATE = """
           )"""
 
 
+class ResultKeyNotUniqueError(RuntimeError):
+    """(source_record_path, result_idx) names more than one result row."""
+
+
+def assert_result_keys_unique(con, table: str, stage: str, top_n: int = 5) -> None:
+    """Refuse a `table` in which (source_record_path, result_idx) names more
+    than one row.
+
+    The pair is how a result row is addressed once two records can share an
+    evaluation_id: Stage C writes slice-promotion overrides by it. Run on
+    `results_exploded` when Stage B has built it, before anything reads the
+    pair, and again on `results_resolved` when Stage D starts, so a resume
+    from an earlier stage's cache or a fan-out in Stage C is refused too."""
+    rows = con.execute(
+        f"""
+        SELECT source_record_path, result_idx, count(*) AS n
+        FROM {table}
+        GROUP BY 1, 2
+        HAVING count(*) > 1
+        ORDER BY n DESC, 1, 2
+        """
+    ).fetchall()
+    if not rows:
+        return
+    shown = "; ".join(f"{path!r}#{idx} x{n}" for path, idx, n in rows[:top_n])
+    raise ResultKeyNotUniqueError(
+        f"{stage}: {len(rows)} (source_record_path, result_idx) key(s) name "
+        f"more than one {table} row: {shown}"
+    )
+
+
 def _log_metric_fold_source_labels(con) -> None:
     """One INFO line per rename rule that fired, listing the source labels it
     swept up and their row counts.
@@ -1901,6 +1936,7 @@ def stage_d_join_dims_and_flatten(
     `include_private` is the processed-extract toggle. Collection curation
     remains active in both modes because aggregate members are public.
     """
+    assert_result_keys_unique(con, "results_resolved", "Stage D")
     # Curated "was the evaluation submitted by the org that ran it" lookup,
     # keyed by evaluation_id. Materialised as a deduped view (an evaluation_id can
     # recur with a consistent value across records; bool_or collapses it to one
@@ -2088,39 +2124,42 @@ def stage_d_join_dims_and_flatten(
                   AND ccm3.org_token = rr.org_token
                   AND ccm3.source_slug = rr._curated_source_slug
         ),
-        judge_typed AS (
-            -- Judge condition, source 1 (D9): the typed `llm_scoring` struct.
-            -- `model_info.id` is required by the vendored EEE schema, so a
-            -- judge that reaches Stage D always has an id — no name fallback.
-            -- Resolve first, THEN dedupe and sort, so two raw spellings of one
-            -- judge collapse to a single canonical entry.
-            SELECT
-                j.fact_id,
-                list_sort(list_distinct(list_transform(
+        judged AS (
+            -- The judges of each row, read off the row itself, so a row
+            -- can only ever carry its own.
+            SELECT j.*,
+                -- Judge condition, source 1 (D9): the typed `llm_scoring`
+                -- struct. `model_info.id` is required by the vendored EEE
+                -- schema, so a judge that reaches Stage D always has an id —
+                -- no name fallback. Resolve first, THEN dedupe and sort, so
+                -- two raw spellings of one judge collapse to a single
+                -- canonical entry.
+                CASE WHEN j.metric_config.llm_scoring IS NOT NULL
+                THEN list_sort(list_distinct(list_transform(
                     list_filter(
                         list_transform(j.metric_config.llm_scoring.judges,
                                        jc -> jc.model_info.id),
                         x -> x IS NOT NULL AND trim(x) <> ''
                     ),
                     x -> COALESCE(resolve_canonical_id(x, 'judge_model', j.source_config), x)
-                ))) AS judges
-            FROM joined j
-            WHERE j.metric_config.llm_scoring IS NOT NULL
-        ),
-        judge_fallback AS (
-            -- Judge condition, source 2 (D9): OpenEval's stringified
-            -- `metric_models_json`. The registry flag is about the
-            -- benchmark's PREFERRED metric only, so the gate is the row's
-            -- effective metric being that metric AND the flag being TRUE.
-            -- Anything else — an encoder backbone (CNN/DailyMail's DeBERTa),
-            -- a keyword detector published beside a judged channel — never
-            -- reaches the model resolver and never pollutes its miss
-            -- counters. Malformed JSON yields no condition and is counted
-            -- (see the diagnostic below), never fatal; `[]` is no judges.
-            SELECT
-                j.fact_id,
+                ))) END AS _judges_typed,
+                -- Judge condition, source 2 (D9): OpenEval's stringified
+                -- `metric_models_json`. The registry flag is about the
+                -- benchmark's PREFERRED metric only, so the gate is the
+                -- row's effective metric being that metric AND the flag
+                -- being TRUE. Anything else — an encoder backbone
+                -- (CNN/DailyMail's DeBERTa), a keyword detector published
+                -- beside a judged channel — never reaches the model
+                -- resolver and never pollutes its miss counters. Malformed
+                -- JSON yields no condition and is counted (see the
+                -- diagnostic below), never fatal; `[]` is no judges.
                 CASE
-                    WHEN {json_array_guard_sql(_MODELS_JSON)}
+                    WHEN ({_judge_gate_sql(
+                              "j._cb_preferred_metric_llm_judged",
+                              "j._cb_preferred_metric_id",
+                              "j.metric_id_effective", "j.metric_id")})
+                         AND {_MODELS_JSON} IS NOT NULL
+                         AND {json_array_guard_sql(_MODELS_JSON)}
                     THEN list_sort(list_distinct(list_transform(
                         list_filter(
                             json_extract_string({_MODELS_JSON}, '$[*]'),
@@ -2128,14 +2167,8 @@ def stage_d_join_dims_and_flatten(
                         ),
                         x -> COALESCE(resolve_canonical_id(x, 'judge_model', j.source_config), x)
                     )))
-                    ELSE NULL
-                END AS judges
+                END AS _judges_fallback
             FROM joined j
-            WHERE {_judge_gate_sql(
-                       "j._cb_preferred_metric_llm_judged",
-                       "j._cb_preferred_metric_id",
-                       "j.metric_id_effective", "j.metric_id")}
-              AND {_MODELS_JSON} IS NOT NULL
         ),
         flat AS (
         SELECT
@@ -2482,9 +2515,9 @@ def stage_d_join_dims_and_flatten(
             -- Source 1 (typed llm_scoring) outranks source 2
             -- (metric_models_json). Orthogonal to protocol_condition.
             CASE
-                WHEN len(COALESCE(jt.judges, jf.judges)) > 0
+                WHEN len(COALESCE(j._judges_typed, j._judges_fallback)) > 0
                 THEN CAST(to_json({{
-                    'judges': COALESCE(jt.judges, jf.judges),
+                    'judges': COALESCE(j._judges_typed, j._judges_fallback),
                     'label':  metric_source_label
                 }}) AS VARCHAR)
                 ELSE NULL
@@ -2496,14 +2529,12 @@ def stage_d_join_dims_and_flatten(
             j._eff_max_score,
             j._scale_factor,
             j._scale_offset
-        FROM joined j
+        FROM judged j
         LEFT JOIN is_verified_evaluator ev ON ev.evaluation_id = j.evaluation_id
         LEFT JOIN collection_merge_map cmm ON cmm.raw_key = j._collection_raw_key
         LEFT JOIN collection_protocol_map cpm
                ON cpm.evaluation_id = j.evaluation_id
               AND cpm.result_idx    = j.result_idx
-        LEFT JOIN judge_typed    jt ON jt.fact_id = j.fact_id
-        LEFT JOIN judge_fallback jf ON jf.fact_id = j.fact_id
         ),
         part_splits AS (
             -- The split a record's rows state for one benchmark: the
@@ -3062,8 +3093,9 @@ def stage_e_per_row_signals(
        legitimately include `-1` (e.g. a delta or correlation metric)
        pass through untouched.
     3. **fact_id dedup** — multiple records may collide on
-       `(snapshot_id, fact_id)`; keep the latest by `retrieved_timestamp`,
-       tie-breaking on `evaluation_id` for determinism.
+       `(snapshot_id, fact_id)`. Only the latest retrieval stays; within
+       it, rows with the same observation key collapse to one and rows
+       that differ are all kept, each under its own derived `fact_id`.
     4. **observation-content dedup** — a source may emit a fresh record id
        for the same observation on every scrape.  Collapse only rows whose
        source/reporter, raw model, benchmark/metric identity, value,
@@ -3216,58 +3248,62 @@ def stage_e_per_row_signals(
                    instance_checksum, instance_hash_algorithm, instance_rows
             FROM _signaled_rows
         ),
-        fact_id_ranked AS (
-            -- Dedup on (snapshot_id, fact_id): same fact_id appearing more
-            -- than once is real upstream (multi-run reports of one eval);
-            -- keep the latest by retrieved_timestamp, break ties on
-            -- evaluation_id then evaluation_result_id so the choice is
-            -- byte-stable across re-runs.
-            --
-            -- The evaluation_result_id + source_record_path tiebreaks are
-            -- load-bearing: distinct EEE source records can collide on
-            -- (evaluation_id, result_idx) — hence on fact_id, which is
-            -- sha256(evaluation_id:result_idx) — while carrying identical
-            -- retrieved_timestamp AND evaluation_id. Two cases seen in the
-            -- corpus:
-            --   • LiveBench: two records share one evaluation_id, each with
-            --     its own evaluation_results[] array, distinguished by
-            --     evaluation_result_id.
-            --   • HF-OpenLLM: two near-duplicate record uploads carry the
-            --     SAME evaluation_result_id (a synthesised
-            --     <eid>#<bench>#<metric> form) and the same timestamp, with
-            --     slightly different scores — tied even on
-            --     evaluation_result_id.
-            -- Without a fully-disambiguating final key the surviving row is
-            -- arbitrary and varies run-to-run under multi-threaded scan
-            -- order. source_record_path is the repo-relative path of the
-            -- EEE source JSON (one file per record), unique per physical
-            -- record, so it completes the total order. All tiebreaks sort
-            -- after retrieved_timestamp, so latest-by-retrieved_timestamp
-            -- semantics are unchanged — only genuine ties are pinned.
-            -- CASE pins NULL fact_ids to rank 1 — they can't collide and
-            -- shouldn't be silently merged by a NULL-collapsing PARTITION BY.
+        latest_retrieval AS (
+            -- fact_id is sha256(evaluation_id:result_idx), and EEE writes
+            -- evaluation_id as <source>/<model slug>/<retrieved_timestamp>.
+            -- Rows sharing a fact_id are therefore one of two things:
+            --   * one record scraped again, which states a later
+            --     retrieval; the latest retrieval supersedes the rest;
+            --   * distinct records of one retrieval whose slug leaves out
+            --     what tells them apart (LiveBench reasoning effort,
+            --     HF-OpenLLM precision, a result set split over two files).
+            -- Only the rows of the latest retrieval stay candidates.
+            -- NULL fact_ids cannot collide and are always candidates.
             SELECT *,
-                CASE WHEN fact_id IS NULL THEN 1
-                     ELSE ROW_NUMBER() OVER (
-                         PARTITION BY fact_id
-                         ORDER BY _retrieved_at DESC NULLS LAST,
-                                  retrieved_timestamp DESC NULLS LAST,
-                                  evaluation_id DESC,
-                                  evaluation_result_id DESC,
-                                  source_record_path DESC
-                     )
-                END AS _dedup_rank
+                fact_id IS NULL OR RANK() OVER (
+                    PARTITION BY fact_id
+                    ORDER BY _retrieved_at DESC NULLS LAST,
+                             retrieved_timestamp DESC NULLS LAST
+                ) = 1 AS _in_latest_retrieval,
+                {_observation_key_sql()} AS _observation_key,
+                -- Only a row whose fact_id repeats is ever compared on this
+                -- key; a row alone under its fact_id is alone in its
+                -- partition below whatever the key says, so it carries NULL
+                -- and the second struct is not built for it.
+                CASE WHEN fact_id IS NOT NULL
+                          AND COUNT(*) OVER (PARTITION BY fact_id) > 1
+                     THEN {_observation_key_sql(exclude=_SOURCE_CONFIG_ONLY_EXCLUDES)}
+                END AS _record_key
             FROM _e_narrow
         ),
+        fact_id_ranked AS (
+            -- Among the candidates of one fact_id, rows with the same
+            -- observation key are one record uploaded twice and one is
+            -- kept; rows that differ are distinct results and all are
+            -- kept. The key leaves out source_config here: one record
+            -- ingested under two configs is still one record.
+            -- source_record_path is unique per EEE record file, so
+            -- it completes the total order and the pick is byte-stable.
+            SELECT *,
+                CASE WHEN fact_id IS NULL THEN TRUE
+                     WHEN NOT _in_latest_retrieval THEN FALSE
+                     ELSE ROW_NUMBER() OVER (
+                         PARTITION BY fact_id, _in_latest_retrieval,
+                                      _record_key
+                         ORDER BY evaluation_id DESC,
+                                  evaluation_result_id DESC,
+                                  source_record_path DESC
+                     ) = 1
+                END AS kept_by_fact_id_pass
+            FROM latest_retrieval
+        ),
         content_keyed AS (
-            -- Keyed before the window so it carries the struct and three
-            -- hashes rather than every raw key column. The hashes are
-            -- diagnostics for the residual counts; the pass itself
-            -- partitions on the exact struct.
+            -- Carries the struct and three hashes rather than every raw
+            -- key column. The hashes are diagnostics for the residual
+            -- counts; the pass itself partitions on the exact struct.
             SELECT _rid, source_config, _retrieved_at, retrieved_timestamp,
                    evaluation_id, evaluation_result_id, source_record_path,
-                   fact_id, _dedup_rank = 1 AS kept_by_fact_id_pass,
-                   {_observation_key_sql()} AS _observation_key,
+                   fact_id, kept_by_fact_id_pass, _observation_key,
                    hash({_observation_key_sql(exclude=_TIMESTAMP_ONLY_EXCLUDES)})
                        AS hash_no_timestamp,
                    hash({_observation_key_sql(exclude=_GENERATION_ARGS_ONLY_EXCLUDES)})
@@ -3281,6 +3317,7 @@ def stage_e_per_row_signals(
             -- among themselves, so survivors see exactly the fact-id pass
             -- output and every row keeps a decision in one streamed pass.
             SELECT _rid, source_config, kept_by_fact_id_pass,
+                   fact_id, source_record_path, _observation_key,
                    hash_no_timestamp, hash_no_generation_args, hash_no_both,
                    ROW_NUMBER() OVER (
                        PARTITION BY kept_by_fact_id_pass, _observation_key
@@ -3292,12 +3329,29 @@ def stage_e_per_row_signals(
                                 fact_id DESC NULLS LAST
                    ) AS _content_dedup_rank
             FROM content_keyed
+        ),
+        decided AS (
+            SELECT *,
+                   kept_by_fact_id_pass AND _content_dedup_rank = 1
+                       AS kept_by_content_pass
+            FROM content_ranked
         )
         SELECT _rid, source_config, kept_by_fact_id_pass,
-               kept_by_fact_id_pass AND _content_dedup_rank = 1
-                   AS kept_by_content_pass,
+               kept_by_content_pass,
+               fact_id, source_record_path,
+               -- Survivors that still share a fact_id are distinct results,
+               -- and fact_id must stay unique per fact row. Each takes an
+               -- id derived from the shared one and its own observation
+               -- key. A fact_id held by one survivor is left as it is.
+               CASE WHEN kept_by_content_pass AND fact_id IS NOT NULL
+                         AND count(*) FILTER (WHERE kept_by_content_pass)
+                                 OVER (PARTITION BY fact_id) > 1
+                    THEN substr(sha256(
+                        fact_id || ':' || sha256(CAST(_observation_key AS VARCHAR))
+                    ), 1, 16)
+               END AS distinct_fact_id,
                hash_no_timestamp, hash_no_generation_args, hash_no_both
-        FROM content_ranked
+        FROM decided
         """
     )
     con.execute(
@@ -3340,6 +3394,18 @@ def stage_e_per_row_signals(
         FROM staged
         LEFT JOIN decided USING (source_config)
         ORDER BY source_config
+        """
+    )
+    # _rid is the rowid the decision was made on, so it names exactly the
+    # row that takes the derived id. Updating a plain VARCHAR column is in
+    # place and leaves rowids as they are for the copy below.
+    con.execute(
+        """
+        UPDATE _signaled_rows AS s
+        SET fact_id = d.distinct_fact_id
+        FROM _e_decisions d
+        WHERE d.distinct_fact_id IS NOT NULL
+          AND s.rowid = d._rid
         """
     )
     final_cols = explicit_projection_sql(
@@ -3460,6 +3526,19 @@ def _assert_stage_e_conservation(
             "stage_e_dedup_stats boundaries are not nonnegative with staging "
             ">= after_fact_id_pass >= after_content_pass for source_config(s) "
             + ", ".join(repr(c) for c in bad_configs)
+        )
+    n_repeated_fact_ids = con.execute(
+        """
+        SELECT count(*) FROM (
+            SELECT fact_id FROM fact_results_signaled
+            WHERE fact_id IS NOT NULL GROUP BY 1 HAVING count(*) > 1
+        )
+        """
+    ).fetchone()[0]
+    if n_repeated_fact_ids:
+        failures.append(
+            f"{n_repeated_fact_ids} fact_id(s) name more than one row of "
+            "fact_results_signaled"
         )
     if failures:
         raise StageEInvariantError(

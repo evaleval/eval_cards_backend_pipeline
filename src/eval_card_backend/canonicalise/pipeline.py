@@ -565,6 +565,8 @@ def run(
                     settings.eee_private_allow_zero_members
                 ),
             )
+            # After the adapters, so the rows they inject are checked too.
+            stages.assert_result_keys_unique(con, "results_exploded", "Stage B")
         elif letter == "C":
             log.info("Stage C: resolving identities …")
             stages.stage_c_resolve_identities(con)
