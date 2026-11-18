@@ -18,6 +18,8 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
         resolve_strategy_py,
         resolve_leaf_id_py,
         resolve_inference_platform_py,
+        resolve_reasoning_effort_py,
+        resolve_reasoning_tokens_py,
         resolve_resolution_source_py,
         resolve_resolution_granularity_py,
         resolve_structured_metric_id_py,
@@ -62,6 +64,16 @@ def register_udfs(con, resolver, metric_catch_all_ids: frozenset = frozenset()) 
     con.create_function(
         "resolve_inference_platform", resolve_inference_platform_py,
         ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    con.create_function(
+        "resolve_reasoning_effort", resolve_reasoning_effort_py,
+        ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR",
+        null_handling="special",
+    )
+    con.create_function(
+        "resolve_reasoning_tokens", resolve_reasoning_tokens_py,
+        ["VARCHAR", "VARCHAR", "VARCHAR"], "BIGINT",
         null_handling="special",
     )
     con.create_function(

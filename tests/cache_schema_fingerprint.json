@@ -1,5 +1,5 @@
 {
-  "cache_schema_version": 23,
+  "cache_schema_version": 25,
   "tables": {
     "aliases": [
       ["raw_value", "VARCHAR"],
@@ -960,6 +960,8 @@
       ["model_id", "VARCHAR"],
       ["model_leaf_id", "VARCHAR"],
       ["inference_platform", "VARCHAR"],
+      ["model_reasoning_effort", "VARCHAR"],
+      ["model_reasoning_tokens", "BIGINT"],
       ["resolution_source", "VARCHAR"],
       ["resolution_granularity", "VARCHAR"],
       ["benchmark_id", "VARCHAR"],

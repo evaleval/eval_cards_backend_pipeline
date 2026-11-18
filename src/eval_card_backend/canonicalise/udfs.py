@@ -243,6 +243,8 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
         return _py
 
     resolve_inference_platform_py = _resolve_field("inference_platform")
+    resolve_reasoning_effort_py = _resolve_field("reasoning_effort")
+    resolve_reasoning_tokens_py = _resolve_field("reasoning_tokens")
     resolve_resolution_source_py = _resolve_field("resolution_source")
     resolve_resolution_granularity_py = _resolve_field("resolution_granularity")
 
@@ -453,6 +455,8 @@ def make_resolver_udfs(resolver, metric_catch_all_ids: frozenset = frozenset()):
         resolve_strategy_py,
         resolve_leaf_id_py,
         resolve_inference_platform_py,
+        resolve_reasoning_effort_py,
+        resolve_reasoning_tokens_py,
         resolve_resolution_source_py,
         resolve_resolution_granularity_py,
         resolve_structured_metric_id_py,
