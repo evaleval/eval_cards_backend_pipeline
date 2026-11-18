@@ -67,6 +67,7 @@ def _models() -> pd.DataFrame:
 def test_load_resolver_includes_canonical_enrichment(tmp_path, layout):
     _write_table(tmp_path, "aliases", _aliases(), layout)
     _write_table(tmp_path, "canonical_models", _models(), layout)
+    _write_table(tmp_path, "canonical_inference_platforms", _platforms(), layout)
 
     result = registry.load_resolver(tmp_path).resolve(
         "acme/Widget-7B-Instruct", "model"
@@ -82,6 +83,7 @@ def test_load_resolver_preserves_curated_alias_over_hf_shaped_raw(tmp_path):
     """Producer wiring must not replace a registered id with a bare HF hit."""
     _write_table(tmp_path, "aliases", _aliases(), "parts")
     _write_table(tmp_path, "canonical_models", _models(), "parts")
+    _write_table(tmp_path, "canonical_inference_platforms", _platforms(), "parts")
 
     result = registry.load_resolver(tmp_path).resolve(
         "acme/Widget-7B-Instruct", "model"
@@ -95,6 +97,46 @@ def test_load_resolver_fails_closed_without_canonical_models(tmp_path):
     _write_table(tmp_path, "aliases", _aliases(), "flat")
 
     with pytest.raises(FileNotFoundError, match="canonical_models"):
+        registry.load_resolver(tmp_path)
+
+
+def _platforms() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "id": "snapshot-together",
+                "display_name": "Together AI",
+                "kind": "inference_platform",
+                "aliases": json.dumps(["Together", "together/"]),
+            }
+        ]
+    )
+
+
+@pytest.mark.parametrize("layout", ["flat", "parts"])
+def test_load_resolver_attributes_a_host_token_from_the_snapshot(tmp_path, layout):
+    """The platform id comes from the snapshot's own table, so it does not
+    depend on how the resolver package is installed."""
+    _write_table(tmp_path, "aliases", _aliases(), layout)
+    _write_table(tmp_path, "canonical_models", _models(), layout)
+    _write_table(tmp_path, "canonical_inference_platforms", _platforms(), layout)
+
+    result = registry.load_resolver(tmp_path).resolve(
+        "together/acme/Widget-7B-Instruct", "model"
+    )
+
+    assert result.canonical_id == "acme/widget-7b-instruct"
+    assert result.inference_platform == "snapshot-together"
+
+
+@pytest.mark.parametrize("platforms", [None, _platforms().assign(aliases="[]")])
+def test_load_resolver_fails_closed_without_host_tokens(tmp_path, platforms):
+    _write_table(tmp_path, "aliases", _aliases(), "flat")
+    _write_table(tmp_path, "canonical_models", _models(), "flat")
+    if platforms is not None:
+        _write_table(tmp_path, "canonical_inference_platforms", platforms, "flat")
+
+    with pytest.raises(ValueError, match="canonical_inference_platforms"):
         registry.load_resolver(tmp_path)
 
 

@@ -505,6 +505,16 @@ def write_registry_fixtures():
          "created_at": "", "updated_at": ""},
     ]).to_parquet(REG / "eval_harnesses.parquet")
 
+    # canonical_inference_platforms — the resolver reads its host-token map
+    # from this table and refuses a snapshot without one.
+    pd.DataFrame([
+        {"id": "togetherai", "display_name": "Together AI",
+         "kind": "inference_platform",
+         "aliases": json.dumps(["Together AI", "together/", "-together"]),
+         "canonical_org": None, "variant_of": None,
+         "homepage": "https://docs.together.ai", "created_at": "", "updated_at": ""},
+    ]).to_parquet(REG / "canonical_inference_platforms.parquet")
+
 
 def main():
     write_eee_fixtures()
