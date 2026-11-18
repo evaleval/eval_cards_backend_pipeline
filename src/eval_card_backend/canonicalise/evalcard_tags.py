@@ -67,26 +67,20 @@ def _normalise_tight(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
-# Module-level lookup caches, built lazily.
-_loose_index: dict[str, list[str]] | None = None
-_tight_index: dict[str, list[str]] | None = None
-_raw_tags: dict[str, list[str]] | None = None
-
-
-def _ensure_loaded() -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]]]:
-    global _loose_index, _tight_index, _raw_tags
-    if _loose_index is not None:
-        return _loose_index, _tight_index, _raw_tags  # type: ignore[return-value]
+def _load_indexes() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     raw = json.loads(TAGS_PATH.read_text(encoding="utf-8"))
-    _raw_tags = raw
-    _loose_index = {}
-    _tight_index = {}
+    loose: dict[str, list[str]] = {}
+    tight: dict[str, list[str]] = {}
     for name, tags in raw.items():
-        loose_key = _normalise_loose(name)
-        tight_key = _normalise_tight(name)
-        _loose_index.setdefault(loose_key, tags)
-        _tight_index.setdefault(tight_key, tags)
-    return _loose_index, _tight_index, _raw_tags
+        loose.setdefault(_normalise_loose(name), tags)
+        tight.setdefault(_normalise_tight(name), tags)
+    return loose, tight
+
+
+# Built at import and never mutated. DuckDB calls the tag UDF from several
+# worker threads at once, so indexes filled on first call are visible to the
+# other threads while they are still empty.
+_LOOSE_INDEX, _TIGHT_INDEX = _load_indexes()
 
 
 def resolve_benchmark_tags(
@@ -103,7 +97,7 @@ def resolve_benchmark_tags(
     5. Fallback: rule-based regex
     6. Ultimate fallback: ["general"]
     """
-    loose_idx, tight_idx, _ = _ensure_loaded()
+    loose_idx, tight_idx = _LOOSE_INDEX, _TIGHT_INDEX
 
     # Pass 1: loose match
     for candidate in (display_name, key):
