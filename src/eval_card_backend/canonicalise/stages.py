@@ -1621,6 +1621,12 @@ def stage_c_resolve_identities(con) -> None:
             -- carries the serving platform / how this id was minted / what
             -- granularity it resolved at, surfaced per warehouse row.
             resolve_inference_platform(_model_raw,     'model', source_config) AS inference_platform,
+            -- The effort tier and thinking-token budget a source welds onto
+            -- the model name (`o1-2024-12-17-low`, `…-thinking-16k`). The
+            -- resolver reads them off the raw id; Stage D records them as
+            -- the row's protocol point.
+            resolve_reasoning_effort(_model_raw,       'model', source_config) AS model_reasoning_effort,
+            resolve_reasoning_tokens(_model_raw,       'model', source_config) AS model_reasoning_tokens,
             resolve_resolution_source(_model_raw,      'model', source_config) AS resolution_source,
             resolve_resolution_granularity(_model_raw, 'model', source_config) AS resolution_granularity,
             COALESCE(_benchmark_id_structured,
@@ -2506,8 +2512,30 @@ def stage_d_join_dims_and_flatten(
             -- when declared; every row carries a non-NULL collection_id.
             COALESCE(cmm.collection_id, j._collection_raw_key)                           AS collection_id,
             -- Protocol point: canonical sorted-key JSON for
-            -- collection-adapter synthetic rows, NULL for ordinary rows.
-            cpm.protocol_condition                                                       AS protocol_condition,
+            -- collection-adapter synthetic rows.
+            -- An ordinary row whose model name states a reasoning-effort
+            -- tier or a thinking-token budget is a run under that
+            -- condition, in the same canonical form (keys sorted, absent
+            -- keys left out).
+            COALESCE(
+                cpm.protocol_condition,
+                CASE
+                    WHEN j.model_reasoning_effort IS NOT NULL
+                     AND j.model_reasoning_tokens IS NOT NULL
+                    THEN CAST(json_object(
+                        'reasoning_effort', j.model_reasoning_effort,
+                        'reasoning_tokens', j.model_reasoning_tokens
+                    ) AS VARCHAR)
+                    WHEN j.model_reasoning_effort IS NOT NULL
+                    THEN CAST(json_object(
+                        'reasoning_effort', j.model_reasoning_effort
+                    ) AS VARCHAR)
+                    WHEN j.model_reasoning_tokens IS NOT NULL
+                    THEN CAST(json_object(
+                        'reasoning_tokens', j.model_reasoning_tokens
+                    ) AS VARCHAR)
+                END
+            )                                                                            AS protocol_condition,
 
             -- LLM-judge identity for this published number (D2): canonical
             -- JSON with a fixed key order and the judge list sorted and
