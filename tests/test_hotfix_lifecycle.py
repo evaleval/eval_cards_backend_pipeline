@@ -1,6 +1,7 @@
 """Hotfix lifecycle gate.
 
-Data hotfixes live in three designated modules. Every public function there
+Data hotfixes live in the designated modules: three that hold many, and one
+module per fix under `datafix/`. Every public function there
 is a hotfix unless NOT_HOTFIXES names it as plumbing, and a hotfix carries
 its lifecycle annotation in its own docstring and nowhere else: a
 `TODO(upstream):` line naming the upstream defect and a `Remove when:` line
@@ -48,6 +49,7 @@ HOTFIX_MODULES = {
     "eval_card_backend.canonicalise.resolution_hotfixes": PACKAGE / "canonicalise" / "resolution_hotfixes.py",
     "eval_card_backend.canonicalise.hierarchy_hotfixes": PACKAGE / "canonicalise" / "hierarchy_hotfixes.py",
     "eval_card_backend.metric_meta_hotfix": PACKAGE / "metric_meta_hotfix.py",
+    "eval_card_backend.datafix.invented_max_attempts": PACKAGE / "datafix" / "invented_max_attempts.py",
 }
 
 UPSTREAM_MARK = "TODO(upstream):"
@@ -60,6 +62,8 @@ NOT_HOTFIXES = frozenset({
     # Provenance-counter plumbing that pipeline.py calls around a bake.
     "eval_card_backend.metric_meta_hotfix:reset_provenance_counter",
     "eval_card_backend.metric_meta_hotfix:log_metric_meta_summary",
+    # The checksum of the rule's constants that the datafix registry reports.
+    "eval_card_backend.datafix.invented_max_attempts:evidence_sha256",
 })
 
 # `module:symbol` -> hash of the assignment's AST, for every override table
