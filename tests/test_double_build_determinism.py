@@ -23,6 +23,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import duckdb
@@ -55,6 +58,24 @@ def test_duckdb_thread_count_follows_the_environment(monkeypatch):
         assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 1
     finally:
         pipeline._close_duckdb(con, db_dir)
+
+
+def test_pipeline_connection_ignores_the_machine_time_zone():
+    """The bake's DuckDB session is UTC on a machine in any zone, so SQL
+    that reads the session zone gives the same answer everywhere. DuckDB
+    reads `TZ` once per process, hence the child process."""
+    probe = (
+        "from eval_card_backend.canonicalise import pipeline\n"
+        "con, db_dir = pipeline._connect_duckdb()\n"
+        "print(con.execute(\"SELECT CAST(to_timestamp(0) AS TIMESTAMP)\").fetchone()[0])\n"
+        "pipeline._close_duckdb(con, db_dir)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        env={**os.environ, "TZ": "Asia/Kolkata"},
+        capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == "1970-01-01 00:00:00"
 
 
 def _output_files(out_dir: Path) -> dict[str, Path]:
