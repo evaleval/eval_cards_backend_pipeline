@@ -517,7 +517,7 @@ def dedup_by_config_totals(
 # Neither is the same as inventing a total: whole observations always win when
 # the cell has any, so a source's own figure is never diluted by the rows
 # underneath it, and a complete registry task set still produces a mean
-# (`_materialise_slice_parent_rows`) rather than a pool.
+# (`_build_slice_parent_candidates`) rather than a pool.
 AGGREGATE_LESS_CELL_LEVEL = "pooled_parts"
 
 
@@ -5041,6 +5041,45 @@ FACT_RESULTS_SORT_KEY = (
 )
 
 
+def _page_metric_order_sql(*, base_metric: str, preferred_metric: str,
+                           metadata: str, models: str, rows: str,
+                           metric: str) -> str:
+    """ORDER BY terms that put a page's default metric first.
+
+    The registry's preferred metric, then a metric that measures the task
+    ahead of one that only describes the run (`metadata.role = diagnostic`),
+    then widest distinct-model coverage, most rows, metric id. One definition,
+    because the page's default metric and the metric a model's headline run
+    condition is chosen on have to be the same metric."""
+    return (
+        f"COALESCE({base_metric} = {preferred_metric}, FALSE) DESC, "
+        f"{_diagnostic_role_sql(metadata)} ASC, "
+        f"{models} DESC, {rows} DESC, {metric} ASC"
+    )
+
+
+def _arm_order_sql(alias: str, first: str) -> str:
+    """ORDER BY terms that rank a model's protocol arms over `_erv_page_arms`
+    rows, with `first` (the caller's own leading term) slotted in after the
+    one rule nothing overrides.
+
+    An arm whose feedback could not be read sorts after a known-clean one,
+    whatever else recommends it. Then `first`. Then the best-scoring arm, and
+    the condition's name so the order is total over arms. Answer-feedback
+    arms never reach this order: `_erv_page_arms` leaves them out, and it
+    never holds a reported and a derived row for one cell, so no term here
+    chooses between the two. One definition, because the run condition and
+    the headline row have to rank arms the same way or the run condition
+    names a row that does not win."""
+    return (
+        f"CASE WHEN COALESCE(json_extract_string({alias}.protocol_condition, "
+        f"'$.feedback'), 'none') = 'unknown' THEN 1 ELSE 0 END ASC, "
+        f"{first}, "
+        f"{alias}._arm_best DESC NULLS LAST, "
+        f"COALESCE({alias}.protocol_condition, '') ASC"
+    )
+
+
 def _diagnostic_role_sql(metadata_expr: str) -> str:
     """1 when the registry marks this metric's role `diagnostic`, else 0.
 
@@ -5471,7 +5510,7 @@ def stage_j_eval_results_view(
             -- With no whole at all, the parts can still make one, but only
             -- when the registry says what the benchmark consists of and every
             -- one of those atomic children has a value here — then the suite
-            -- value is their mean (`_materialise_slice_parent_rows`).
+            -- value is their mean (`_build_slice_parent_candidates`).
             -- Otherwise the rows pool as the pipeline always pooled them,
             -- labelled `pooled_parts` so the page says the number is a
             -- pooling of parts rather than anything the source published, and
@@ -5844,145 +5883,13 @@ def stage_j_eval_results_view(
 
     _log_cells_without_aggregate(con)
 
-    # Headline mapping: exactly one row per (composite, benchmark,
-    # metric_key, model) is the page's summary reading, chosen across BOTH
-    # condition axes and materialised at fact grain so every direct-fact
-    # consumer (subtasks, hierarchy slices, collection context, benchmark
-    # dominant conversion, peer ranks) reads the same pick instead of
-    # re-deriving it. Computed after condition-grain aggregation and before
-    # ranking; non-headline rows stay in the view, unranked.
+    # The view's rows for the cells the sources reported, complete except for
+    # the headline flag and the rank it gates. Those two wait for the headline
+    # pick, and the pick reads the suite rows derived from these rows, so the
+    # order is: cells, derived suite rows, one headline pick over both, view.
     con.execute(
         f"""
-        CREATE OR REPLACE TABLE fact_headline AS
-        WITH eligible AS (
-            -- Answer-feedback protocol arms are never headline (the
-            -- exclusion the ranking pool has always applied). Unscored rows
-            -- stay in: a cell whose only rows are unscored still needs one
-            -- representative row so coverage counts keep seeing it. Scored
-            -- rows outrank unscored ones in the pick below, so the choice
-            -- among scored rows is unaffected.
-            SELECT
-                composite_slug, benchmark_key, metric_key,
-                model_aggregation_key, protocol_condition, judge_condition,
-                split,
-                rep_score, rep_lower_is_better, scale_conversion, rep_fact_id,
-                -- The arm contest below is decided by comparing scores, so
-                -- it is decided on the canonical scale. `rep_score` keeps its
-                -- job of saying WHETHER an arm was scored at all — a row
-                -- whose scale could not be placed (`flagged`) still counts as
-                -- read, it just cannot be ranked.
-                _score_canonical,
-                -- 0 for an undisclosed judge. Only the panel/non-panel
-                -- split is ordered on (see the pick below); a single
-                -- disclosed judge and an undisclosed row tie here.
-                COALESCE(json_array_length(
-                    json_extract(judge_condition, '$.judges')), 0) AS _judge_n,
-                -- The judges alone, without the source's label for them. Two
-                -- labels over one judge set are one judge's coverage of the
-                -- page, not two; counting the label with it lets a raw
-                -- channel outvote the source's own rescaled copy of itself.
-                CAST(json_extract(judge_condition, '$.judges') AS VARCHAR)
-                    AS _judge_set
-            FROM _erv_tri
-            WHERE {protocol_exclusion_sql("protocol_condition")}
-        ),
-        coverage AS (
-            -- How many distinct models each judge SET has a score for on
-            -- this page.
-            SELECT composite_slug, benchmark_key, metric_key, _judge_set,
-                   CAST(COUNT(DISTINCT model_aggregation_key) AS INTEGER)
-                       AS _judge_models
-            FROM eligible
-            WHERE rep_score IS NOT NULL
-            GROUP BY 1, 2, 3, 4
-        ),
-        armed AS (
-            SELECT e.*, c._judge_models,
-                -- The protocol axis is settled per ARM, not per row: the
-                -- existing representative rule ranks a model's protocol
-                -- points by score, and the judge rules then choose inside
-                -- the winning arm. Comparing raw rows would let the
-                -- highest-scoring judge silently win the protocol contest.
-                MAX(CASE WHEN COALESCE(e.rep_lower_is_better, FALSE)
-                         THEN -e._score_canonical ELSE e._score_canonical END) OVER (
-                    PARTITION BY e.composite_slug, e.benchmark_key,
-                                 e.metric_key, e.model_aggregation_key,
-                                 e.protocol_condition
-                ) AS _arm_best,
-                -- an arm nobody scored can still be a cell's only arm
-                CASE WHEN e.rep_score IS NULL THEN 1 ELSE 0 END AS _unscored
-            FROM eligible e
-            LEFT JOIN coverage c
-                   ON c.composite_slug   = e.composite_slug
-                  AND c.benchmark_key    = e.benchmark_key
-                  AND c.metric_key       = e.metric_key
-                  AND c._judge_set       IS NOT DISTINCT FROM e._judge_set
-        ),
-        picked AS (
-            SELECT *,
-                ROW_NUMBER() OVER (
-                    PARTITION BY composite_slug, benchmark_key, metric_key,
-                                 model_aggregation_key
-                    ORDER BY
-                        -- (0) a scored row always represents the cell
-                        _unscored ASC,
-                        -- (1) protocol axis, existing representative rule:
-                        -- an arm we could not read sorts after a known-clean
-                        -- one, then the best-scoring arm wins.
-                        CASE WHEN COALESCE(json_extract_string(
-                                 protocol_condition, '$.feedback'), 'none')
-                             = 'unknown' THEN 1 ELSE 0 END ASC,
-                        _arm_best DESC NULLS LAST,
-                        COALESCE(protocol_condition, '') ASC,
-                        -- (2) judge cardinality is a preference for PANELS
-                        -- only: a disclosed panel beats its members. A single
-                        -- disclosed judge and an undisclosed condition are
-                        -- equal here, so (3) coverage decides between them.
-                        CASE WHEN _judge_n > 1 THEN 0 ELSE 1 END ASC,
-                        CASE WHEN _judge_n > 1 THEN _judge_n ELSE 0 END DESC,
-                        -- (3) widest distinct-model coverage on the page,
-                        -- per judge set
-                        _judge_models DESC,
-                        -- (4) the source's own canonical-scale number over a
-                        -- converted one
-                        CASE WHEN scale_conversion = 'none' THEN 0 ELSE 1 END ASC,
-                        -- (5) / (6) deterministic finishers. Split has no
-                        -- preference of its own: two cells that differ only
-                        -- in split are two measurements, and which one heads
-                        -- the page is settled here, deterministically
-                        -- (unstated first), not by score.
-                        COALESCE(judge_condition, '') ASC,
-                        COALESCE(split, '') ASC,
-                        rep_fact_id ASC
-                ) AS _hl_rank
-            FROM armed
-        ),
-        winners AS (
-            SELECT composite_slug, benchmark_key, metric_key,
-                   model_aggregation_key, protocol_condition, judge_condition,
-                   split
-            FROM picked WHERE _hl_rank = 1
-        )
-        SELECT
-            f.fact_id,
-            CAST(w.composite_slug IS NOT NULL AND d.fact_id IS NULL AS BOOLEAN)
-                AS is_headline
-        FROM fact_results f
-        LEFT JOIN _erv_scale_copies d ON d.fact_id = f.fact_id
-        LEFT JOIN winners w
-               ON w.composite_slug        = f.composite_slug
-              AND w.benchmark_key         = f.benchmark_key
-              AND w.metric_key            = f.metric_key
-              AND w.model_aggregation_key = f.model_aggregation_key
-              AND w.protocol_condition    IS NOT DISTINCT FROM f.protocol_condition
-              AND w.judge_condition       IS NOT DISTINCT FROM f.judge_condition
-              AND w.split                 IS NOT DISTINCT FROM f.split
-        """
-    )
-
-    con.execute(
-        f"""
-        CREATE TABLE eval_results_view AS
+        CREATE OR REPLACE TEMP TABLE _erv_cells AS
         WITH benchmark_tags AS (
             SELECT
                 composite_slug, benchmark_id,
@@ -5992,7 +5899,6 @@ def stage_j_eval_results_view(
         joined AS (
             SELECT
                 ta.*,
-                COALESCE(fh.is_headline, FALSE) AS is_headline,
                 m.model_id                    AS m_model_id,
                 m.display_name                AS m_display_name,
                 m.developer                   AS m_developer,
@@ -6053,9 +5959,6 @@ def stage_j_eval_results_view(
             -- this IS the effective metric's registry row — no fold
             -- re-derivation, and no second metrics join.
             LEFT JOIN canonical_metrics cmet ON cmet.id       = ta.metric_base_key
-            -- The headline pick is constant across a condition row's fact
-            -- rows, so the representative row's flag IS the row's flag.
-            LEFT JOIN fact_headline fh ON fh.fact_id = ta.rep_fact_id
         ),
         contexted AS (
             -- Per-fact context only survives when the cell's value IS one
@@ -6115,45 +6018,6 @@ def stage_j_eval_results_view(
                     AS rep_metric_source_label
             )
             FROM joined
-        ),
-        ranked AS (
-            -- Rank the headline pool within (composite_slug, benchmark_key,
-            -- metric_key), honouring lower_is_better, ON THE CANONICAL
-            -- SCALE: sources within one partition can publish mixed units
-            -- (Scale SEAL hle percents next to AISI fractions) and a
-            -- raw-score rank would order a 0.625 below a 2.72(%).
-            -- `is_headline` already carries the answer-feedback exclusion
-            -- and the one-row-per-model pick across both condition axes; an
-            -- unscored headline row (a cell nobody scored keeps one, so
-            -- coverage counts still see it) and rows whose scale is 'flagged'
-            -- (unplaceable on the canonical scale) leave the pool on top
-            -- of that. Rows outside the pool get position=NULL; `total`
-            -- counts pool rows only.
-            SELECT *,
-                CASE
-                    WHEN NOT (is_headline AND rep_score IS NOT NULL
-                              AND scale_conversion IS DISTINCT FROM 'flagged')
-                        THEN NULL
-                    ELSE CAST(ROW_NUMBER() OVER (
-                        PARTITION BY composite_slug, benchmark_key, metric_key,
-                                     (is_headline AND rep_score IS NOT NULL
-                                      AND scale_conversion IS DISTINCT FROM 'flagged')
-                        ORDER BY
-                            CASE WHEN _score_canonical IS NULL THEN 1 ELSE 0 END ASC,
-                            CASE WHEN COALESCE(rep_lower_is_better, FALSE)
-                                 THEN _score_canonical
-                                 ELSE -_score_canonical
-                            END ASC,
-                            model_aggregation_key ASC
-                    ) AS INTEGER)
-                END AS position,
-                CAST(SUM(CASE WHEN is_headline AND rep_score IS NOT NULL
-                              AND scale_conversion IS DISTINCT FROM 'flagged'
-                         THEN 1 ELSE 0 END)
-                     OVER (
-                    PARTITION BY composite_slug, benchmark_key, metric_key
-                ) AS INTEGER) AS total
-            FROM contexted
         )
         SELECT
             TIMESTAMP '{sid}' AS snapshot_id,
@@ -6402,12 +6266,12 @@ def stage_j_eval_results_view(
             )) AS score_details,
             fact_row_count,
 
-            position,
-            total,
-            CASE
-                WHEN total IS NULL OR total <= 1 OR position IS NULL THEN NULL
-                ELSE 1.0 - (position - 1.0) / (total - 1.0)
-            END AS percentile,
+            -- Rank columns, in the place they hold on the view. The rank is
+            -- over headline rows, so the values are written where the view
+            -- is assembled (`_assemble_eval_results_view`).
+            CAST(NULL AS INTEGER) AS position,
+            CAST(NULL AS INTEGER) AS total,
+            CAST(NULL AS DOUBLE)  AS percentile,
 
             -- evaluation_timestamp is the actual eval-run time
             -- (sourced from EEE evaluation_timestamp, NOT
@@ -6587,7 +6451,8 @@ def stage_j_eval_results_view(
             -- position/total/percentile and are excluded from every
             -- page-level rollup; they stay in the view so a judge or
             -- protocol arm is still readable next to the headline reading.
-            is_headline,
+            -- Written where the view is assembled, like the rank columns.
+            FALSE                    AS is_headline,
 
             -- Collections (collections spec): submission-channel tag
             -- (representative fact row's; never NULL on fact rows) and this
@@ -6599,19 +6464,350 @@ def stage_j_eval_results_view(
             -- The dataset split this row's facts scored (Stage D, stated or
             -- inherited from the record's parts); the third condition column
             -- of the row grain. NULL when no fact in the cell stated one.
-            split
-        FROM ranked
-        ORDER BY metric_summary_id, model_key, protocol_condition,
-                 judge_condition, split, is_headline DESC, rep_fact_id
+            split,
+            -- What the assembly needs and the view does not publish: the
+            -- fact row that carries this row's headline flag, and whether
+            -- the row can be ranked at all (scored, and on a scale that
+            -- could be placed).
+            rep_fact_id              AS _rep_fact_id,
+            (rep_score IS NOT NULL
+             AND scale_conversion IS DISTINCT FROM 'flagged') AS _rankable
+        FROM contexted
         """
     )
 
-    _materialise_slice_parent_rows(con, snapshot_id, aggregate_components_type)
+    # Each working table goes as soon as its last reader has run.
+    def drop(*tables: str) -> None:
+        for table in tables:
+            con.execute(f"DROP TABLE {table}")
+
+    _build_slice_parent_candidates(con)
+    _materialise_headline_pick(con)
+    drop("_erv_tri", "_erv_scale_copies", "_erv_page_arms",
+         "_erv_page_metric_rank", "_erv_run_condition")
+    _assemble_eval_results_view(con)
+    drop("_erv_cells")
+    _insert_slice_parent_rows(con, snapshot_id, aggregate_components_type)
+    drop("_erv_headline_pick", "_erv_parent_candidates", "_erv_parent_rows")
 
 
-def _materialise_slice_parent_rows(
-    con, snapshot_id: str, aggregate_components_type: str
-) -> None:
+def _materialise_headline_pick(con) -> None:
+    """Choose the one headline row of every (composite, benchmark, metric,
+    model) cell, for the rows the sources reported and the suite rows derived
+    from children alike, and write `fact_headline` from it.
+
+    Everything is decided over one population, `_erv_page_arms`: the rows a
+    page publishes that may head it. That is every condition row a source
+    reported (`_erv_tri`), and, for a cell no source reported under any
+    condition, every derived suite row whose task set is complete
+    (`_erv_parent_candidates`), minus answer-feedback arms. A cell with a
+    reported row is headed by a reported row, so `fact_headline` names a
+    fact for it and it stays in every fact-grain rollup; the derived rows
+    beside it stay readable, unranked. What the reported and derived rows
+    of a page share is the page's metric order and the model's run
+    condition. Three results are read off the population, each once:
+
+    - `_erv_page_metric_rank`: the page's metrics in the order its default
+      metric is chosen (`evals_view.primary_metric_id` is rank 1).
+    - `_erv_run_condition`: a headline is one run of the model, and the
+      protocol condition is how the model was run, so it is chosen once per
+      (page, model): the arm that heads the first of the page's metrics the
+      model has a clean scored arm on.
+    - `_erv_headline_pick`: the winning row of every cell. A metric follows
+      the model's run condition when it has a row under it and falls back to
+      its own best arm when it does not; the judge condition is chosen per
+      metric, inside the winning arm.
+
+    The caller drops the tables.
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _erv_page_arms AS
+        WITH published AS (
+            -- Unscored rows stay in: a cell whose only rows are unscored
+            -- still needs one representative row so coverage counts keep
+            -- seeing it. The arm contest is decided by comparing scores, so
+            -- it is decided on the canonical scale, sign-flipped for a
+            -- lower-is-better metric; `_unscored` only says WHETHER a row
+            -- was scored (one whose scale could not be placed still counts
+            -- as read, it just cannot be ranked).
+            SELECT composite_slug, benchmark_key, metric_key, metric_base_key,
+                   model_aggregation_key AS model_key,
+                   protocol_condition, judge_condition, split,
+                   FALSE AS _derived,
+                   rep_score IS NULL AS _unscored,
+                   CASE WHEN COALESCE(rep_lower_is_better, FALSE)
+                        THEN -_score_canonical ELSE _score_canonical
+                   END AS _signed_score,
+                   scale_conversion, rep_fact_id,
+                   -- 0 for an undisclosed judge. Only the panel/non-panel
+                   -- split is ordered on (see the pick below); a single
+                   -- disclosed judge and an undisclosed row tie here.
+                   COALESCE(json_array_length(
+                       json_extract(judge_condition, '$.judges')), 0) AS _judge_n,
+                   -- The judges alone, without the source's label for them.
+                   -- Two labels over one judge set are one judge's coverage
+                   -- of the page, not two; counting the label with it lets a
+                   -- raw channel outvote the source's own rescaled copy of
+                   -- itself.
+                   CAST(json_extract(judge_condition, '$.judges') AS VARCHAR)
+                       AS _judge_set
+            FROM _erv_tri
+            UNION ALL
+            -- A derived row that covers part of the suite is never
+            -- published, so it has no say in the page's metric order, in a
+            -- model's run condition or in a cell's headline. Neither has a
+            -- derived row in a cell the parent reports itself under ANY
+            -- condition, answer-feedback and unscored rows included: that
+            -- cell is the source's to head.
+            --
+            -- The judge rules of the pick weigh what a source reported: its
+            -- panel, how many models its judge read, whether its number was
+            -- on the registry scale. A derived row has none of that (its
+            -- scale label is its first child's), so it enters as a row with
+            -- no panel, no coverage and nothing converted, and derived rows
+            -- under several judges fall to the first by name.
+            SELECT r.composite_slug, r.parent_benchmark_id, r.metric_id,
+                   r.metric_base_id, r.model_key,
+                   r.protocol_condition, r.judge_condition, r.split,
+                   TRUE, r.score IS NULL,
+                   CASE WHEN COALESCE(r.lower_is_better, FALSE)
+                        THEN -r.score_canonical ELSE r.score_canonical END,
+                   'none', CAST(NULL AS VARCHAR), 0, CAST(NULL AS VARCHAR)
+            FROM _erv_parent_candidates r
+            WHERE r.children_present = r.children_expected
+              AND NOT EXISTS (
+                  SELECT 1 FROM _erv_tri t
+                  WHERE t.composite_slug        = r.composite_slug
+                    AND t.benchmark_key         = r.parent_benchmark_id
+                    AND t.metric_key            = r.metric_id
+                    AND t.model_aggregation_key = r.model_key
+              )
+        ),
+        eligible AS (
+            SELECT *
+            FROM published
+            -- Answer-feedback protocol arms are never headline.
+            WHERE {protocol_exclusion_sql("protocol_condition")}
+        ),
+        coverage AS (
+            -- How many distinct models each judge SET has a reported score
+            -- for on this page.
+            SELECT composite_slug, benchmark_key, metric_key, _judge_set,
+                   CAST(COUNT(DISTINCT model_key) AS INTEGER) AS _judge_models
+            FROM eligible
+            WHERE NOT _unscored AND NOT _derived
+            GROUP BY 1, 2, 3, 4
+        )
+        SELECT e.*, c._judge_models,
+            -- The protocol axis is settled per ARM, not per row: a model's
+            -- protocol points are ranked by score, and the judge rules then
+            -- choose inside the winning arm. Comparing raw rows would let
+            -- the highest-scoring judge silently win the protocol contest.
+            MAX(e._signed_score) OVER (
+                PARTITION BY e.composite_slug, e.benchmark_key, e.metric_key,
+                             e.model_key, e.protocol_condition
+            ) AS _arm_best
+        FROM eligible e
+        LEFT JOIN coverage c
+               ON NOT e._derived
+              AND c.composite_slug = e.composite_slug
+              AND c.benchmark_key  = e.benchmark_key
+              AND c.metric_key     = e.metric_key
+              AND c._judge_set     IS NOT DISTINCT FROM e._judge_set
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _erv_page_metric_rank AS
+        -- Every model cell holds exactly one headline row, so a metric's
+        -- distinct models here are its headline rows on the page.
+        SELECT pm.composite_slug, pm.benchmark_key, pm.metric_key,
+            ROW_NUMBER() OVER (
+                PARTITION BY pm.composite_slug, pm.benchmark_key
+                ORDER BY {_page_metric_order_sql(
+                    base_metric="pm.metric_base_key",
+                    preferred_metric="cb.preferred_metric_id",
+                    metadata="cmet.metadata",
+                    models="pm._models", rows="pm._models",
+                    metric="pm.metric_key")}
+            ) AS _metric_rank
+        FROM (
+            SELECT composite_slug, benchmark_key, metric_key,
+                   MAX(metric_base_key) AS metric_base_key,
+                   COUNT(DISTINCT model_key) AS _models
+            FROM _erv_page_arms
+            GROUP BY 1, 2, 3
+        ) pm
+        LEFT JOIN benchmark_catalog cb ON cb.id = pm.benchmark_key
+        LEFT JOIN canonical_metrics cmet  ON cmet.id = pm.metric_base_key
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _erv_run_condition AS
+        -- Clean arms are looked at before the metric order: a model whose
+        -- only arm on the default metric could not be read takes its run
+        -- condition from the next metric that has a clean one, so its other
+        -- metrics still show one run.
+        SELECT composite_slug, benchmark_key, model_key, protocol_condition
+        FROM (
+            SELECT a.composite_slug, a.benchmark_key, a.model_key,
+                   a.protocol_condition,
+                ROW_NUMBER() OVER (
+                    PARTITION BY a.composite_slug, a.benchmark_key, a.model_key
+                    ORDER BY {_arm_order_sql("a", "mr._metric_rank ASC")}
+                ) AS _run_rank
+            FROM _erv_page_arms a
+            JOIN _erv_page_metric_rank mr
+              ON mr.composite_slug = a.composite_slug
+             AND mr.benchmark_key  = a.benchmark_key
+             AND mr.metric_key     = a.metric_key
+            WHERE NOT a._unscored
+        )
+        WHERE _run_rank = 1
+        """
+    )
+    # (1a) below: a metric the model never reported under its run condition
+    # falls through to its own best arm.
+    follows_run = (
+        "CASE WHEN rc.composite_slug IS NOT NULL "
+        "AND a.protocol_condition IS NOT DISTINCT FROM rc.protocol_condition "
+        "THEN 0 ELSE 1 END ASC"
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _erv_headline_pick AS
+        SELECT composite_slug, benchmark_key, metric_key, model_key,
+               protocol_condition, judge_condition, split, _derived
+        FROM (
+            SELECT a.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY a.composite_slug, a.benchmark_key,
+                                 a.metric_key, a.model_key
+                    ORDER BY
+                        -- (0) a scored row always represents the cell
+                        a._unscored ASC,
+                        -- (1) protocol axis: unread arms last, (1a) the
+                        -- model's run condition on this page, (1b) the
+                        -- best-scoring arm.
+                        {_arm_order_sql("a", follows_run)},
+                        -- (2) judge cardinality is a preference for PANELS
+                        -- only: a disclosed panel beats its members. A single
+                        -- disclosed judge and an undisclosed condition are
+                        -- equal here, so (3) coverage decides between them.
+                        CASE WHEN a._judge_n > 1 THEN 0 ELSE 1 END ASC,
+                        CASE WHEN a._judge_n > 1 THEN a._judge_n ELSE 0 END DESC,
+                        -- (3) widest distinct-model coverage on the page,
+                        -- per judge set
+                        a._judge_models DESC,
+                        -- (4) the source's own canonical-scale number over a
+                        -- converted one
+                        CASE WHEN a.scale_conversion = 'none' THEN 0 ELSE 1 END ASC,
+                        -- (5) / (6) deterministic finishers. Split has no
+                        -- preference of its own: two cells that differ only
+                        -- in split are two measurements, and which one heads
+                        -- the page is settled here, deterministically
+                        -- (unstated first), not by score.
+                        COALESCE(a.judge_condition, '') ASC,
+                        COALESCE(a.split, '') ASC,
+                        a.rep_fact_id ASC
+                ) AS _hl_rank
+            FROM _erv_page_arms a
+            -- A model with no scored row on the page has no run condition.
+            LEFT JOIN _erv_run_condition rc
+                   ON rc.composite_slug = a.composite_slug
+                  AND rc.benchmark_key  = a.benchmark_key
+                  AND rc.model_key      = a.model_key
+        )
+        WHERE _hl_rank = 1
+        """
+    )
+    # The pick at fact grain, so every direct-fact consumer (subtasks,
+    # hierarchy slices, collection context, benchmark dominant conversion,
+    # peer ranks) reads it instead of re-deriving it. A derived row has no
+    # fact of its own, and heads only cells that have no fact either.
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE fact_headline AS
+        SELECT
+            f.fact_id,
+            CAST(w.composite_slug IS NOT NULL AND d.fact_id IS NULL AS BOOLEAN)
+                AS is_headline
+        FROM fact_results f
+        LEFT JOIN _erv_scale_copies d ON d.fact_id = f.fact_id
+        LEFT JOIN _erv_headline_pick w
+               ON NOT w._derived
+              AND w.composite_slug     = f.composite_slug
+              AND w.benchmark_key      = f.benchmark_key
+              AND w.metric_key         = f.metric_key
+              AND w.model_key          = f.model_aggregation_key
+              AND w.protocol_condition IS NOT DISTINCT FROM f.protocol_condition
+              AND w.judge_condition    IS NOT DISTINCT FROM f.judge_condition
+              AND w.split              IS NOT DISTINCT FROM f.split
+        """
+    )
+
+
+def _assemble_eval_results_view(con) -> None:
+    """`eval_results_view` for the cells the sources reported: `_erv_cells`
+    with the headline flag and the rank over headline rows written in."""
+    # The rank pool: headline rows that are scored and whose scale could be
+    # placed. `is_headline` already carries the answer-feedback exclusion and
+    # the one-row-per-model pick across both condition axes.
+    pool = "(is_headline AND _rankable)"
+    con.execute(
+        f"""
+        CREATE TABLE eval_results_view AS
+        WITH headlined AS (
+            -- The headline pick is constant across a condition row's fact
+            -- rows, so the representative row's flag IS the row's flag.
+            SELECT c.* REPLACE (COALESCE(fh.is_headline, FALSE) AS is_headline)
+            FROM _erv_cells c
+            LEFT JOIN fact_headline fh ON fh.fact_id = c._rep_fact_id
+        ),
+        ranked AS (
+            -- Rank the pool within (composite_slug, benchmark, metric),
+            -- honouring lower_is_better, ON THE CANONICAL SCALE: sources
+            -- within one partition can publish mixed units (Scale SEAL hle
+            -- percents next to AISI fractions) and a raw-score rank would
+            -- order a 0.625 below a 2.72(%). Rows outside the pool get
+            -- position=NULL; `total` counts pool rows only.
+            SELECT * REPLACE (
+                CASE
+                    WHEN NOT {pool} THEN NULL
+                    ELSE CAST(ROW_NUMBER() OVER (
+                        PARTITION BY composite_slug, benchmark_id, metric_id,
+                                     {pool}
+                        ORDER BY
+                            CASE WHEN score_canonical IS NULL THEN 1 ELSE 0 END ASC,
+                            CASE WHEN COALESCE(lower_is_better, FALSE)
+                                 THEN score_canonical
+                                 ELSE -score_canonical
+                            END ASC,
+                            model_key ASC
+                    ) AS INTEGER)
+                END AS position,
+                CAST(SUM(CASE WHEN {pool} THEN 1 ELSE 0 END) OVER (
+                    PARTITION BY composite_slug, benchmark_id, metric_id
+                ) AS INTEGER) AS total
+            )
+            FROM headlined
+        )
+        SELECT * EXCLUDE (_rep_fact_id, _rankable) REPLACE (
+            CASE
+                WHEN total IS NULL OR total <= 1 OR position IS NULL THEN NULL
+                ELSE 1.0 - (position - 1.0) / (total - 1.0)
+            END AS percentile
+        )
+        FROM ranked
+        ORDER BY metric_summary_id, model_key, protocol_condition,
+                 judge_condition, split, is_headline DESC, _rep_fact_id
+        """
+    )
+
+
+def _build_slice_parent_candidates(con) -> None:
     """Give a benchmark whose task variants are registry slice children a
     row of its own, averaged over those children — but only when they are all
     there.
@@ -6646,8 +6842,11 @@ def _materialise_slice_parent_rows(
     its 31 language children), so no child is ever counted twice into a number
     the source already reported. That suppression is per condition — a parent
     row under one judge says nothing about the same cell under another.
+
+    This builds the candidates from `_erv_cells`, with the coverage counts on
+    every row. Which of them head a page is `_materialise_headline_pick`'s
+    business, and `_insert_slice_parent_rows` publishes the complete ones.
     """
-    sid = snapshot_id_to_sql(snapshot_id)
     con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE _erv_parent_candidates AS
@@ -6699,7 +6898,7 @@ def _materialise_slice_parent_rows(
                    erv.has_third_party, erv.reporting_orgs,
                    erv.evaluator_display_name, erv.is_verified_evaluator,
                    erv.collection_id, erv.source_metadata
-            FROM eval_results_view erv
+            FROM _erv_cells erv
             JOIN child_of c
               ON c.child_benchmark_id = erv.benchmark_id
             -- Every condition row of the child, not only its headline one:
@@ -6777,12 +6976,40 @@ def _materialise_slice_parent_rows(
             FROM child_cells
             GROUP BY 1, 2, 3, 4, 5, 6, 7
             HAVING COUNT(*) > 0
+        ),
+        candidates AS (
+            -- A parent that reports this cell itself keeps its own number —
+            -- but only for the condition it published it under. A parent row
+            -- under one judge says nothing about the same cell under another,
+            -- so the suppression is per condition, with NULL-safe equality so
+            -- ordinary condition-less rows still match each other.
+            --
+            -- Split is the one condition where NULL is weaker than a value:
+            -- an unstated split on the source's own total is no evidence that
+            -- the total and its children ran on different data (TruthfulQA-
+            -- multilingual's total sits in its own record, its 31 language
+            -- rows in theirs, all stamped `val`), and a derived mean beside
+            -- it would count the same results twice. So a bare total
+            -- suppresses the derived row under every split; a total that
+            -- STATES a split suppresses only its own.
+            SELECT r.*, e.children_expected
+            FROM rolled r
+            JOIN expected e ON e.parent_benchmark_id = r.parent_benchmark_id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM _erv_cells erv
+                WHERE erv.composite_slug = r.composite_slug
+                  AND erv.benchmark_id   = r.parent_benchmark_id
+                  AND erv.model_key      = r.model_key
+                  AND erv.metric_id      = r.metric_id
+                  AND erv.protocol_condition IS NOT DISTINCT FROM r.protocol_condition
+                  AND erv.judge_condition    IS NOT DISTINCT FROM r.judge_condition
+                  AND (erv.split IS NULL OR erv.split IS NOT DISTINCT FROM r.split)
+            )
         )
         SELECT r.* EXCLUDE (_score_published_mean, _score_published_wmean,
                             _score_canonical_mean, _score_canonical_wmean,
                             _score_normalized_mean, _score_normalized_wmean,
                             _n_scale_classes, _scale_conversion_rep, _weighted),
-            e.children_expected,
             CASE WHEN r._weighted THEN '{AGG_WEIGHTED_MEAN}'
                  ELSE '{AGG_MEAN}' END AS value_aggregation,
             (CASE WHEN r._weighted THEN r._score_canonical_wmean
@@ -6797,59 +7024,18 @@ def _materialise_slice_parent_rows(
             END AS score,
             CASE WHEN r._n_scale_classes > 1
                  THEN 'mixed' ELSE r._scale_conversion_rep
-            END AS scale_conversion,
-            -- Exactly one headline row per (composite, parent, metric, model),
-            -- the invariant every page-level rollup relies on. Among a
-            -- parent's condition rows the one built from the most children
-            -- speaks for the suite; the rest stay readable next to it,
-            -- unranked, like any other condition row. A parent that reports
-            -- the cell itself under ANY condition already has its headline
-            -- row (`fact_headline`), so no derived row may claim a second
-            -- one: derived rows under the other conditions stay readable,
-            -- unranked.
-            ROW_NUMBER() OVER (
-                PARTITION BY r.composite_slug, r.parent_benchmark_id,
-                             r.model_key, r.metric_id
-                ORDER BY r.fact_row_count DESC,
-                         COALESCE(r.protocol_condition, '') ASC,
-                         COALESCE(r.judge_condition, '') ASC,
-                         COALESCE(r.split, '') ASC
-            ) = 1
-            AND NOT EXISTS (
-                SELECT 1 FROM eval_results_view erv
-                WHERE erv.composite_slug = r.composite_slug
-                  AND erv.benchmark_id   = r.parent_benchmark_id
-                  AND erv.model_key      = r.model_key
-                  AND erv.metric_id      = r.metric_id
-            ) AS _is_headline
-        FROM rolled r
-        JOIN expected e ON e.parent_benchmark_id = r.parent_benchmark_id
-        -- A parent that reports this cell itself keeps its own number — but
-        -- only for the condition it published it under. A parent row under
-        -- one judge says nothing about the same cell under another, so the
-        -- suppression is per condition, with NULL-safe equality so ordinary
-        -- condition-less rows still match each other.
-        --
-        -- Split is the one condition where NULL is weaker than a value: an
-        -- unstated split on the source's own total is no evidence that the
-        -- total and its children ran on different data (TruthfulQA-
-        -- multilingual's total sits in its own record, its 31 language rows
-        -- in theirs, all stamped `val`), and a derived mean beside it would
-        -- count the same results twice. So a bare total suppresses the
-        -- derived row under every split; a total that STATES a split
-        -- suppresses only its own.
-        WHERE NOT EXISTS (
-            SELECT 1 FROM eval_results_view erv
-            WHERE erv.composite_slug = r.composite_slug
-              AND erv.benchmark_id   = r.parent_benchmark_id
-              AND erv.model_key      = r.model_key
-              AND erv.metric_id      = r.metric_id
-              AND erv.protocol_condition IS NOT DISTINCT FROM r.protocol_condition
-              AND erv.judge_condition    IS NOT DISTINCT FROM r.judge_condition
-              AND (erv.split IS NULL OR erv.split IS NOT DISTINCT FROM r.split)
-        )
+            END AS scale_conversion
+        FROM candidates r
         """
     )
+
+
+def _insert_slice_parent_rows(
+    con, snapshot_id: str, aggregate_components_type: str
+) -> None:
+    """Publish the suite rows whose task set is complete, each carrying the
+    headline flag `_materialise_headline_pick` gave it."""
+    sid = snapshot_id_to_sql(snapshot_id)
     # The coverage gate. A mean over 13 of BFCL-v3's 14 categories is a
     # different quantity from BFCL-v3, and nothing on the page would say so,
     # so the short cell gets no row at all — and a line naming it, because a
@@ -6858,10 +7044,22 @@ def _materialise_slice_parent_rows(
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE _erv_parent_rows AS
-        SELECT * EXCLUDE (children_present, children_expected),
-               children_present, children_expected
-        FROM _erv_parent_candidates
-        WHERE children_present = children_expected
+        SELECT r.* EXCLUDE (children_present, children_expected),
+               r.children_present, r.children_expected,
+               -- The rows left unflagged stay readable next to the headline
+               -- one, unranked, like any other condition row.
+               (w.composite_slug IS NOT NULL) AS _is_headline
+        FROM _erv_parent_candidates r
+        LEFT JOIN _erv_headline_pick w
+               ON w._derived
+              AND w.composite_slug     = r.composite_slug
+              AND w.benchmark_key      = r.parent_benchmark_id
+              AND w.metric_key         = r.metric_id
+              AND w.model_key          = r.model_key
+              AND w.protocol_condition IS NOT DISTINCT FROM r.protocol_condition
+              AND w.judge_condition    IS NOT DISTINCT FROM r.judge_condition
+              AND w.split              IS NOT DISTINCT FROM r.split
+        WHERE r.children_present = r.children_expected
         """
     )
     n_parent = con.execute("SELECT count(*) FROM _erv_parent_rows").fetchone()[0]
@@ -8066,13 +8264,13 @@ def stage_j_evals_view(con, snapshot_id: str) -> None:
                 SELECT pm.*,
                        ROW_NUMBER() OVER (
                            PARTITION BY pm.composite_slug, pm.benchmark_id
-                           ORDER BY
-                               COALESCE(pm.metric_base_id = cb.preferred_metric_id,
-                                        FALSE) DESC,
-                               {_diagnostic_role_sql("cmet.metadata")} ASC,
-                               pm.metric_models_count DESC,
-                               pm.metric_rows_count DESC,
-                               pm.metric_id ASC
+                           ORDER BY {_page_metric_order_sql(
+                               base_metric="pm.metric_base_id",
+                               preferred_metric="cb.preferred_metric_id",
+                               metadata="cmet.metadata",
+                               models="pm.metric_models_count",
+                               rows="pm.metric_rows_count",
+                               metric="pm.metric_id")}
                        ) AS _rk
                 FROM per_metric pm
                 LEFT JOIN benchmark_catalog cb ON cb.id = pm.benchmark_id
@@ -8861,12 +9059,13 @@ def stage_j_merged_evals_view(con, snapshot_id: str) -> None:
                    (ms.metric_base_id = cb.preferred_metric_id) AS is_registry_preferred,
                    ROW_NUMBER() OVER (
                        PARTITION BY ms.benchmark_id
-                       ORDER BY
-                           COALESCE(ms.metric_base_id = cb.preferred_metric_id, FALSE) DESC,
-                           {_diagnostic_role_sql("cmet.metadata")} ASC,
-                           ms.models_count DESC,
-                           ms.results_count DESC,
-                           ms.metric_id_effective ASC
+                       ORDER BY {_page_metric_order_sql(
+                           base_metric="ms.metric_base_id",
+                           preferred_metric="cb.preferred_metric_id",
+                           metadata="cmet.metadata",
+                           models="ms.models_count",
+                           rows="ms.results_count",
+                           metric="ms.metric_id_effective")}
                    ) AS rk
             FROM metric_stats ms
             LEFT JOIN benchmark_catalog cb ON cb.id = ms.benchmark_id
