@@ -41,45 +41,11 @@ Left out, with the reason:
 from __future__ import annotations
 
 import json
-import shutil
 
 import duckdb
-import pandas as pd
 import pytest
 
-from tests.fixture_corpus import FIXTURES, build_fixture_corpus
-
-SLICE_CHILDREN = {
-    "Anatomy": ("mmlu-anatomy", "MMLU Anatomy"),
-    "Astronomy": ("mmlu-astronomy", "MMLU Astronomy"),
-}
-
-
-def _registry_with_slice_children(root):
-    reg = root / "entity_registry"
-    shutil.copytree(FIXTURES / "entity_registry", reg)
-
-    benchmarks = pd.read_parquet(reg / "canonical_benchmarks.parquet")
-    parent = benchmarks.loc[benchmarks["id"] == "mmlu"].iloc[0]
-    children = []
-    for child_id, display in SLICE_CHILDREN.values():
-        row = parent.copy()
-        row["id"] = child_id
-        row["display_name"] = display
-        row["parent_benchmark_id"] = "mmlu"
-        children.append(row)
-    pd.concat([benchmarks, pd.DataFrame(children)], ignore_index=True).to_parquet(
-        reg / "canonical_benchmarks.parquet", index=False
-    )
-
-    aliases = pd.read_parquet(reg / "aliases.parquet")
-    for raw, (child_id, _) in SLICE_CHILDREN.items():
-        mask = (aliases["entity_type"] == "benchmark") & (aliases["raw_value"] == raw)
-        assert mask.sum() == 1, raw
-        aliases.loc[mask, "canonical_id"] = child_id
-    aliases.to_parquet(reg / "aliases.parquet", index=False)
-    return reg
-
+from tests.fixture_corpus import build_fixture_corpus, registry_with_slice_children
 
 @pytest.fixture(scope="module")
 def build(tmp_path_factory, _taxonomy_seed_stub, _collections_stub):
@@ -88,7 +54,7 @@ def build(tmp_path_factory, _taxonomy_seed_stub, _collections_stub):
         root,
         seed_dir=_taxonomy_seed_stub,
         collections_dir=_collections_stub,
-        registry_dir=_registry_with_slice_children(root),
+        registry_dir=registry_with_slice_children(root),
     )
 
 
