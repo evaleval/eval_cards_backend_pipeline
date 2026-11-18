@@ -134,7 +134,7 @@ them.
 | `BENCHMARK_METADATA_REFRESH` | unset | Set to `1` to force-refetch the cards. |
 | `ENTITY_REGISTRY_REFRESH` | unset | Set to `1` to force-refetch the registry. |
 | `HF_OPENNESS_PROBE` | `1` | Set to `0` to skip the open-weights backfill (offline bakes, or to pin a snapshot to exactly what the registry states). |
-| `EEE_DATAFIX` | unset | Set to `1` to fill verified missing metadata from source evidence. Default off. |
+| `EEE_DATAFIX` | unset | Set to `1` to fill verified missing metadata from source evidence and clear identified invented defaults. Default off. |
 | `EEE_INCLUDE_PRIVATE` | unset | Set to `1` to replace public collection-member rows with processed private extract rows (see below). |
 | `EEE_PRIVATE_ALLOW_ZERO_MEMBERS` | unset | Set to `1` to allow a private extract whose member records are not public yet. |
 | `EEE_PRIVATE_DATASET_REPO` | `evaleval/aisi-inference-scaling-data` | The private dataset. |
@@ -203,7 +203,8 @@ a reproducibility gap. The opt-in overlay corrects those records at the Stage A 
 works from corrected data and nothing downstream needs to know.
 
 These are temporary data hotfixes. Their source rules and appliers live in
-`canonicalise/resolution_hotfixes.py`, with an upstream adapter PR pointer
+`canonicalise/resolution_hotfixes.py`, or for `invented_max_attempts` in its
+own module `datafix/invented_max_attempts.py`, with an upstream pointer
 and a removal condition on each builder. Generic accounting, evidence files,
 and table-building tools remain in `datafix/`. Remove the fills once the
 pinned datastore has been re-ingested with the upstream fixes and no covered
@@ -224,7 +225,7 @@ A fix whose evidence is inside the record itself needs no table and is
 registered for every source config instead of one; the registry answers per
 config, so a config no fix reaches still opens nothing.
 
-Four fixes ship today:
+`datafix/registry.py` lists every registered fix. These are described here:
 
 | Fix | What it fills | Evidence |
 | --- | --- | --- |
@@ -232,13 +233,15 @@ Four fixes ship today:
 | `hfopenllm_v2_harness_configs` | Temperature and output-token cap on IFEval and MATH Level 5 results. | The leaderboard's published lm-evaluation-harness dumps, matched to the record by exact model id. |
 | `inspect_plan_config` | Temperature and output-token cap on results converted from inspect_ai logs, in any config. | The log's own plan, whose config is the task's generate config. Taken only under a closed rule: a checked inspect_ai version with no other package, a plan whose solvers are all ones the rule was read against, a last step that generates with the run's own model, and no step setting a temperature or a cap of its own. |
 | `arc_agi_logged_request_args` | The output-token cap, and a temperature where one was sent, on ARC-AGI public-set scores. | ARC Prize's published run outputs, where every attempt records the arguments the request carried. A run is used only when its logs reconstruct the published score and cost, state one cap throughout, name the pair index of every attempt, finished before the record was read, and no path its directory ever held was touched by a second commit. |
+| `invented_max_attempts` | Nothing. It clears `max_attempts: 1` from results in any config, so a record matches its later re-emission in the Stage E observation key and no signal reads a single-attempt protocol no source stated. | Until every_eval_ever commit `09496fc02` the shared schema defaulted the field to 1. A 1 is cleared only on a record written before 2026-09-10 (its `cron_run_date`, else its `retrieved_timestamp`) whose `eval_library.name` is not `inspect_ai`, the one converter that set the field itself. A record with no readable write date keeps its value and is counted. |
 
-Doctrine, the same for every fix: only ever fill a value that is missing,
-never overwrite one that is present, never replace a container that is not
-a dict, and leave anything ambiguous missing and counted. The overlay
-writes only `generation_config.generation_args`; provenance lives in the
-patch tables, the export manifest and `snapshot_meta.datafix`, never as a
-marker inside the record. A record is validated against the upstream
+Doctrine, the same for every fix: fill a value that is missing, change one
+that is present only when a source rule identifies it as an obsolete adapter
+or schema default and the event records the old value, never replace a
+container that is not a dict, and leave anything ambiguous as it arrived and
+counted. The overlay writes only `generation_config.generation_args`;
+provenance lives in the patch tables, the export manifest and
+`snapshot_meta.datafix`, never as a marker inside the record. A record is validated against the upstream
 contract before the overlay runs (so a fix can never mask malformed input)
 and again afterwards if it changed (a patched record that fails is a bug
 here, and fails the run).

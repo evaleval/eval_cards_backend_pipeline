@@ -28,6 +28,7 @@ from eval_card_backend.datafix import (
     arc_agi,
     hfopenllm_v2,
     inspect_plan_config,
+    invented_max_attempts,
     vals_ai,
 )
 from eval_card_backend.datafix.core import Fix
@@ -77,6 +78,11 @@ _REGISTRY: tuple[Entry, ...] = (
         metadata._PUBLISHED_METADATA_FIX_ID, ALL_CONFIGS,
         metadata.build_published_metadata_datafix, metadata._published_metadata_sha,
         metadata._PUBLISHED_METADATA_REVISION,
+    ),
+    Entry(
+        invented_max_attempts.FIX_ID, ALL_CONFIGS, invented_max_attempts.build,
+        invented_max_attempts.evidence_sha256,
+        invented_max_attempts.SOURCE_REVISION,
     ),
 )
 

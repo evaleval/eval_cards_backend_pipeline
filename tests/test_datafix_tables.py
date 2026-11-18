@@ -15,6 +15,7 @@ from eval_card_backend.datafix import (
     arc_agi,
     hfopenllm_v2,
     inspect_plan_config,
+    invented_max_attempts,
     registry,
     vals_ai,
 )
@@ -189,7 +190,7 @@ def test_the_in_record_rule_is_the_reviewed_one():
 
 def test_the_overlay_fingerprint_follows_the_tables():
     assert fingerprint() == (
-        "7bfb4efb80da4daf93213f69551280d745a45ad32863dfa34104c32415a42562"
+        "3006b8aa836e40d841a80c85663d2f680ac102916aecd181ea8e004659931cc9"
     )
 
 
@@ -225,4 +226,5 @@ def test_the_registry_states_each_evidence_revision_the_tables_record():
         inspect_plan_config.FIX_ID: inspect_plan_config.SOURCE_REVISION,
         arc_agi.FIX_ID: arc_agi.SOURCE_REVISION,
         "published_source_metadata": "source-record-rules-v1",
+        invented_max_attempts.FIX_ID: invented_max_attempts.SOURCE_REVISION,
     }

@@ -136,6 +136,7 @@ def test_the_summary_is_reported_for_every_fix_even_with_nothing_to_do(
     assert set(summary["fixes"]) == {
         "vals_ai_max_tokens", "hfopenllm_v2_harness_configs",
         "inspect_plan_config", "arc_agi_logged_request_args", "published_source_metadata",
+        "invented_max_attempts",
     }
     assert summary["fingerprint"] == datafix.fingerprint()
     assert summary["fixes"]["vals_ai_max_tokens"]["records_patched"] == 0
@@ -215,6 +216,7 @@ def test_a_run_over_no_named_config_never_opens_a_patch_table(tmp_path, monkeypa
     assert set(summary["fixes"]) == {
         "vals_ai_max_tokens", "hfopenllm_v2_harness_configs",
         "inspect_plan_config", "arc_agi_logged_request_args", "published_source_metadata",
+        "invented_max_attempts",
     }
     assert summary["fixes"]["vals_ai_max_tokens"]["table_sha256"]
     assert summary["fixes"]["vals_ai_max_tokens"]["source_revision"]
