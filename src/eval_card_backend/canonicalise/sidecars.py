@@ -783,7 +783,7 @@ def write_collection_context(con, out_dir: Path, snapshot_meta: dict) -> Path | 
     path = out_dir / "collection_context.json"
     path.unlink(missing_ok=True)
     required = ("fact_results", "eval_results_view", "collection_trajectories_raw",
-                "benchmarks", "canonical_benchmarks", "canonical_metrics")
+                "benchmarks", "benchmark_catalog", "canonical_metrics")
     if not all(_table_exists(con, t) for t in required):
         return None
     if not _column_exists(con, "fact_results", "agent_scaffold_raw"):
@@ -874,7 +874,7 @@ def _context_metric(con, benchmark_key: str) -> str | None:
         """
         SELECT cb.preferred_metric_id, cm.metric_kind,
                cm.min_score, cm.max_score, cm.lower_is_better
-        FROM canonical_benchmarks cb
+        FROM benchmark_catalog cb
         LEFT JOIN canonical_metrics cm ON cm.id = cb.preferred_metric_id
         WHERE cb.id = ?
         """,
@@ -2497,7 +2497,7 @@ def _hierarchy_composite_benchmark(
         for m in metrics_rows
     ]
     preferred_row = con.execute(
-        "SELECT preferred_metric_id FROM canonical_benchmarks WHERE id = ?",
+        "SELECT preferred_metric_id FROM benchmark_catalog WHERE id = ?",
         [benchmark_id],
     ).fetchone()
     primary_metric_key = _pick_primary_metric_key(

@@ -479,7 +479,7 @@ def test_hierarchy_gpqa_diamond_emits_as_benchmark_not_slice(tmp_path):
         """
     )
     con.execute(
-        "CREATE TABLE canonical_benchmarks AS "
+        "CREATE TABLE benchmark_catalog AS "
         "SELECT 'gpqa' AS id, NULL::VARCHAR AS preferred_metric_id"
     )
     con.execute(
@@ -628,7 +628,7 @@ def test_hierarchy_index_keeps_appearance_of_deduped_echo(tmp_path, pwc_has_slic
         "SELECT fact_id, TRUE AS is_headline FROM fact_results"
     )
     con.execute(
-        "CREATE TABLE canonical_benchmarks AS "
+        "CREATE TABLE benchmark_catalog AS "
         "SELECT 'textvqa' AS id, NULL::VARCHAR AS preferred_metric_id"
     )
     con.execute(
@@ -941,7 +941,7 @@ def _connection_with_merged(out_dir: Path):
     # The committed fixture parquet carries neither preferred_metric_id nor
     # preferred_metric_llm_judged; pad it the way the dim loader does.
     con.execute(
-        "CREATE TABLE canonical_benchmarks AS "
+        "CREATE TABLE benchmark_catalog AS "
         "SELECT id, display_name, "
         "       CAST(parent_benchmark_id AS VARCHAR) AS parent_benchmark_id, "
         "       CAST(NULL AS VARCHAR) AS preferred_metric_id, "

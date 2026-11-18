@@ -432,6 +432,9 @@ def run(
             "from_stage=%s — restored %d cached table(s) from %s: %s",
             from_stage, len(restored), cache.dir, restored,
         )
+        # A full build has dropped these by the time it reaches `from_stage`.
+        for letter in STAGE_ORDER[: STAGE_ORDER.index(from_stage)]:
+            _release_tables(con, _SUPERSEDED_AFTER.get(letter, ()))
 
         # The records in eee_raw were loaded by an earlier run; only that
         # run knows what it was fed and what the overlay did to it. Adopt
@@ -491,7 +494,6 @@ def run(
     n_exploded: int | None = None
     n_synth_collisions: int | None = None
     stage_e_stats: stages.StageEStats | None = None
-    n_unit_inconsistent: int | None = None
     out_dir: Path | None = None
 
     from_idx = STAGE_ORDER.index(from_stage) if from_stage else 0
@@ -515,6 +517,7 @@ def run(
             cache.datafix_summary = datafix_accounting.as_dict(
                 enabled=settings.datafix_enabled
             )
+            stages.stage_a_record_drops(con, eee.drop_breakdown())
             log.info("  loaded %d EEE records (validated)", n_eee)
             _log_datafix_summary(cache.datafix_summary)
             n_cards = stages.stage_a_load_cards(con, cards)
@@ -599,7 +602,7 @@ def run(
             )
         elif letter == "F":
             log.info("Stage F: group signals …")
-            n_unit_inconsistent = stages.stage_f_group_signals(con, snapshot_id)
+            stages.stage_f_group_signals(con, snapshot_id)
         elif letter == "G":
             # Per-row completeness is computed in Stage E, so Stage G can
             # derive `card_missing_count` from fact_results inline.
@@ -650,6 +653,7 @@ def run(
         if letter == "F" and stage_e_stats is None:
             stage_e_stats = _recover_stage_e_stats(con)
         _release_tables(con, _RELEASE_AFTER.get(letter, ()))
+        _release_tables(con, _SUPERSEDED_AFTER.get(letter, ()))
         _log_memory(f"after stage {letter}")
 
     # When --to-stage cuts the run off before warehouse emit, the cache dir
@@ -704,7 +708,8 @@ def run(
         n_exploded=n_exploded,
         n_synth_collisions=n_synth_collisions,
         stage_e_stats=stage_e_stats,
-        n_unit_inconsistent=n_unit_inconsistent,
+        n_unit_inconsistent=stages.count_unit_inconsistent_groups(con),
+        stage_a_drops=stages.read_stage_a_drops(con),
         datafix_summary=datafix_accounting.as_dict(enabled=settings.datafix_enabled),
         view_layer_emitted=j_in_slice,
         eee_root=eee_root,
@@ -796,6 +801,7 @@ def _build_snapshot_meta(
     n_synth_collisions: int | None,
     stage_e_stats: stages.StageEStats,
     n_unit_inconsistent: int | None,
+    stage_a_drops: list[dict],
     datafix_summary: dict,
     view_layer_emitted: bool,
     eee_root: Path | None,
@@ -887,7 +893,7 @@ def _build_snapshot_meta(
         "dropped_rows_sentinel": stage_e_stats.n_dropped_sentinel,
         "dropped_rows_dedup": stage_e_stats.n_dropped_dedup,
         "dropped_rows_content_dedup": stage_e_stats.n_dropped_content_dedup,
-        "dropped_eee_records_stage_a": sum(eee._drop_counter.values()),
+        "dropped_eee_records_stage_a": sum(d["count"] for d in stage_a_drops),
         "cards": n_cards,
         "comparability_groups_metric_unit_inconsistent": n_unit_inconsistent,
         "synthesised_id_collisions": n_synth_collisions,
@@ -918,7 +924,7 @@ def _build_snapshot_meta(
             n_fact_results if n_fact_results is not None else stage_e_stats.post,
             dedup_totals,
         ),
-        "stage_a_drops": eee.drop_breakdown(),
+        "stage_a_drops": stage_a_drops,
     }
 
 
@@ -1025,6 +1031,16 @@ _RELEASE_AFTER: dict[str, tuple[str, ...]] = {
         "fact_results_grouped",
         "fact_results_grouped_annotated",
     ),
+}
+
+# Stage A tables that a Stage G table replaces for every later reader:
+# benchmark_catalog is canonical_benchmarks plus the parents Stage G
+# synthesises, and the families dim is built from family_membership plus
+# the singleton families. Dropped after Stage G so that a later stage
+# reading the Stage A table fails in every full build instead of quietly
+# losing those rows.
+_SUPERSEDED_AFTER: dict[str, tuple[str, ...]] = {
+    "G": ("canonical_benchmarks", "family_membership"),
 }
 
 

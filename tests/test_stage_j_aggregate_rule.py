@@ -72,7 +72,7 @@ def _materialise_view(out_dir: Path, mutate=None):
     # the registry's own benchmark tree: the parent rollup reads its
     # `parent_benchmark_id` edges for the expected task set
     con.execute(
-        "CREATE TABLE canonical_benchmarks AS "
+        "CREATE TABLE benchmark_catalog AS "
         "SELECT id, CAST(parent_benchmark_id AS VARCHAR) AS parent_benchmark_id, "
         "       CAST(metadata AS VARCHAR) AS metadata "
         f"FROM read_parquet('{FIXTURES}/entity_registry/canonical_benchmarks.parquet')"
@@ -465,11 +465,11 @@ def _make_suite(con):
     )
     # and the registry edges behind them — the expected task set
     con.execute(
-        "INSERT INTO canonical_benchmarks VALUES "
+        "INSERT INTO benchmark_catalog VALUES "
         "('mmlu-suite', NULL, NULL), ('mmlu-b', 'mmlu-suite', NULL)"
     )
     con.execute(
-        "UPDATE canonical_benchmarks SET parent_benchmark_id = 'mmlu-suite' "
+        "UPDATE benchmark_catalog SET parent_benchmark_id = 'mmlu-suite' "
         "WHERE id = 'mmlu'"
     )
 
@@ -490,7 +490,7 @@ def _add_suite_child(con, child: str, display: str, role: str | None = None):
         ") FROM benchmarks WHERE benchmark_id = 'mmlu-b'"
     )
     con.execute(
-        f"INSERT INTO canonical_benchmarks VALUES "
+        f"INSERT INTO benchmark_catalog VALUES "
         f"('{child}', 'mmlu-suite', {role_sql})"
     )
 

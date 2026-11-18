@@ -123,15 +123,20 @@ def test_drop_counter_distinguishes_configs(tmp_path, monkeypatch):
     assert cfgs_with_drops == {"a", "b"}
 
 
-def test_drop_counter_survives_to_snapshot_meta(tmp_path, monkeypatch):
-    """The aggregate count flows into snapshot_meta.row_counts. Regression test
-    for the silent-drop hole — a corrupt record should appear in the per-snapshot
-    sidecar so downstream tooling doesn't have to parse logs."""
-    pytest.importorskip("duckdb")
+def test_drops_reach_snapshot_meta_through_the_stage_a_table():
+    """`snapshot_meta.json` reads the drops from the `stage_a_drops` table
+    Stage A caches, not from the loader's counter, so the breakdown is still
+    there once the counter has been reset by a later, resumed run."""
+    eee_src._record_drop("cfg1", "read_error:ValueError", "data/cfg1/a.json")
+    eee_src._record_drop("cfg1", "read_error:ValueError", "data/cfg1/b.json")
+    eee_src._record_drop("cfg1", "not_a_dict", "data/cfg1/c.json")
+    con = duckdb.connect()
+    stages.stage_a_record_drops(con, eee_src.drop_breakdown())
+    eee_src.reset_drop_counter()
 
-    # We can't run the full pipeline here without a registry/cards fixture.
-    # Just check the counter total is exposed via the same module attr the
-    # pipeline reads (`eee_src._drop_counter`). This tests the contract.
-    eee_src._drop_counter[("cfg1", "read_error:ValueError")] = 3
-    eee_src._drop_counter[("cfg1", "not_a_dict")] = 1
-    assert sum(eee_src._drop_counter.values()) == 4
+    assert stages.read_stage_a_drops(con) == [
+        {"config": "cfg1", "reason": "not_a_dict", "count": 1,
+         "first_path": "data/cfg1/c.json"},
+        {"config": "cfg1", "reason": "read_error:ValueError", "count": 2,
+         "first_path": "data/cfg1/a.json"},
+    ]
