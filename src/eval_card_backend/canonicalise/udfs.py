@@ -615,30 +615,31 @@ def benchmark_priority_py(benchmark_key: str | None) -> int:
 _KNOWN_ISSUES_PATH = (
     Path(__file__).resolve().parent.parent / "registry" / "benchmark_known_issues.json"
 )
-_known_issues_index: dict[str, str] | None = None
 
 
 def _normalise_ki(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
-def _ensure_known_issues() -> dict[str, str]:
-    global _known_issues_index
-    if _known_issues_index is not None:
-        return _known_issues_index
-    _known_issues_index = {}
+def _load_known_issues() -> dict[str, str]:
     if not _KNOWN_ISSUES_PATH.exists():
-        return _known_issues_index
+        return {}
     raw = json.loads(_KNOWN_ISSUES_PATH.read_text(encoding="utf-8"))
-    issues = raw.get("issues", {})
-    for key, entries in issues.items():
-        _known_issues_index[_normalise_ki(key)] = json.dumps(entries)
-    return _known_issues_index
+    return {
+        _normalise_ki(key): json.dumps(entries)
+        for key, entries in raw.get("issues", {}).items()
+    }
+
+
+# Built at import and never mutated. DuckDB calls the lookup from several
+# worker threads at once, so an index filled on first call is visible to the
+# other threads while it is still empty.
+_KNOWN_ISSUES_INDEX: dict[str, str] = _load_known_issues()
 
 
 def lookup_known_issues_py(benchmark_id: str | None, display_name: str | None) -> str | None:
     """Return JSON array of known issues for a benchmark, or NULL."""
-    idx = _ensure_known_issues()
+    idx = _KNOWN_ISSUES_INDEX
     if not idx:
         return None
     for candidate in (benchmark_id, display_name):
